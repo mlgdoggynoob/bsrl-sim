@@ -6,7 +6,7 @@
 # from it, for the policy's actions and the native AI's mover, and neither attacks. superfix_cc.c logs the taunt counters.
 # Paths relative to engine/.
 diff --git a/native/loader/env.c b/native/loader/env.c
-index 50c68e2..fef9fd3 100644
+index 852f3ad..5e05555 100644
 --- a/native/loader/env.c
 +++ b/native/loader/env.c
 @@ -129,6 +129,7 @@ static struct {
@@ -17,7 +17,7 @@ index 50c68e2..fef9fd3 100644
      int st_key[NBE_MAXP];          /* issue #19: last status speed / stun state per player (a change re-sends the move) */
      int in_own_call;    /* 1 = gas, 2 = bomb (our own calls to the damage root) */
      int seed_applied;
-@@ -183,6 +184,17 @@ int superfix_status_speed(uint8_t *ch, int base) __attribute__((weak));
+@@ -184,6 +185,17 @@ int superfix_status_speed(uint8_t *ch, int base) __attribute__((weak));
  int superfix_status_mods(uint8_t *ch, StMods *m) __attribute__((weak));
  int superfix_status_blocked(uint8_t *ch) __attribute__((weak));
  int superfix_status_silenced(uint8_t *ch) __attribute__((weak));
@@ -35,7 +35,7 @@ index 50c68e2..fef9fd3 100644
  void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) __attribute__((weak));   /* superfix_cc.c: projectile stuns */
  void hyper_install(void); void *hyper_super_data(int i, uint8_t *ch, void *sd); void hyper_unswap(int i, uint8_t *ch);
  static void *owner_player(void *sim, void *c, int *idx) {   /* the player whose current brawler c is (NULL: none) */
-@@ -901,7 +913,8 @@ static void rec_put(int kind, uint8_t *ch, int a, int b, int c, int d) {
+@@ -906,7 +918,8 @@ static void rec_put(int kind, uint8_t *ch, int a, int b, int c, int d) {
  /* issue #19: and the brawler's statuses (slows, speed boosts, roots, Draco's mount speed: superfix_status_speed) on top of the
   * hypercharged or the CharacterData speed; a root (speed 0) turns the move into a stop where the character stands (the mover
   * would divide by 0). A stunned character's moves are refused by the mover itself (0xb38b54). */
@@ -45,7 +45,7 @@ index 50c68e2..fef9fd3 100644
  static int base_speed(uint8_t *ch) {   /* the CharacterData speed the mover uses with useSpeed 0 (0xab31e0) */
      void *cd = ((void *(*)(void *))B(0xb6a384))(ch); return cd ? ((int (*)(void *))B(0xab31e0))(cd) : 0;
  }
-@@ -911,6 +924,8 @@ static void rec_move(uint64_t *ctx) {
+@@ -916,6 +929,8 @@ static void rec_move(uint64_t *ctx) {
          uint8_t *ch = (uint8_t *)ctx[0];
          int i; void *p = owner_player(E.sim, ch, &i); int sp = p ? hyper_speed(i, p, ch) : 0;
          if (sp > 0) { ctx[3] = 1; ctx[4] = (uint64_t)(uint32_t)sp; E.hyper_moves++; }
@@ -54,7 +54,7 @@ index 50c68e2..fef9fd3 100644
          if (superfix_status_speed && VTOF(ch) == VT_CHAR) {
              int base = sp > 0 ? sp : base_speed(ch), ss = superfix_status_speed(ch, base);
              if (ss == 0) { ctx[1] = (uint64_t)(uint32_t)I32(ch, 0x38); ctx[2] = (uint64_t)(uint32_t)I32(ch, 0x3c); E.st_roots++; }
-@@ -954,6 +969,8 @@ static void lead_set(const NbeCmd *c) { g_lead_mask = c->lead_mask; g_lead_dt =
+@@ -959,6 +974,8 @@ static void lead_set(const NbeCmd *c) { g_lead_mask = c->lead_mask; g_lead_dt =
  static void my_skill_block(uint64_t *ctx) {   /* 0xb487c4 onEnter: no attack/super while airborne */
      if (g_lead_mask) lead_aim(ctx);
      if (E.njobs && ctx[0]) { int id = I32(ctx[0], 8); if (leaping(id)) { ctx[1] = 1; E.sf_blocked++; } }
@@ -63,7 +63,7 @@ index 50c68e2..fef9fd3 100644
      rec_put(1, (uint8_t *)ctx[0], (int)ctx[2], (int)ctx[3], (int)ctx[6], ctx[1] == 1 ? 1 : 0);
  }
  static uint8_t g_empty_list[64] __attribute__((aligned(16)));
-@@ -1424,6 +1441,15 @@ static void apply_actions(void *sim, const NbeCmd *c) {
+@@ -1429,6 +1446,15 @@ static void apply_actions(void *sim, const NbeCmd *c) {
          if (blk) { E.st_blocked += a->fire != 0; E.pf[i].n = 0; continue; }
          NbeAction q;
          if (sil && (a->fire == 2 || a->fire == 3 || a->fire == 4)) { E.st_blocked++; q = *a; q.fire = 0; a = &q; }

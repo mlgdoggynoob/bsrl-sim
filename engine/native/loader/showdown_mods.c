@@ -7,14 +7,15 @@
  * observation does not show the warning circle or the mushroom (no contract change).
  *
  * Meteors: one at a time. A red circle at the spot of the brawler with the most others within the blast radius ("meteors
- * prioritize Brawlers that are closer together"), impact 3 s later: 2000 damage to every brawler within 1200 u, knockback,
+ * prioritize Brawlers that are closer together"), impact 2.5 s later: 2000 damage to every brawler within 1200 u, knockback,
  * and the obstacles in that circle break. Healing mushrooms: next to the most isolated brawler ("spawn on players who are by
  * themselves"); after growing, a ring of 1000 u heals every brawler in it by 1000 per second for 5 s; rings may overlap.
- * Sources: area_effects_logic.csv EventExplosion (Damage 2000, Radius 1200, PushbackStrength 150, DestroysEnvironment)
- * and EventHealing (Hot, Damage -1000, Radius 1000, TimeMs 5000); the fandom wiki's Modifiers page (2000 damage, knockback,
- * breaks obstacles, 3 s circle, one meteor at a time, 1000 heal per second, both more frequent as the match goes on).
- * [?] guessed (no source found): every first-spawn tick, interval and its shrink, the mushroom's grow time, and the spot
- * offset. Event damage is a flat 2000 (the data's value, not level-scaled: env's x2 applies to character attackers only). */
+ * Sources: area_effects_logic.csv EventExplosion (Damage 2000, Radius 1200, PushbackStrength 150, DestroysEnvironment),
+ * EventHealing (Hot, Damage -1000, Radius 1000, TimeMs 5000), ExplosionSpawn and HealingSpawn (TimeMs 2500: the meteor's
+ * warning and the mushroom's growth, issue #22); the fandom wiki's Modifiers page (2000 damage, knockback, breaks
+ * obstacles, one meteor at a time, 1000 heal per second, both more frequent as the match goes on).
+ * [?] guessed (no source found): every first-spawn tick, interval and its shrink, and the spot offset. Event damage is a
+ * flat 2000 (the data's value, not level-scaled: env's x2 applies to character attackers only). */
 #include "nbhost.h"
 #include <stdlib.h>
 #include <string.h>
@@ -34,7 +35,8 @@ void env_sd_break(void *sim, int x, int y, int r);
 #define MET_DMG 2000             /* EventExplosion Damage */
 #define MET_R 1200               /* EventExplosion Radius */
 #define MET_PUSH 150             /* EventExplosion PushbackStrength */
-#define MET_WARN 60              /* the red circle, 3 s before impact (wiki) */
+#define MET_WARN 50              /* the red circle, 2.5 s before impact: area_effects_logic ExplosionSpawn TimeMs 2500 (its
+                                  * skin row is the meteor_area_effect with meteor_ball_animation; the wiki rounds to 3 s) */
 #define MET_FIRST 600            /* [?] first circle at 30 s (the intro is 182 ticks) */
 #define MET_GAP0 200             /* [?] 10 s from one impact to the next circle, */
 #define MET_GAP_STEP 10          /* [?] 0.5 s shorter after every meteor ("increasing frequency"), */
@@ -42,7 +44,8 @@ void env_sd_break(void *sim, int x, int y, int r);
 #define MUSH_HEAL 1000           /* EventHealing Damage -1000, per second (wiki: 1000 per second) */
 #define MUSH_R 1000              /* EventHealing Radius */
 #define MUSH_TICKS 100           /* EventHealing TimeMs 5000 */
-#define MUSH_GROW 60             /* [?] 3 s from sprouting to the first heal */
+#define MUSH_GROW 50             /* 2.5 s from sprouting to the first heal: area_effects_logic HealingSpawn TimeMs 2500 (skin
+                                  * healing_mushroom_area_effect; [?] no chain column links it to EventHealing, only the names) */
 #define MUSH_FIRST 400           /* [?] first mushroom at 20 s */
 #define MUSH_GAP0 300            /* [?] 15 s between mushrooms, */
 #define MUSH_GAP_STEP 20         /* [?] 1 s shorter after each, */

@@ -15,4 +15,5 @@ docstrings and comments are the spec.
 | `gadgets_batch2.md` | #3 gadgets, batch 2 (shots, volleys, items, R-T, Kit, Kenji) | #36 |
 | `hyper_supers.md` | #6 / #32 hypercharged supers that failed only hypercharged | #37 |
 | `broken_supers.md` | #32 item 5: Moe, Bonnie, Kenji, Lou (host); Damian, Buster (audit) | this branch |
+| `issue22.md` | #22 / #32 item 7: guessed numbers checked against data and wiki; what still needs a clip | this branch |
 | `issue19-leftovers.md` | #19 leftovers: reload speed, lifesteal, taunt / fear, dropped area types | this branch |
