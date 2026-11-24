@@ -107,7 +107,8 @@ static int enemy(uint8_t *ch, uint8_t *c) {   /* a living enemy character (anoth
 static void **objs(void *sim, int *n) { void *h = sim ? PTR(sim, 0) : NULL; *n = h ? I32(h, 0xc) : 0; if (*n < 0 || *n > 4096) *n = 0; return h ? (void **)PTR(h, 0) : NULL; }
 
 /* ======================= FlyJump */
-#define FJ_H 700           /* peak z: the height env.c's leap uses (Piper) */
+#define FJ_H 700           /* [?] peak z, not in the data: the height env.c's leap uses (Piper). Mico's landing hit itself is
+                            * LeaperUltiAreaExplosion's own Radius 700, read from the area */
 #define FJ_RAMP 6          /* ticks up and down (300 ms) */
 #define LAND_WAIT 10       /* ticks after the skill ended without an indicator expiry: land anyway */
 typedef struct { uint8_t *ch; int id, t, seen, done_t, landed; void *ind; } FlyJob;
@@ -165,7 +166,8 @@ static void on_area_expire(uint8_t *a) {
 }
 
 /* ======================= Ww */
-#define WW_R 300           /* contact radius: not in the tables; ~ Carl's spin ring (env.c's charge contact uses 250) */
+#define WW_R 300           /* [?] contact radius, not in the data or the wiki ("a short radius"): ~ Carl's WhirlwindTrail
+                            * area (Radius 300). WhirlwindUlti's CastingRange 7 (700 u) is the cast ring, not the hit radius */
 typedef struct { uint8_t *ch; int id, dmg, every, n; int hid[24], ht[24]; } WwJob;
 static WwJob g_ww[16]; static int g_nww;
 static long g_ww_start, g_ww_hits;

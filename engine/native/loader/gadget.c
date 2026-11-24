@@ -48,7 +48,8 @@
  *   HEAL_NOW  heal_attached_and_self (Kit) and heal_damage_taken (Kenji) (HEAL): an instant heal through libg's heal 0xb41554.
  * Every other gadget publishes kind NONE (not usable): next_attack_change, summons / turrets, status buffs, shields,
  * Nori's fish heal (needs his fish count), the Charge skills (Brock's jump, Max's dash, ...), ... Each player gets GAD_USES
- * uses per battle and the accessory's cooldown between uses. The accessory's Type parses to the int at +0x24 (0xb2731c:
+ * uses per battle (unlimited by default, as in the live game since February 2025) and the accessory's cooldown between
+ * uses. The accessory's Type parses to the int at +0x24 (0xb2731c:
  * spin_shoot 3, spawn 9, repeat_shot 13, heal_attached_and_self 50, charge_ulti 56, heal_damage_taken 58).
  *
  * To add a kind: write classify (accessory -> 1 if this implementation handles it) and fire (the effect at the brawler, with
@@ -68,7 +69,10 @@ extern int32_t g_div_gadget[NBE_MAXP];   /* env.c: the RESET's requested gadget 
 void *env_obj_by_id(void *sim, int id);  /* env.c */
 int env_dash_start(uint8_t *ch, int tx, int ty, int speed);   /* env.c: -> path length, 0 = no dash */
 
-#define GAD_USES 3        /* Brawl Stars: 3 gadget uses per battle (the count lives in server code, not in this build) */
+#define GAD_USES 9999     /* no per-battle limit: gadgets "no longer have charges but are now based on cooldowns" and can be
+                           * used "an unlimited amount of times in a match" (Supercell release notes, Feb 2025); the
+                           * cooldown is the accessory's (accessories.csv Cooldown, e.g. Bibi 400 ticks = the 20 s of the
+                           * Feb 2026 notes). NB_GAD_USES=3 restores the old 3 uses per battle (issue #22). */
 #define TICKS_PER_S 20    /* 50 ms ticks */
 enum { ACC_PLAIN = 0, ACC_DASH = 2, ACC_SPIN = 3, ACC_HEAL = 8, ACC_SPAWN = 9, ACC_REPEAT = 13, ACC_HEAL_SELF = 50,
        ACC_CHARGE_ULTI = 56, ACC_HEAL_TAKEN = 58 };   /* the `mov w8, #N` per Type string in 0xb2731c (spin_shoot 3, ...) */   /* accessory +0x24 type enum (0xb2731c's Type parser; 0 = empty Type) */
@@ -378,7 +382,8 @@ void gadget_reset_player(int i, void *acc) {
     int type = g->type = I32(acc, 0x24);
     for (const GadImpl *im = g_impl; g->ad && !masked(g->card) && im->classify; im++)
         if (im->classify(g->ad, type)) {
-            g->im = im; g->uses = GAD_USES; g->cd = I32(acc, 0xc4) > 0 ? I32(acc, 0xc4) : 0;
+            static int uses = -1; if (uses < 0) { const char *e = getenv("NB_GAD_USES"); uses = e && atoi(e) > 0 ? atoi(e) : GAD_USES; }
+            g->im = im; g->uses = uses; g->cd = I32(acc, 0xc4) > 0 ? I32(acc, 0xc4) : 0;
             /* the skill gadgets' rows leave Cooldown empty: their skill's Cooldown (skills.csv, ticks as the accessory's:
              * Shelly's Clay Pigeons 250, getter 0xb0d868) */
             if (!g->cd && PTR(g->ad, AD_SKILL)) { int c = sd_get(PTR(g->ad, AD_SKILL), SD_COOLDOWN); g->cd = c > 0 ? c : 0; }
