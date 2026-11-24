@@ -7,7 +7,8 @@ native AI in solo / duo / trio battles (one boot, every agent native-controlled 
   2. drops: a brawler holding k cubes that is eliminated or knocked out (into respawn) leaves drop_count(k) cube items
      (items.csv BattleRoyaleBuff, 18000009) near where it fell: libg's own death drop, fed the cubes held (env.c
      sd_mirror_cubes). A respawning brawler that goes out with its team's wipe has no body and drops nothing.
-  3. protection: a respawned brawler comes back with spawn protection (state2 chars spawnProt, character +0x431).
+  3. protection: a respawned brawler comes back with spawn protection (state2 chars spawnProt, character +0x431), except
+     in Trio when it respawns inside the gas (host log, NB_SD_DBG=1: every respawn's gas / protect against resp_protect).
   4. storm (host log, NB_SD_DBG=1): every storm hit's percent of max HP follows gas_pct (Trio ramps after 1 s, Solo / Duo
      after 5 s); heals inside the gas are halved (env.c gas_tick; logged as heal cuts).
   5. --mods 3,5 (event_modifiers.csv Meteors, HealingMushrooms; showdown_mods.c through NB_SD_MODIFIERS): each meteor hit
@@ -58,6 +59,12 @@ def gas_pct(secs, team_size=1):
     return 20 + max(0.0, secs - ramp) * 5
 
 
+def resp_protect(team_size, in_gas):
+    """spawn protection after a respawn (env.c respawn_tick): always, except in Trio on a tile inside the gas ("teammates
+    will spawn without an immunity shield when respawning inside the poison", since 04/09/24, #22 wiki findings)"""
+    return not (team_size >= 3 and in_gas)
+
+
 def wall_shape(radius):
     """WallSpawn tiles (dx, dy) around the area's tile (spawnfix.c in_shape): tile centres closer than Radius"""
     k = radius // 300 + 1
@@ -78,6 +85,11 @@ def parse_log(lines):
             if g >= 3 and secs > 1: S["trio ramped"] += 1
             continue
         if "[gas] heal cut" in ln: S["heal cuts"] += 1; continue
+        m = re.search(r"\[resp\] player \d+ group (\d+) tick \d+ gas (\d) protect (\d)", ln)
+        if m:
+            g, gas, prot = int(m[1]), int(m[2]), int(m[3]); S["respawns g%d%s" % (g, " in gas" if gas else "")] += 1
+            if bool(prot) != resp_protect(g, gas): bad.append(ln.strip())
+            continue
         if "[sdmod] battle start" in ln: last_impact = None; continue
         m = re.search(r"\[sdmod\] meteor hit ch \d+ hp (-?\d+) -> (-?\d+)", ln)
         if m:
@@ -118,6 +130,12 @@ def selfcheck():
     seen = set(); assert new_cubes(items, seen, 0, 0) == 1 and new_cubes(items, seen, 0, 0) == 0 and seen == {1}
     assert [drop_count(k) for k in (0, 2, 3, 14, 30)] == [1, 1, 2, 5, 5] and drop_count(9, 3) == 2
     assert gas_pct(3, 1) == 20 and gas_pct(7, 2) == 30 and gas_pct(3, 3) == 30 and gas_pct(0, 3) == 20
+    assert resp_protect(2, 1) and resp_protect(3, 0) and not resp_protect(3, 1)
+    S, bad = parse_log(["[resp] player 1 group 3 tick 900 gas 1 protect 0", "[resp] player 2 group 2 tick 900 gas 1 protect 1",
+                        "[resp] player 3 group 3 tick 900 gas 0 protect 1"])
+    assert not bad and S["respawns g3 in gas"] == 1 and S["respawns g2 in gas"] == 1 and S["respawns g3"] == 1, (S, bad)
+    S, bad = parse_log(["[resp] player 1 group 3 tick 900 gas 1 protect 1", "[resp] player 2 group 2 tick 900 gas 1 protect 0"])
+    assert len(bad) == 2, bad
     assert wall_shape(600) == {(x, y) for x in (-1, 0, 1) for y in (-1, 0, 1)}          # Rosa's Grow Light: 3x3 (wiki)
     assert wall_shape(400) == {(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)} and wall_shape(100) == {(0, 0)}
     assert len(wall_shape(500)) == 9
@@ -172,7 +190,8 @@ def live(a):
                 if st and sd["back"]:
                     for p in list(sd["back"]):
                         cid = int(r.pl[p].char_id); c = [row for row in st["chars"] if int(row[S2.C_F.index("id")]) == cid]
-                        if c: PROT.append(int(c[0][S2.C_F.index("spawnProt")])); sd["back"].discard(p)
+                        gs = sum(1 for q in g if q and q == g[p]) if g[p] else 1
+                        if c: PROT.append((gs, int(r.pl[p].in_gas > 0), int(c[0][S2.C_F.index("spawnProt")]))); sd["back"].discard(p)
                 # held cubes, position (the last live one), waiting, eliminated
                 sd["prev"] = [(int(r.pl[p].cubes_total), r.pl[p].x if r.pl[p].alive else (prev[p][1] if prev else 0),
                                r.pl[p].y if r.pl[p].alive else (prev[p][2] if prev else 0), r.pl[p].reserved[3] > 0, bool(r.pl[p].eliminated))
@@ -205,7 +224,7 @@ def live(a):
     ok_drop = sum(1 for k, n, gs in DROPS if n == drop_count(k, gs))
     print("cube drops: %d falls, %d with the expected count; (held, seen, team size) %s" % (len(DROPS), ok_drop, collections.Counter(DROPS).most_common(10)))
     print("misses (fall, at the end, held, seen):", MISS.most_common(12))
-    print("respawn protection flags:", collections.Counter(PROT), "| restarts", env.stats["restarts"])
+    print("respawns (team size, in gas, protected):", collections.Counter(PROT), "| restarts", env.stats["restarts"])
     LS, bad = collections.Counter(), []
     # one instance at a time: the read starts after each instance's first "battle start" line, so one joined log would
     # compare an instance's first meteor with the previous instance's last one
@@ -222,7 +241,8 @@ def live(a):
     assert all(e[5] for e in ENDS if e[0] > 1 and e[3] == 1), "winner not on the last team"
     if a.p_team > 0: assert any(e[0] > 1 for e in ENDS), "no team battle ended"
     assert DROPS and ok_drop >= 0.9 * len(DROPS), "cube drops"
-    if PROT: assert sum(1 for x in PROT if x) >= 0.9 * len(PROT), "respawned without spawn protection"
+    want = [x for x in PROT if resp_protect(x[0], x[1])]   # state2 at the step's end; the exact rule is the log's (above)
+    if want: assert sum(1 for x in want if x[2]) >= 0.9 * len(want), "respawned without spawn protection"
     print("showdown_check live ok")
 
 

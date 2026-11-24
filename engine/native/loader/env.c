@@ -104,7 +104,7 @@ static struct {
     int gas_j, gas_phase, gas_latched, gas_latches;   /* storm clock (phone fog-renderer latch, see gas_test_step) */
     struct { int n; int super[2]; double deg[2], dist[2]; } pf[NBE_MAXP];   /* attack commands of the last step (g_fire_delay) */
     long cl_moves, cl_attacks;
-    int resp_at[NBE_MAXP], resp_ai[NBE_MAXP], resp_n, resp_done, resp_wipe;   /* rl round: teammate respawn (tick it comes back, 0 = no) */
+    int resp_at[NBE_MAXP], resp_ai[NBE_MAXP], resp_n, resp_done, resp_wipe, resp_gas_noprot;   /* rl round: teammate respawn (tick it comes back, 0 = no) */
     int seen[NBE_MAXP], elim[NBE_MAXP], erank[NBE_MAXP], etick[NBE_MAXP], egas[NBE_MAXP], eptr_n, total, order_n, end_req, winner, local_rank, alive;
     void *elim_ptr[NBE_MAXP];
     /* cubes: by character id */
@@ -1062,8 +1062,13 @@ static void respawn_tick(void *sim) {
             E.resp_at[i] = 0; E.resp_done++; I32(c, 0x38) = I32(m, 0x38); I32(c, 0x3c) = I32(m, 0x3c);
             I32(c, 0x3c4) = I32(c, 0x3c8); U8(c, 0x469) = E.resp_ai[i]; sf_stop(c);
             /* showdown round: spawn protection (every character tick sets +0x431 = +0x4f0 > tick, 0xb3995c; the root blocks
-             * damage while +0x431 is set) */
-            I32(c, 0x4f0) = tick + RESP_PROTECT; U8(c, 0x431) = 1;
+             * damage while +0x431 is set, the storm's too). Trio: none when the respawn tile is in the gas ("teammates will
+             * spawn without an immunity shield when respawning inside the poison", since 04/09/24, #22 wiki findings) */
+            int gas = E.gas_on && in_gas_tile(sim, (int)floor(I32(c, 0x38) / 300.0), (int)floor(I32(c, 0x3c) / 300.0));
+            int prot = !(g_gas_rules && gas && sd_group_size(i) >= 3);
+            if (prot) { I32(c, 0x4f0) = tick + RESP_PROTECT; U8(c, 0x431) = 1; }
+            else { I32(c, 0x4f0) = 0; U8(c, 0x431) = 0; E.resp_gas_noprot++; }
+            { extern int g_sd_dbg; if (g_sd_dbg) LOG("[resp] player %d group %d tick %d gas %d protect %d\n", i, sd_group_size(i), tick, gas, prot); }
         } else { I32(c, 0x38) = PARK_X; I32(c, 0x3c) = PARK_Y; I32(c, 0x3c4) = I32(c, 0x3c8); U8(c, 0x469) = 0; }
     }
 }

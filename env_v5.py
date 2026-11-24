@@ -208,12 +208,13 @@ _PL = ("x", "y", "hp", "max_hp", "damage_dealt", "bomb_damage", "damage_taken", 
 BEH = ("alive", "bush", "hidden", "engaged", "gas", "mate", "mate_band", "clump", "mate_tiles", "near", "range_ratio",
        "dealt", "box", "cubes_max", "cubes_end", "gas_near")
 # per-slider factors on the terms so each is worth ~0.5 per battle at weight 1 (0.5 / mean per-battle sum of |term| per
-# player, norm_from; against the 8 of place + win). Measured 2026-11-23 on the native AI (the BC target): `env_v5 --n 3
-# --minutes 15 --native 1` = 778 battles / 7769 player rows, random maps / brawlers, half in teams, then `--norm`.
-# Re-measure when the terms change or the policy is far from the native AI.
-NORM_MEASURED = {"bush_camp": 0.232, "collect": 0.0753, "protect": 0.3373, "retreat": 0.2011, "kite": 0.1423, "peek": 0.0525,
-                 "focus": 0.0462, "aggressive": 0.0341, "third_party": 2.444, "bush_control": 0.5462, "leash": 1.2308,
-                 "gas_safe": 3.2311}
+# player, norm_from; against the 8 of place + win). Measured 2026-11-24 on the native AI (the BC target), on main after
+# #34-#38 plus Trio's no respawn shield in the gas: `env_v5 --n 3 --minutes 15 --native 1` = 822 battles / 8199 player
+# rows, random maps / brawlers, half in teams, then `--norm`. Re-measure when the terms or the host's rules change, or the
+# policy is far from the native AI.
+NORM_MEASURED = {"bush_camp": 0.2449, "collect": 0.0747, "protect": 0.3754, "retreat": 0.1932, "kite": 0.1491, "peek": 0.0537,
+                 "focus": 0.0455, "aggressive": 0.0346, "third_party": 2.6454, "bush_control": 0.5798, "leash": 2.0781,
+                 "gas_safe": 5.3048}
 
 
 def slider_norm(spec):
