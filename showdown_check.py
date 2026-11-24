@@ -71,7 +71,7 @@ def wall_shape(radius):
     return {(dx, dy) for dx in range(-k, k + 1) for dy in range(-k, k + 1) if 90000 * (dx * dx + dy * dy) < radius * radius}
 
 
-MET_DMG, MET_WARN, MET_GAP_MIN, MUSH_HEAL = 2000, 60, 60, 1000   # showdown_mods.c
+MET_DMG, MET_WARN, MET_GAP_MIN, MUSH_HEAL = 2000, 50, 60, 1000   # showdown_mods.c (MET_WARN: ExplosionSpawn 2.5 s)
 
 
 def parse_log(lines):

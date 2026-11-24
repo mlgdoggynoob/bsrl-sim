@@ -155,8 +155,9 @@ static int player_char_id(void *p) { int c = I32(p, 0x1e4); return c ? c : I32(p
  * teammate's position. Its team wiped meanwhile: hp 0 -> eliminated as usual. The client libg has no respawn (server code). */
 static uint32_t g_div_team;
 #define RESP_TICKS 340     /* game_mode_variations.csv RespawnSeconds 17 (Duo / Trio Showdown) */
-#define RESP_PROTECT 60    /* spawn protection after a respawn: +0x4f0 = tick + 60 (3 s). [?] the server's respawn value is
-                            * not in the client; 60 = the post-intro protection of the battle start (0xc2806c: intro + 60) */
+#define RESP_PROTECT 60    /* spawn protection after a respawn: +0x4f0 = tick + 60 (3 s; the wiki's Duo / Trio Showdown pages:
+                            * "immunity shield for 3 seconds"). Not in the client data; 60 is also the post-intro protection
+                            * of the battle start (0xc2806c: intro + 60) */
 #define PARK_X (-150)
 #define PARK_Y 150
 static int resp_on(void) { return (int)(g_div_team >> 31); }
@@ -451,6 +452,8 @@ static uint64_t my_charge(void *p, int d, int a2, int a3, void *a4, int a5) {
 }
 
 /* ------------------------------------------------------------------ storm */
+/* [?] ring schedule: first step at tick 440, then one step every 100 ticks (5 s). The phone agent's measured clock; not in
+ * the client data (game_mode_variations.csv only has ModeHasFillingPoison) or on the wiki (issue #22). */
 static int gas_step(int tick) { int t = tick - 440; return t > 0 ? t / 100 : 0; }
 typedef int (*fn_gas)(int, int, int, int, int, int, int *, int, int);
 static fn_gas o_gastest;
@@ -542,8 +545,10 @@ int g_native_charge = 1; static long g_native_charges;
  * ChargePushback with the game's knockback. The charge's areas and Bull's wall breaking are env's too (charge_end, below).
  * --native-charge 2 = movement only (no env contact damage, pushback, areas or wall breaking). */
 #define CHARGE_HIT_R 250
-#define CHARGE_WALL_R 200    /* Bull: tiles within 200 u of his centre break (1 tile wide lane; [?] the server's radius is unknown) */
-#define CHARGE_LAND_WALL_R 300   /* El Primo: tiles around the landing point ([?] radius unknown; one tile ring) */
+#define CHARGE_WALL_R 200    /* Bull: tiles within 200 u of his centre break (1 tile wide lane; [?] the server's radius is unknown:
+                              * no data column, the wiki only says he breaks what he touches; his CollisionRadius is 145) */
+#define CHARGE_LAND_WALL_R 300   /* El Primo: tiles around the landing point ([?] radius unknown: LuchadorUlti has no area, the
+                                  * wiki only says "in a radius around him"; one tile ring) */
 #define CHARGE_LAND_R 200        /* Bonnie (type 16): her landing hit, CannonGirlExplosion's Radius ([?] the server's rule is compiled out) */
 typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; } ChargeJob;
 static ChargeJob g_cj[NBE_MAXP]; static int g_ncj; static long g_charge_hits, g_charge_pushes, g_charge_areas, g_charge_walls;
