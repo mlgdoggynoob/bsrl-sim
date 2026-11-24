@@ -34,14 +34,26 @@
  * through the damage root. A
  * BlinkReturn skill (type 23, the swapped-in DaredevilUltiReturn) teleports back to where the last Blink started.
  *
- * ChangeCharacter (Bonnie's CannonGirlSmall, Moe's DiggerDrill, Meg's MechaDude ulti, type 11 via 0xb7bb58; also the
- * end of the CannonGirl / Digger charge): the shipped 0xb4ffec(char, new data) is a stub that kills the old character
+ * ChangeCharacter (Bonnie's CannonGirlSmall, Moe's DiggerDrill, Meg's MechaDude ulti, type 11 via 0xb7d010; also the
+ * launch of the CannonGirl charge at 0xb7bb58 and the end of the Digger charge, env.c dig_change): the shipped 0xb4ffec(char, new data) is a stub that kills the old character
  * and returns NULL; battle_fix.c already replaces it (my_die) so a NULL does not crash the caller. battle_fix calls
  * superfix_change_character (weak) first: it builds the new character the way the hero spawner 0xc2806c does (factory
  * 0xb5dd08, add 0xb63198, player / team ids, 0xb59de0 with the player's hero entry, skin 0xc70d2c, components 0xb58068)
  * but without placement, spawn protection or super reset, at the old character's position and facing; the HP fraction
  * carries over (the mech, UniqueProperty 2, starts full); the player's hero id +0x10 is pointed at it so the env's
  * player-to-character lookup and input follow the new form. The stub then retires the old character as before.
+ *
+ * A type-11 skill with an AreaEffectObject (CannonGirlSmallUlti: CannonGirlExplosion, an Effect area, Damage 620) goes off
+ * where the change happens: its server half is compiled out (the case at 0xb7cfe4 only changes the character). The `bl
+ * 0xb4ffec` at 0xb7d010 is redirected (change_site): the area is spawned at the old position, owned by the new form, and
+ * every living enemy character within its radius is hit once for the skill's Damage through the damage root.
+ *
+ * CrossSlashGround (Kenji, SamuraiUlti, area type 38): the super's projectile lands and spawns SamuraiCrossSlashArea
+ * (0xb73fa8..0xb74020; no Radius, no Damage); the apply's type gate ignores 38 and the slash itself is server code. From
+ * the area tick (superfix.c on_area_tick -> superfix_moves_area), once per area: every living enemy character within
+ * SLASH_W of one of the two slash lines (an X at +-45 degrees to the throw direction, SLASH_H each way from the area's
+ * centre) is hit once for the ulti skill's Damage, and Kenji's own hide status from the cast (SamuraiHide: root,
+ * invisibility, shield; CancelOnCharge) ends there (superfix_status_cancel). The X shape and its size are host guesses.
  *
  * The per-tick work runs from the character tick 0xb3ae74 (enter hook, per character; only characters with a job do
  * anything). NB_SUPERFIX=0 turns every part off (superfix_install does not call this file's install). */
@@ -69,6 +81,7 @@ static void *ulti_skill(uint8_t *ch) {   /* skill slot 1 = ulti (ctor 0xb34560: 
     void **sk = PTR(ch, 0x458); return sk && I32(ch, 0x464) > 1 ? sk[1] : NULL;
 }
 static uint8_t *skill_data(void *sk) { return sk ? ((uint8_t *(*)(void *, int))B(0xb7adfc))(sk, U8(sk, 49) & 1) : NULL; }   /* +49 = overcharged */
+static int sd_damage(uint8_t *sd) { return ((geti_t)B(0xb0dc14))(sd); }   /* SkillData Damage getter (gadget.c SD_DAMAGE) */
 static int area_radius(uint8_t *ad) { int r = ad ? I32(ad, 0x12c) : 0; return r > 0 && r < 5000 ? r : 0; }   /* AreaEffectData Radius (+300, getter a97bb4; +292 is TimeMs) */
 /* the shipped helper 0xb35c40(owner, data, x, y, extra damage, kind, modifiers): create 0xb2aefc, add 0xb63198, start
  * 0xb29494; kind 2 = what the skill execute passes (0xb7bebc). The area's damage word is extra + the data's own Damage
@@ -243,6 +256,7 @@ static void blink_start(uint64_t *ctx) {   /* enter 0xb4ffe0(char, tx, ty, areaL
 
 /* ======================= ChangeCharacter: the new character for battle_fix.c's hook on 0xb4ffec */
 static long g_change, g_change_skip;
+void env_char_changed(uint8_t *old, uint8_t *nc) __attribute__((weak));   /* env.c: the power cubes move to the new form */
 uint64_t superfix_change_character(uint8_t *old, uint8_t *nd) {   /* the new character, or 0 (battle_fix keeps the old) */
     if (!mode() || !old || !nd || VTOF(old) != VT_CHAR || !PTR(old, 0x20)) { g_change_skip++; return 0; }
     uint8_t *pl = ((uint8_t *(*)(void *))B(0xb6a718))(old), *sim = sim_of(old);
@@ -271,10 +285,73 @@ uint64_t superfix_change_character(uint8_t *old, uint8_t *nd) {   /* the new cha
     }
     I32(pl, 0x10) = I32(nc, 8);   /* the player's hero id (env player_char_id, the input path); +0x1e4 is the possession link
                                      (Willow): a character whose possession timer +3284 is 0 clears it at once (0xb40f30) */
+    if (env_char_changed) env_char_changed(old, nc);
     g_change++;
     if (g_superfix_dbg) LOG("[superfix] change character %d (data %p hp %d/%d) -> %d (data %p hp %d/%d) at %d,%d\n", I32(old, 8),
                             PTR(old, 0x10), hp, mhp, I32(nc, 8), nd, I32(nc, 0x3c4), I32(nc, 0x3c8), I32(nc, 0x38), I32(nc, 0x3c));
     return (uint64_t)nc;
+}
+
+/* ======================= ChangeCharacter with an area (Bonnie's return to Clyde): hook_bl on 0xb7d010 */
+static long g_change_area, g_change_hits;
+static uint64_t change_site(uint8_t *old, void *nd, uint64_t a2, uint64_t a3) {
+    uint8_t *sd = old && mode() ? skill_data(ulti_skill(old)) : NULL;   /* read before the stub retires the old character */
+    void *ad = sd && I32(sd, 0x1a8) == 11 ? PTR(sd, 160) : NULL;       /* AreaEffectObject (skill data +160, getter 0xb0de40) */
+    int x = old ? I32(old, 0x38) : 0, y = old ? I32(old, 0x3c) : 0, dmg = sd ? sd_damage(sd) : 0;
+    uint8_t *nc = (uint8_t *)((uint64_t (*)(void *, void *, uint64_t, uint64_t))B(0xb4ffec))(old, nd, a2, a3);
+    if (!ad || !nc || VTOF(nc) != VT_CHAR || I32(nc, 0x3c4) <= 0) return (uint64_t)nc;
+    spawn_area(nc, ad, x, y, 0, 2); g_change_area++;
+    int r = area_radius(ad), hits = 0, n;
+    if (I32(ad, 0x118) == 6 && r > 0 && dmg > 0) {   /* an Effect area hits no one in libg: the skill's Damage by hand (raw: env's root scales it) */
+        void **v = objs(sim_of(nc), &n);
+        for (int i = 0; i < n; i++) {
+            uint8_t *c = v[i]; if (!enemy(nc, c) || I32(c, 0x84) == I32(nc, 0x84)) continue;
+            long dx = I32(c, 0x38) - x, dy = I32(c, 0x3c) - y; if (dx * dx + dy * dy > (long)r * r) continue;
+            hit(nc, c, dmg); hits++; v = objs(sim_of(nc), &n);
+        }
+    }
+    g_change_hits += hits;
+    if (g_superfix_dbg) LOG("[superfix] change with area: char %d -> %d at %d,%d area type %d r %d dmg %d hits %d\n",
+                            old ? I32(old, 8) : -1, I32(nc, 8), x, y, I32(ad, 0x118), r, dmg, hits);
+    return (uint64_t)nc;
+}
+
+/* ======================= CrossSlashGround (Kenji): superfix.c's area tick calls this for every area */
+#define SLASH_H 600   /* [?] half-length of each slash line (2 tiles): the server's geometry is compiled out */
+#define SLASH_W 250   /* [?] half-width of a slash line incl. the victim's CollisionRadius (env.c's CHARGE_HIT_R) */
+typedef struct { void *a; int start; } SlashRec;
+static SlashRec g_slash[32]; static int g_nslash_rec, g_slash_last = -1; static long g_slash_n, g_slash_hits;
+void superfix_status_cancel(uint8_t *ch, int within) __attribute__((weak));
+void superfix_moves_area(uint8_t *a) {
+    if (!mode() || !a) return;
+    uint8_t *d = ((getp_t)B(0xb6a384))(a); if (!d || I32(d, 0x118) != 38) return;
+    int start = I32(a, 0xd0), now = now_of(a);
+    if (now < g_slash_last) g_nslash_rec = 0;   /* the tick went back: a new episode, area objects are reused */
+    g_slash_last = now;
+    for (int k = 0; k < g_nslash_rec; k++) if (g_slash[k].a == a && g_slash[k].start == start) return;   /* once per area */
+    if (g_nslash_rec >= 32) g_nslash_rec = 0;
+    g_slash[g_nslash_rec++] = (SlashRec){a, start};
+    uint8_t *ch = PTR(a, 0x108);
+    if (!ch || VTOF(ch) != VT_CHAR || I32(ch, 0x3c4) <= 0) return;
+    uint8_t *sd = skill_data(ulti_skill(ch)); int dmg = sd && I32(sd, 0x1a8) == 0 ? sd_damage(sd) : 0;
+    if (dmg <= 0) return;
+    double cx = I32(a, 0x38), cy = I32(a, 0x3c), fx = cx - I32(ch, 0x38), fy = cy - I32(ch, 0x3c), fl = hypot(fx, fy);
+    if (fl < 1) { fx = 1; fy = 0; } else { fx /= fl; fy /= fl; }
+    double ux[2] = {(fx - fy) * M_SQRT1_2, (fx + fy) * M_SQRT1_2}, uy[2] = {(fy + fx) * M_SQRT1_2, (fy - fx) * M_SQRT1_2};   /* +-45 degrees */
+    int n, hits = 0; void **v = objs(sim_of(ch), &n);
+    for (int i = 0; i < n; i++) {
+        uint8_t *c = v[i]; if (!enemy(ch, c) || I32(c, 0x84) == I32(ch, 0x84)) continue;
+        double px = I32(c, 0x38) - cx, py = I32(c, 0x3c) - cy; int in = 0;
+        for (int l = 0; l < 2 && !in; l++) {
+            double along = px * ux[l] + py * uy[l], across = fabs(px * uy[l] - py * ux[l]);
+            in = fabs(along) <= SLASH_H && across <= SLASH_W;
+        }
+        if (!in) continue;
+        hit(ch, c, dmg); hits++; v = objs(sim_of(ch), &n);
+    }
+    if (superfix_status_cancel) superfix_status_cancel(ch, 60);   /* SamuraiHide ends at the slash (CancelOnCharge) */
+    g_slash_n++; g_slash_hits += hits;
+    if (g_superfix_dbg) LOG("[superfix] cross slash char %d at %.0f,%.0f dir %.2f,%.2f dmg %d hits %d\n", I32(ch, 8), cx, cy, fx, fy, dmg, hits);
 }
 
 /* ======================= per character tick (enter 0xb3ae74) */
@@ -302,10 +379,14 @@ void superfix_moves_install(void) {
     else LOG("[superfix] moves: 0xb5a704 is not the Ww stub: left out\n");
     if (*(uint32_t *)B(0xb4ffe0) == RET_INSN) { hook_enter(g_libg, 0xb4ffe0, blink_start); n |= 4; }
     else LOG("[superfix] moves: 0xb4ffe0 is not the teleport stub: left out\n");
-    LOG("[superfix] moves installed:%s%s%s%s\n", n & 1 ? " flyjump" : "", n & 2 ? " ww" : "", n & 4 ? " blink" : "", " change");
+    if (*(uint32_t *)B(0xb7d010) == 0x97ff4bf7) { hook_bl(g_libg, 0xb7d010, (void *)change_site); n |= 8; }   /* bl 0xb4ffec */
+    else LOG("[superfix] moves: 0xb7d010 is not the ChangeCharacter call: left out\n");
+    LOG("[superfix] moves installed:%s%s%s%s%s cross-slash\n", n & 1 ? " flyjump" : "", n & 2 ? " ww" : "", n & 4 ? " blink" : "", " change",
+        n & 8 ? " change-area" : "");
 }
 void superfix_moves_status(void) {
     LOG("[superfix] moves: flyjump %ld starts, %ld landings (%ld fallback); ww %ld starts, %ld hits; blink %ld (%ld back), %ld hits; "
-        "change character %ld (%ld left to battle_fix)\n", g_fj_start, g_fj_land, g_fj_fallback, g_ww_start, g_ww_hits, g_blink,
-        g_blink_back, g_blink_hits, g_change, g_change_skip);
+        "change character %ld (%ld left to battle_fix), with area %ld (%ld hits); cross slash %ld (%ld hits)\n", g_fj_start, g_fj_land,
+        g_fj_fallback, g_ww_start, g_ww_hits, g_blink, g_blink_back, g_blink_hits, g_change, g_change_skip, g_change_area, g_change_hits,
+        g_slash_n, g_slash_hits);
 }

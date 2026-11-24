@@ -15,7 +15,8 @@
  * gate refuses 8; the client only (de)serialises the area's "done" byte +0xfc (0xb28a94 / 0xb28388). From the area tick
  * 0xb28c0c, once CustomValue ms (data +0x13c) have passed since the apply (area +0xd0 = its tick), the apply runs again with
  * the data's type set to Damage (0) for the call: damage, pushback and wall break then come from libg. 0xb29494 rewrites
- * area +0xd0 / +0xd4 / +0xd8 before its gate: saved and restored, as is the shared data's type.
+ * area +0xd0 / +0xd4 / +0xd8 before its gate: saved and restored, as is the shared data's type. Slippery areas (type 20;
+ * Lou's IceDudeUltiArea) get the same re-apply once a second while they live (slippery_tick).
  *
  * Ally / own heal of a super projectile (HealOwnPercent, data +0x1f0; Poco's DeadMariachiUltiProjectile): the attack
  * execute calls the getter 0xafaa10 at 0xb4de50 and drops the result (the server block that used it is compiled out),
@@ -59,12 +60,29 @@ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind,
 
 /* ---- DelayedDamage (type 8) */
 typedef void *(*getp_t)(void *);
-static long g_ndelayed;
+static long g_ndelayed, g_nslip;
+
+/* ---- Slippery (type 20; Lou's IceDudeUltiArea): the apply's type gate refuses 20 and the server's slippery logic is
+ * compiled out, so the area spawns and hits no one. Its damage (area +0xe8: the projectile's scaled Damage, written by the
+ * projectile area spawn at 0xb771ec) is dealt once a second while the area lives, by re-running the apply as a Damage
+ * area, as for DelayedDamage. Areas with no damage (Lumi's ice gadget) are left alone. The slide and the freeze build-up
+ * (CustomValue / CustomValue2) are not re-implemented. */
+#define SLIP_EVERY 20   /* [?] ticks between hits: the row has no interval; 1 s like the SameAreaEffectCanNotDamageMs 1000 of other lingering areas */
+static void slippery_tick(uint8_t *a, uint8_t *d, uint8_t *sim) {
+    int now = I32(sim, 0x10), d0 = I32(a, 0xd0), d4 = I32(a, 0xd4), d8 = I32(a, 0xd8), el = now - d0;
+    if (I32(a, 0xe8) <= 0 || el <= 0 || el % SLIP_EVERY || now > d8) return;
+    I32(d, 0x118) = 0; ((void (*)(void *))B(0xb29494))(a); I32(d, 0x118) = 20;
+    I32(a, 0xd0) = d0; I32(a, 0xd4) = d4; I32(a, 0xd8) = d8;
+    g_nslip++;
+    if (g_superfix_dbg) LOG("[superfix] slippery area %p hit after %d ticks, dmg %d\n", a, el, I32(a, 0xe8));
+}
 static void on_area_tick(uint64_t *ctx) {   /* enter hook on 0xb28c0c, ctx[0] = area */
     uint8_t *a = (uint8_t *)ctx[0];
     if (!g_superfix || !mode() || !a) return;
     extern void superfix_status_area(uint8_t *) __attribute__((weak)); if (superfix_status_area) superfix_status_area(a);   /* type 36 */
+    extern void superfix_moves_area(uint8_t *) __attribute__((weak)); if (superfix_moves_area) superfix_moves_area(a);     /* type 38 */
     uint8_t *d = ((getp_t)B(0xb6a384))(a), *sim = ((getp_t)B(0xb6a378))(a);
+    if (d && sim && I32(d, 0x118) == 20) { slippery_tick(a, d, sim); return; }
     if (!d || !sim || I32(d, 0x118) != 8 || a[0xfc]) return;
     int el = I32(sim, 0x10) - I32(a, 0xd0);                 /* ticks since the spawn apply (0xc26bd8 = sim +0x10) */
     if (el < I32(d, 0x13c) / 50) return;                    /* CustomValue in ms, 50 ms ticks (BlackHole 700 -> 14) */
@@ -116,8 +134,8 @@ void superfix_install(void) {
     extern void superfix_status_install(void) __attribute__((weak)); if (superfix_status_install) superfix_status_install();
     extern void superfix_cc_install(void) __attribute__((weak)); if (superfix_cc_install) superfix_cc_install();   /* issue #19 */
 }
-void superfix_status(void) { LOG("[superfix] areas spawned %ld, skipped %ld; delayed damage %ld; heal own %ld projectiles, %ld owners\n",
-                                 g_narea, g_narea_skip, g_ndelayed, g_nheal, g_nheal_self);
+void superfix_status(void) { LOG("[superfix] areas spawned %ld, skipped %ld; delayed damage %ld; slippery hits %ld; heal own %ld projectiles, %ld owners\n",
+                                 g_narea, g_narea_skip, g_ndelayed, g_nslip, g_nheal, g_nheal_self);
     extern void superfix_items_status(void) __attribute__((weak)); if (superfix_items_status) superfix_items_status();
     extern void superfix_moves_status(void) __attribute__((weak)); if (superfix_moves_status) superfix_moves_status();
     extern void superfix_status_status(void) __attribute__((weak)); if (superfix_status_status) superfix_status_status();

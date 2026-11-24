@@ -237,6 +237,14 @@ static void on_char_update(uint64_t *ctx) {
  * (rec_move) and damage root (my_root). Combined per field like the client's own aggregator 0xba7060 / 0xba78d0 (which the
  * client only runs on network-decoded statuses): Stacking statuses add up (one per source: the same data re-added by the same
  * source counts once), the others count with their largest value, and the field is the larger of the two. Returns 0 if the character has no speed or damage modifier. */
+/* end the statuses a character gave itself in the last `within` ticks (Kenji's SamuraiHide from his super's cast, which
+ * CancelOnCharge ends when the slash goes off: superfix_moves.c); the aggregates drop at its next update */
+void superfix_status_cancel(uint8_t *ch, int within) {
+    if (!ch) return;
+    int t = now_tick(ch), id = I32(ch, 8);
+    for (int i = 0; i < g_nst; i++) { St *s = &g_st[i];
+        if (s->ch == ch && s->ch_id == id && s->src_ch == ch && t < s->until && t - s->start <= within) s->until = t; }
+}
 typedef struct { int spd_bp, spd_ba, spd_rp, spd_ra, dmg_bp, dmg_rp, recv_bp, recv_ba; } StMods;
 int superfix_status_mods(uint8_t *ch, StMods *m) {
     memset(m, 0, sizeof *m);

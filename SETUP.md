@@ -89,6 +89,9 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   the Meteors and HealingMushrooms event modifiers as env tick jobs in `native/loader/showdown_mods.c`, off unless
   `NB_SD_MODIFIERS=3,5`; WallSpawn areas place every tile closer than their Radius (Sprout: a plus of 5, Rosa's Grow Light:
   3x3) and bush-grow areas grow bushes (`spawnfix.c` `wall_ring`). `NB_SD_DBG=1` logs storm hits and events.
+- `trio_respawn_gas.patch` (issue #22, a diff on top of `showdown_leftovers.patch`): a brawler in a group of 3 that
+  respawns on a gas tile gets no spawn protection (`env.c` `respawn_tick`; `NB_GAS_RULES=0` off). `NB_SD_DBG=1` logs
+  every respawn's gas / protect decision.
 - `supers.patch` (issue #6, a diff on top of `gadgets.patch`): supers whose effect the client libg compiles out, in
   `native/loader/superfix*.c` (status-effect store, areas, summons; `NB_SUPERFIX=0` turns it off).
 - `status_movement.patch` (issue #19, a diff on top of `supers.patch`): speed boosts and slows from statuses in the mover
@@ -105,6 +108,12 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
 - `star_card_hits.patch` (issue #20, a diff on top of `star_probe.patch`): `star.c` also logs, for every lookup hit, the
   card that answered and the player slot whose config it was (`[star] h` lines), so `star_audit` counts a card as read
   only when it answered itself, not when another card of the same Type did.
+- `broken_supers.patch` (issue #32 item 5, #6 / #5, a diff on top of the others): normal supers whose server half is
+  compiled out. `env.c`: Moe's dive (charge type 22; the folded change to DiggerDrill at 0xb3eae0 / 0xb3eae4 goes to
+  `dig_change`, which sets the drill timer and spawns the surfacing hit) and Bonnie's landing hit (type 16, `charge_land`).
+  `superfix.c`: Lou's Slippery area deals its damage once a second. `superfix_moves.c`: Kenji's cross slash (area type
+  38) and the area of a ChangeCharacter super (Bonnie's return to Clyde, `bl` at 0xb7d010). `superfix_status.c`:
+  `superfix_status_cancel` ends Kenji's hide at the slash.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

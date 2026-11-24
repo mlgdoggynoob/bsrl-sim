@@ -214,6 +214,20 @@ static int sd_group_size(int i) {
     for (int j = 0; j < 10; j++) n += ((g_div_team >> (3 * j)) & 7) == g;
     return n;
 }
+static void sd_mirror_cubes(void *sim, uint8_t *ch);
+/* a character change (superfix_change_character: Moe's dive and drill, Bonnie, Meg) builds a new object with a new id: the
+ * power cubes (keyed by character id) move to it with their +400 max HP each, so the cube bonus, the pickup HP and the
+ * death drop carry over */
+void env_char_changed(uint8_t *old, uint8_t *nc) {
+    if (!old || !nc || !E.sim) return;
+    int oid = I32(old, 8), nid = I32(nc, 8);
+    for (int i = 0; i < E.ncube; i++) if (E.cube_id[i] == oid) {
+        int k = E.cube_n[i]; E.cube_id[i] = nid;
+        I32(nc, 0x3c8) += 400 * k; if (I32(nc, 0x3c4) > 0) I32(nc, 0x3c4) += 400 * k;
+        if (I32(g_libg->base, 0x12eefb4) == 3) sd_mirror_cubes(E.sim, nc);
+        break;
+    }
+}
 static void sd_mirror_cubes(void *sim, uint8_t *ch) {   /* ch: a player's current brawler */
     int k = cubes_of(I32(ch, 8)), ow = brawler_owner(sim, ch);
     if (ow >= 0 && sd_group_size(ow) >= 3 && k > 3) k = 3;
@@ -530,7 +544,8 @@ int g_native_charge = 1; static long g_native_charges;
 #define CHARGE_HIT_R 250
 #define CHARGE_WALL_R 200    /* Bull: tiles within 200 u of his centre break (1 tile wide lane; [?] the server's radius is unknown) */
 #define CHARGE_LAND_WALL_R 300   /* El Primo: tiles around the landing point ([?] radius unknown; one tile ring) */
-typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550; int hit[32]; } ChargeJob;
+#define CHARGE_LAND_R 200        /* Bonnie (type 16): her landing hit, CannonGirlExplosion's Radius ([?] the server's rule is compiled out) */
+typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; } ChargeJob;
 static ChargeJob g_cj[NBE_MAXP]; static int g_ncj; static long g_charge_hits, g_charge_pushes, g_charge_areas, g_charge_walls;
 /* knockback 0xb49834(victim, srcX, srcY, strength, a4..a7, 10 stack slots, the last = pusher's owner index): pushes the victim
  * 6 * strength u away from (srcX, srcY) over 10 ticks (half for CollisionRadius >= 150), the call the game's own charge sweep
@@ -631,9 +646,11 @@ static void charge_break(void *sim, uint8_t *ch, int x, int y, int r) {
     void *m = PTR(sim, 0x68); if (!m) return;
     ((fn_circ)B(0xa53b60))(m, x, y, r, 0, I32(ch, 0x80), I32(ch, 0x84), 0, 0, PTR(ch, 0x20)); g_charge_walls++;
 }
-static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type, int dmg, int push, void *area1, void *area_end) {
+static int dig_ok(void);
+static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type, int dmg, int push, void *area1, void *area_end,
+                                void *area2) {
     if (!ch || I32(ch, 0x3c4) <= 0 || speed <= 0) return;
-    if (type == 22) return;   /* Digger's dive: the character tick crashes on start state we do not set (0xb6a384 <- 0xb3eaec) */
+    if (type == 22 && !dig_ok()) return;   /* Moe's dive ends in the change to DiggerDrill: without superfix's character change it would only retire him */
     void *sim = E.sim; int full = g_native_charge == 1, x0 = I32(ch, 0x38), y0 = I32(ch, 0x3c);
     if (full && type == 1) {   /* Bull: a straight lane through walls and bushes, cut before the first tile that cannot break */
         double L = hypot(tx - x0, ty - y0); int lx = x0, ly = y0;
@@ -658,24 +675,52 @@ static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type
     if (full && g_ncj < NBE_MAXP) {
         int id = I32(ch, 8), k; for (k = 0; k < g_ncj && g_cj[k].id != id; k++) {}
         if (k == g_ncj) g_ncj++; else if (g_cj[k].type) PTR(ch, 0x550) = g_cj[k].old550;   /* a charge restarted mid-charge */
-        g_cj[k] = (ChargeJob){id, I32(ch, 0x80), dmg, I32(sim, 0x10), 0, I32(ch, 0x6d8) == 2, type, push, -1000000, -1000000,
-                              area1, area_end, PTR(ch, 0x550), {0}};
+        /* Bonnie's launch (type 16) changes her into CannonGirlSmall before the start (0xb7bb58): no Charge skill, +0x6d8 stays 0 */
+        g_cj[k] = (ChargeJob){id, I32(ch, 0x80), dmg, I32(sim, 0x10), 0, I32(ch, 0x6d8) == 2 || type == 16, type, push, -1000000, -1000000,
+                              area1, area_end, PTR(ch, 0x550), area2, {0}};
         /* trail (Stu's fire, Berry's paint, Trunk's ants): while +0x490 is set and +0x550 holds area data, the character tick
          * spawns it through 0xb47360 each time the charger is farther than the area's Radius (+0x12c) from the last spawn point
          * (+0xc98/+0xc9c); the far point makes the first one land at the start. Only the client constructor writes +0x550. */
-        if (area1 && type != 2 && type != 16) { PTR(ch, 0x550) = area1; I32(ch, 0x558) = 0; I32(ch, 0xc98) = -1000000; I32(ch, 0xc9c) = -1000000; }
+        if (area1 && type != 2 && type != 16 && type != 22) { PTR(ch, 0x550) = area1; I32(ch, 0x558) = 0; I32(ch, 0xc98) = -1000000; I32(ch, 0xc9c) = -1000000; }
         if (area1 && type == 2) charge_area(sim, ch, area1, x0, y0);   /* Crow: knives at take-off (and at landing) */
+        if (area1 && type == 22) charge_area(sim, ch, area1, x0, y0);  /* Moe: DiggerDrillDive (an Effect area) where he goes under */
     }
     if (g_native_charges++ < 20) LOG("[env] native charge type %d: path %d u (%d points), ticks %d..%d, push %d, areas %p %p\n", type,
         I32(ch, 0x41c), I32(ch, 0x394), I32(ch, 0x28), I32(ch, 0x2c), push, area1, area_end);
 }
+/* Bonnie's landing (charge type 16, RE-IMPLEMENTED): the start's AreaEffectObject (CannonGirlExplosion, an Effect area the
+ * apply's type gate ignores; the hypercharged one is a StatusEffect area) is spawned where she lands, and every living
+ * enemy character within CHARGE_LAND_R (the Effect area's own Radius when it is one) is hit once for the skill's Damage,
+ * scaled as the charge contact (x2 power level, +10 % per cube); the owner's super charge is kept */
+static long g_charge_land_hits;
+static void charge_land(void *sim, ChargeJob *j, uint8_t *ch, int x, int y) {
+    if (j->area1) charge_area(sim, ch, j->area1, x, y);
+    int r = j->area1 && I32(j->area1, 0x118) == 6 && I32(j->area1, 0x12c) > 0 ? I32(j->area1, 0x12c) : CHARGE_LAND_R;
+    if (j->dmg <= 0) return;
+    int d = jround(j->dmg * 2.0 * (1 + 0.10 * cubes_of(j->id))), np_, n; void **ps_ = players(sim, &np_);
+    uint8_t *pl_ = j->owner >= 0 && j->owner < np_ ? ps_[j->owner] : NULL; int charge0 = pl_ ? I32(pl_, 0x54) : 0;
+    void **v = objvec(sim, &n);
+    for (int i = 0; i < n; i++) {
+        uint8_t *c = v[i]; if (!c || c == ch || VTOF(c) != VT_CHAR || I32(c, 0x3c4) <= 0) continue;
+        if ((I32(c, 0x80) == j->owner && j->owner >= 0) || I32(c, 0x84) == I32(ch, 0x84)) continue;
+        long dx = I32(c, 0x38) - x, dy = I32(c, 0x3c) - y; if (dx * dx + dy * dy > (long)r * r) continue;
+        /* through the hooked root (in_own_call 3: already scaled): hypercharge, status modifiers, a respawning brawler's
+         * invulnerability and the duo / trio knock-out apply, and it records the event */
+        E.in_own_call = 3;
+        my_root(c, j->owner, d, d, 0, ch, NULL, 1, x, y, NULL, 0, 0, 0, 1, 0, 0, 0);
+        E.in_own_call = 0; g_charge_hits++; g_charge_land_hits++;
+        v = objvec(sim, &n);
+    }
+    if (pl_) I32(pl_, 0x54) = charge0;
+}
 static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge flag dropped: landing / end of the dash */
-    if (j->area1 && j->type != 2 && j->type != 16) PTR(ch, 0x550) = j->old550;
+    if (j->area1 && j->type != 2 && j->type != 16 && j->type != 22) PTR(ch, 0x550) = j->old550;
     if (I32(ch, 0x3c4) <= 0) return;
     int x = I32(ch, 0x38), y = I32(ch, 0x3c);
     if (j->type == 3) charge_break(sim, ch, x, y, CHARGE_LAND_WALL_R);
     if (j->area1 && j->type == 2) charge_area(sim, ch, j->area1, x, y);
     if (j->area_end) charge_area(sim, ch, j->area_end, x, y);   /* AreaEffect2AtEndOfCharge: Bull's slow, Nori, Ollie, Damian */
+    if (j->type == 16) charge_land(sim, j, ch, x, y);
     static int nlog; if (nlog++ < 20) LOG("[env] charge end type %d at %d,%d: hits %ld, pushes %ld, areas %ld, wall calls %ld, zones %d (zone hits %ld, heals %ld, pushes %ld) (totals)\n",
         j->type, x, y, g_charge_hits, g_charge_pushes, g_charge_areas, g_charge_walls, g_nzone, g_zone_hits, g_zone_heals, g_zone_pushes);
 }
@@ -689,6 +734,8 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
         if (j->area1 && PTR(ch, 0x550) == j->area1 && (I32(ch, 0xc98) != j->tx || I32(ch, 0xc9c) != j->ty) && I32(ch, 0xc98) > -1000000) {
             j->tx = I32(ch, 0xc98); j->ty = I32(ch, 0xc9c); zone_add(sim, ch, j->area1, j->tx, j->ty); }   /* the game spawned a trail area */
         if (j->dmg <= 0 && j->push <= 0) continue;
+        if (j->type == 16) continue;   /* Bonnie is in the air: she hits where she lands (charge_end) */
+        if (j->type == 22) continue;   /* Moe is underground (0xb5033c: untouchable while +0x490 and type 22): he hits when he surfaces (dig_change) */
         for (int i = 0; i < n; i++) {
             uint8_t *c = v[i]; if (!c || c == ch || VTOF(c) != VT_CHAR || I32(c, 0x3c4) <= 0) continue;
             if (I32(c, 0x80) == j->owner && j->owner >= 0) continue;
@@ -716,13 +763,53 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
  * 0xb3970c -> SIGSEGV at 0xb29354 (Alternator's attack, Fury's super). NULL owner: skip (nothing to attach to). */
 typedef void (*fn_b29350)(void *, void *); static fn_b29350 o_b29350; static long g_null_attach;
 static void my_b29350(void *o, void *x1) { if (!o) { g_null_attach++; return; } o_b29350(o, x1); }
+/* Moe's dive (charge type 22): the end of the charge in the character tick 0xb3ae74 (type 22 at 0xb3e38c) changes him into the
+ * ulti's SummonedCharacters[0] (DiggerDrill) with `bl 0xb4ffec` at 0xb3eae0. The client build knew that stub returns NULL and
+ * folded the result: 0xb3eae4 `mov x0, xzr`, then getData(NULL) (0xb6a384, crashes), DiggerDrill's UniquePropertyValue1
+ * (0xab404c) scaled by the modifiers (0xbb2514) and stored as the drill timer +0xe14 / +0xe18 of a NULL character. The bl
+ * goes to dig_change and 0xb3eae4 branches past the folded stores to 0xb3eb08 (the old character's end-of-charge listeners,
+ * the shipped flow). dig_change makes the change (battle_fix's my_die -> superfix_change_character), sets the drill timer
+ * of the new character (0xb40e6c counts it down; at 0 the shipped code changes it back to Digger), and spawns the
+ * surfacing hit: the start's AreaEffectObject2 (stack [8], DiggerDrillSurface: Damage area r800, PushbackStrength 100) at
+ * the surfacing point with the skill's Damage as its extra damage. Underground he is untouchable through libg's own test
+ * (0xb5033c: +0x490 and +0x508 == 22). Only with superfix's character change (dig_ok); without it the dive stays off. */
+extern int g_superfix __attribute__((weak));
+uint64_t superfix_change_character(void *old, void *data) __attribute__((weak));
+static int dig_ok(void) { return superfix_change_character && &g_superfix && g_superfix; }
+static long g_dig_changes, g_dig_surface;
+static uint64_t dig_change(uint8_t *old, void *nd, uint64_t a2, uint64_t a3) {
+    if (!dig_ok() || !old) return 0;
+    void *sim = E.sim; int x = I32(old, 0x38), y = I32(old, 0x3c), id = I32(old, 8), dmg = 0; void *surf = NULL;
+    for (int k = 0; k < g_ncj; k++) if (g_cj[k].id == id && g_cj[k].type == 22) { dmg = g_cj[k].dmg; surf = g_cj[k].area2; }
+    uint8_t *nc = (uint8_t *)((uint64_t (*)(void *, void *, uint64_t, uint64_t))B(0xb4ffec))(old, nd, a2, a3);
+    if (!nc || nc == old || VTOF(nc) != VT_CHAR) return (uint64_t)nc;   /* no new form: battle_fix kept the old one */
+    g_dig_changes++;
+    int v = ((int (*)(void *))B(0xab404c))(PTR(nc, 0x10));           /* DiggerDrill UniquePropertyValue1 */
+    v = ((int (*)(int, void *))B(0xbb2514))(v, nc + 0x48);            /* modifiers, as the folded code */
+    I32(nc, 0xe14) = v; I32(nc, 0xe18) = v;
+    if (surf && sim && g_native_charge == 1) {
+        /* raw extra damage: env's damage root scales a character's hits (x2, cubes) itself. [?] whether the server adds the
+         * area's own Damage (100) to the skill's 600 is unknown: the skill's Damage is the total here */
+        int extra = dmg - I32(surf, 0x134); if (extra < 0) extra = 0;
+        void *a = ((void *(*)(void *, void *, int, int, int, int, int))B(0xb2aefc))(surf, nc, x, y, 0, 2, extra);
+        if (a) {
+            int np_; void **ps_ = players(sim, &np_); int o = I32(nc, 0x80);
+            uint8_t *pl_ = o >= 0 && o < np_ ? ps_[o] : NULL; int charge0 = pl_ ? I32(pl_, 0x54) : 0;
+            ((void (*)(void *, void *))B(0xb63198))(PTR(nc, 0x20) ? PTR(nc, 0x20) : PTR(sim, 0), a); ((void (*)(void *))B(0xb29494))(a);
+            if (pl_) I32(pl_, 0x54) = charge0;   /* a super's hits do not recharge that super */
+            g_charge_areas++; g_dig_surface++;
+        }
+    }
+    if (g_dig_changes <= 5) LOG("[env] dig: Moe surfaced at %d,%d as %p (drill timer %d), surface area %p extra %d\n", x, y, nc, v, surf, dmg);
+    return (uint64_t)nc;
+}
 static void sf_start_hook(uint64_t *ctx) {   /* 0xb475cc (the one-instruction ret stub = charge start) onEnter */
     if (I32(g_libg->base, 0x12eefb4) != 3 || !E.sim) return;
     uint8_t *ch = (uint8_t *)ctx[0]; int tx = (int)ctx[1], ty = (int)ctx[2], dmg = (int)ctx[3], speed = (int)ctx[6];
     uint64_t *sp = (uint64_t *)((uint8_t *)ctx + 160); int type = (int)sp[0]; void *item = (void *)sp[2];
     if (type != 6) {   /* diversity round: every other charge (Bull, Darryl, El Primo, ...) through the native per-tick charge code */
         E.sf_ignored++;
-        if (g_native_charge) native_charge_start(ch, tx, ty, speed, type, dmg, (int)ctx[5], (void *)sp[1], (void *)sp[9]);
+        if (g_native_charge) native_charge_start(ch, tx, ty, speed, type, dmg, (int)ctx[5], (void *)sp[1], (void *)sp[9], (void *)sp[8]);
         return;
     }
     void *sim = E.sim; int W, Hh; if (!map_wh(sim, &W, &Hh)) return; W *= 300; Hh *= 300;
@@ -2354,6 +2441,9 @@ void env_install(void) {
     hook_enter(g_libg, 0xeaa9f0, frame_hook);
     o_snapw = hook_replace(g_libg, 0xb63b0c, my_snapw);
     hook_enter(g_libg, 0xb475cc, sf_start_hook);
+    if ((*(uint32_t *)B(0xb3eae0) & 0xfc000000) == 0x94000000 && *(uint32_t *)B(0xb3eae4) == 0xaa1f03e0) {   /* bl 0xb4ffec; mov x0, xzr */
+        hook_bl(g_libg, 0xb3eae0, (void *)dig_change); patch_u32(g_libg, 0xb3eae4, 0x14000009);   /* b 0xb3eb08 */
+    } else LOG("[env] 0xb3eae0: not the folded DiggerDrill change, Moe's dive left off\n");
     hook_enter(g_libg, 0xb487c4, my_skill_block);
     hook_enter(g_libg, 0xb4790c, rec_move);
     hook_enter(g_libg, 0xb4103c, rec_stop);
