@@ -114,6 +114,14 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   `superfix.c`: Lou's Slippery area deals its damage once a second. `superfix_moves.c`: Kenji's cross slash (area type
   38) and the area of a ChangeCharacter super (Bonnie's return to Clyde, `bl` at 0xb7d010). `superfix_status.c`:
   `superfix_status_cancel` ends Kenji's hide at the slash.
+- `status_leftovers.patch` (issue #19 leftovers, a diff on top of the others): `superfix_status.c` answers libg's
+  compiled-out reload query 0xb38e04 (statuses' DecreaseReloadTimePercent: Starr Nova's hypercharged super) and
+  lifesteal query 0xba3258 (LifeSteal / SourceLifeSteal: Starr Nova's super), keeps the Taunt / Fear flags of a
+  character's statuses (`superfix_status_taunt`), and runs area types the apply drops: SmokeScreen (1, hides the owner's
+  team inside, Sandy), DamageBoost (10), Heal without pushback (3), HealRegen (17), Cleanse (23), ExtraSuperCharge (31),
+  Enemy / AllyChargeSuper (26 / 29). `env.c`: a taunted character walks at the source and a feared one away from it,
+  for the policy's actions (`apply_actions`) and the native AI (`rec_move`), and neither attacks (`my_skill_block`).
+  `superfix_cc.c` logs the taunt counters.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

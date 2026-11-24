@@ -1,0 +1,439 @@
+# status effect leftovers (bsrl-sim issue #19), a diff on top of the other patches. superfix_status.c: libg's compiled-out
+# reload query 0xb38e04 (DecreaseReloadTimePercent) and lifesteal query 0xba3258 (LifeSteal / SourceLifeSteal) answered
+# from the host status store; the Taunt / Fear flags of a character's statuses (superfix_status_taunt); area types the area
+# apply drops: SmokeScreen 1, DamageBoost 10, Heal 3 without pushback, HealRegen 17, Cleanse 23, ExtraSuperCharge 31,
+# EnemyChargeSuper 26, AllyChargeSuper 29 (area_extra). env.c: a taunted character walks at its source and a feared one away
+# from it, for the policy's actions and the native AI's mover, and neither attacks. superfix_cc.c logs the taunt counters.
+# Paths relative to engine/.
+diff --git a/native/loader/env.c b/native/loader/env.c
+index 50c68e2..fef9fd3 100644
+--- a/native/loader/env.c
++++ b/native/loader/env.c
+@@ -129,6 +129,7 @@ static struct {
+     long hyper_dmg, hyper_moves;   /* hypercharge round: damage hits scaled, moves sped up */
+     long st_moves, st_roots, st_dmg, st_blocked, st_resend;   /* issue #19: moves re-timed / rooted by statuses, hits scaled,
+                                                                * inputs refused (stun / silence), moves re-sent on a change */
++    long st_taunts, st_taunt_moves;   /* issue #19: policy steps and native moves steered by a taunt / fear */
+     int st_key[NBE_MAXP];          /* issue #19: last status speed / stun state per player (a change re-sends the move) */
+     int in_own_call;    /* 1 = gas, 2 = bomb (our own calls to the damage root) */
+     int seed_applied;
+@@ -183,6 +184,17 @@ int superfix_status_speed(uint8_t *ch, int base) __attribute__((weak));
+ int superfix_status_mods(uint8_t *ch, StMods *m) __attribute__((weak));
+ int superfix_status_blocked(uint8_t *ch) __attribute__((weak));
+ int superfix_status_silenced(uint8_t *ch) __attribute__((weak));
++int superfix_status_taunt(uint8_t *ch, int *x, int *y) __attribute__((weak));   /* issue #19: 1 taunted, 2 feared */
++/* issue #19: where a taunted (1) / feared (2) character is made to walk: to its source, or 1000 u straight away from it */
++static int taunt_target(uint8_t *ch, int *tx, int *ty) {
++    int sx, sy, k = superfix_status_taunt ? superfix_status_taunt(ch, &sx, &sy) : 0;
++    if (!k) return 0;
++    if (k == 1) { *tx = sx; *ty = sy; return 1; }
++    double dx = I32(ch, 0x38) - sx, dy = I32(ch, 0x3c) - sy, d = sqrt(dx * dx + dy * dy);
++    if (d < 1) { dx = 1; dy = 0; d = 1; }
++    *tx = I32(ch, 0x38) + (int)(dx / d * 1000); *ty = I32(ch, 0x3c) + (int)(dy / d * 1000);
++    return 2;
++}
+ void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) __attribute__((weak));   /* superfix_cc.c: projectile stuns */
+ void hyper_install(void); void *hyper_super_data(int i, uint8_t *ch, void *sd); void hyper_unswap(int i, uint8_t *ch);
+ static void *owner_player(void *sim, void *c, int *idx) {   /* the player whose current brawler c is (NULL: none) */
+@@ -901,7 +913,8 @@ static void rec_put(int kind, uint8_t *ch, int a, int b, int c, int d) {
+ /* issue #19: and the brawler's statuses (slows, speed boosts, roots, Draco's mount speed: superfix_status_speed) on top of the
+  * hypercharged or the CharacterData speed; a root (speed 0) turns the move into a stop where the character stands (the mover
+  * would divide by 0). A stunned character's moves are refused by the mover itself (0xb38b54). */
+-void env_status_counts(long o[5]) { o[0] = E.st_moves; o[1] = E.st_roots; o[2] = E.st_dmg; o[3] = E.st_blocked; o[4] = E.st_resend; }
++void env_status_counts(long o[7]) { o[0] = E.st_moves; o[1] = E.st_roots; o[2] = E.st_dmg; o[3] = E.st_blocked; o[4] = E.st_resend;
++    o[5] = E.st_taunts; o[6] = E.st_taunt_moves; }
+ static int base_speed(uint8_t *ch) {   /* the CharacterData speed the mover uses with useSpeed 0 (0xab31e0) */
+     void *cd = ((void *(*)(void *))B(0xb6a384))(ch); return cd ? ((int (*)(void *))B(0xab31e0))(cd) : 0;
+ }
+@@ -911,6 +924,8 @@ static void rec_move(uint64_t *ctx) {
+         uint8_t *ch = (uint8_t *)ctx[0];
+         int i; void *p = owner_player(E.sim, ch, &i); int sp = p ? hyper_speed(i, p, ch) : 0;
+         if (sp > 0) { ctx[3] = 1; ctx[4] = (uint64_t)(uint32_t)sp; E.hyper_moves++; }
++        if (VTOF(ch) == VT_CHAR) { int tx, ty; if (taunt_target(ch, &tx, &ty)) {   /* issue #19: the native AI's moves too */
++            ctx[1] = (uint64_t)(uint32_t)tx; ctx[2] = (uint64_t)(uint32_t)ty; E.st_taunt_moves++; } }
+         if (superfix_status_speed && VTOF(ch) == VT_CHAR) {
+             int base = sp > 0 ? sp : base_speed(ch), ss = superfix_status_speed(ch, base);
+             if (ss == 0) { ctx[1] = (uint64_t)(uint32_t)I32(ch, 0x38); ctx[2] = (uint64_t)(uint32_t)I32(ch, 0x3c); E.st_roots++; }
+@@ -954,6 +969,8 @@ static void lead_set(const NbeCmd *c) { g_lead_mask = c->lead_mask; g_lead_dt =
+ static void my_skill_block(uint64_t *ctx) {   /* 0xb487c4 onEnter: no attack/super while airborne */
+     if (g_lead_mask) lead_aim(ctx);
+     if (E.njobs && ctx[0]) { int id = I32(ctx[0], 8); if (leaping(id)) { ctx[1] = 1; E.sf_blocked++; } }
++    if (ctx[0] && VTOF((uint8_t *)ctx[0]) == VT_CHAR && superfix_status_taunt) {   /* issue #19: taunted / feared: no attack */
++        int x, y; if (superfix_status_taunt((uint8_t *)ctx[0], &x, &y)) { ctx[1] = 1; E.st_blocked++; } }
+     rec_put(1, (uint8_t *)ctx[0], (int)ctx[2], (int)ctx[3], (int)ctx[6], ctx[1] == 1 ? 1 : 0);
+ }
+ static uint8_t g_empty_list[64] __attribute__((aligned(16)));
+@@ -1424,6 +1441,15 @@ static void apply_actions(void *sim, const NbeCmd *c) {
+         if (blk) { E.st_blocked += a->fire != 0; E.pf[i].n = 0; continue; }
+         NbeAction q;
+         if (sil && (a->fire == 2 || a->fire == 3 || a->fire == 4)) { E.st_blocked++; q = *a; q.fire = 0; a = &q; }
++        {   /* issue #19: taunted / feared: the move goes to (away from) the source, no attack (superfix_status_taunt) */
++            int tx, ty;
++            if (taunt_target(ch, &tx, &ty)) {
++                q = *a; E.st_blocked += q.fire != 0; q.fire = 0; E.pf[i].n = 0; E.st_taunts++;
++                q.move_dir = (int)lround(atan2(ty - I32(ch, 0x3c), tx - I32(ch, 0x38)) / (M_PI / 8)) & 15;
++                if ((long)(tx - I32(ch, 0x38)) * (tx - I32(ch, 0x38)) + (long)(ty - I32(ch, 0x3c)) * (ty - I32(ch, 0x3c)) < 150L * 150) q.move_dir = -1;
++                a = &q;
++            }
++        }
+         if (client_intents(sim, i, ch, a)) continue;
+         if (a->move_dir >= 0 && a->move_dir < 16) {
+             double r = a->move_dir * M_PI / 8; int tx, ty, cx, cy; client_pos(i, ch, &cx, &cy);
+diff --git a/native/loader/superfix_cc.c b/native/loader/superfix_cc.c
+index 5f3f74b..dd56e0f 100644
+--- a/native/loader/superfix_cc.c
++++ b/native/loader/superfix_cc.c
+@@ -196,11 +196,11 @@ void superfix_cc_install(void) {
+     g_cc_on = 1;
+     LOG("[superfix] stuns, silences and Draco's weapon swap installed\n");
+ }
+-void env_status_counts(long o[5]) __attribute__((weak));
++void env_status_counts(long o[7]) __attribute__((weak));
+ void superfix_cc_status(void) {
+-    if (env_status_counts) { long o[5]; env_status_counts(o);
++    if (env_status_counts) { long o[7]; env_status_counts(o);
+         LOG("[superfix] env (this battle): moves re-timed by statuses %ld, rooted %ld; hits scaled %ld; inputs refused %ld; "
+-            "moves re-sent %ld\n", o[0], o[1], o[2], o[3], o[4]); }
++            "moves re-sent %ld; taunted / feared steps %ld, native moves %ld\n", o[0], o[1], o[2], o[3], o[4], o[5], o[6]); }
+     LOG("[superfix] cc: stuns trap %ld, projectile %ld, area %ld; silences projectile %ld, area %ld; immune %ld; paths stopped %ld; "
+         "weapon swaps %ld (waited %ld)\n", g_nstun_trap, g_nstun_proj, g_nstun_area, g_nsil, g_nsil_area, g_nimm, g_nstop, g_nswap, g_nswap_wait);
+ }
+diff --git a/native/loader/superfix_status.c b/native/loader/superfix_status.c
+index 95e71ba..abf8d9f 100644
+--- a/native/loader/superfix_status.c
++++ b/native/loader/superfix_status.c
+@@ -25,10 +25,13 @@
+  *   others and the stun counter +0xe1c). libg's own "can't act" 0xb38b54 (mover and fire abort) reads +0x984, +0x987 and
+  *   +0xe1c; the silence getter 0xb38dec reads +0x988. Stuns from projectiles, areas and Bo's trap: superfix_cc.c.
+  *   Stacking statuses sum once per source (DragonRiderUltiSpeed is re-added every tick), others take the max.
+- * Not modelled: DamageBoostTargetCurrentHealthPercent +0x114, LifeSteal +0x10c, DecreaseReloadTimePercent +0x124,
+- *   Taunt / Fear, boolean attributes (Kaze's HasStormVision), CancelOn* conditions. Those statuses are stored (so their
+- *   duration and target are right) but change nothing. 0xba3274 (called at stop / charge end / respawn) and the other
+- *   manager stubs are left alone.
++ *   Issue #19 leftovers: DecreaseReloadTimePercent +0x124 through libg's compiled-out reload query 0xb38e04 (my_reload_pct),
++ *   LifeSteal +0x10c / SourceLifeSteal +0x110 through the damage root's compiled-out lifesteal query 0xba3258
++ *   (my_lifesteal_pct), Taunt +0x132 / Fear +0x133 for env.c (superfix_status_taunt), and the area types the area apply
++ *   drops (area_extra: SmokeScreen, DamageBoost, Heal, HealRegen, Cleanse, super charge areas).
++ * Not modelled: DamageBoostTargetCurrentHealthPercent +0x114, boolean attributes other than Fear (Kaze's HasStormVision),
++ *   CancelOn* conditions. Those statuses are stored (so their duration and target are right) but change nothing.
++ *   0xba3274 (called at stop / charge end / respawn) and the other manager stubs are left alone.
+  *
+  * StatusEffect areas (AreaEffectData +0x118 == 36: Max, Jae-Yong, Najia's jars, Kaze's storm, slows ...): the area apply
+  * 0xb29494 returns before its status code for type 36 (its type gate) and libg reads StatusEffectSelf +0x88 / Ally +0x90
+@@ -61,16 +64,21 @@ enum { SE_DUR = 0x98, SE_RATE = 0xa0, SE_SRCDEATH = 0xa8, SE_FIRST = 0xab, SE_ST
+        /* issue #19 (loader 0xba3814, from the column-name strings): ints */
+        SE_SPD_BP = 0xf8, SE_SPD_BA = 0xfc, SE_SPD_RP = 0x100, SE_SPD_RA = 0x104, SE_DMG_BP = 0x108, SE_DMG_RP = 0x118,
+        SE_RECV_BP = 0x11c, SE_RECV_BA = 0x120,
++       /* issue #19 leftovers (stores at 0xba4198 / 0xba41c4 / 0xba42a0 / 0xba4478; Fear is a BooleanAttributes word, 0xba4bc8) */
++       SE_LIFESTEAL = 0x10c, SE_SRC_LIFESTEAL = 0x110, SE_RELOAD = 0x124,
+        /* bytes */
+-       SE_CCIMM = 0x12a, SE_LOSECTL = 0x131, SE_STASIS = 0x137, SE_SILENCE = 0x138, SE_FULLSTUN = 0x139 };
++       SE_CCIMM = 0x12a, SE_LOSECTL = 0x131, SE_TAUNT = 0x132, SE_FEAR = 0x133, SE_STASIS = 0x137, SE_SILENCE = 0x138,
++       SE_FULLSTUN = 0x139 };
+ /* character aggregates (manager +0xc4 / +0xec); issue #19: the bytes libg's own checks read. 0xb38b54 ("cannot act": the
+  * mover 0xb4790c and the fire code 0xb48bf4 / 0xb48c9c return early on it) = LosePlayerControl +0x984 || Stasis +0x987 ||
+  * stun ticks +0xe1c > 0 (the character update counts +0xe1c down at 0xb39a5c); the silence getter 0xb38dec (+0x988) blocks
+  * the super at 0xb48bf8; FullStun +0x989 is read at 0xb3b5b8; CcImmunity +0x982. Nothing in the client writes them. The
+  * int aggregates +0x958..+0x978 (speed, damage) have no reader that matters here (the mover never reads speed from them),
+  * so speed and damage are applied by env.c from superfix_status_mods() instead and those ints are left alone. */
+-enum { CH_SHIELD = 0x954, CH_INVIS = 0x97c, CH_CCIMM = 0x982, CH_LOSECTL = 0x984, CH_STASIS = 0x987, CH_SILENCE = 0x988,
+-       CH_FULLSTUN = 0x989, CH_STUN_TICKS = 0xe1c };
++enum { CH_SHIELD = 0x954, CH_INVIS = 0x97c, CH_CCIMM = 0x982, CH_LOSECTL = 0x984, CH_TAUNT = 0x985, CH_FEAR = 0x986,
++       CH_STASIS = 0x987, CH_SILENCE = 0x988, CH_FULLSTUN = 0x989, CH_STUN_TICKS = 0xe1c };
++/* taunt / fear (+0x985 / +0x986, the client aggregator 0xba7060's bytes): nothing in libg reads them (no AI or mover code);
++ * written for the record, the effect is env.c's (superfix_status_taunt) */
+ #define VT_CHAR 0x1209020
+ 
+ typedef struct {
+@@ -95,6 +103,32 @@ static uint8_t *by_id(uint8_t *any, int id) {
+     return NULL;
+ }
+ 
++/* issue #19 leftovers: what a character standing in an area gets while it stands there (SmokeScreen: invisibility level,
++ * DamageBoost: damage percent), marked by superfix_status_area at the area's tick and read at the character's next update /
++ * damage: a mark lasts until the tick after it was made */
++enum { ZN_SMOKE = 1, ZN_DMG = 2 };
++typedef struct { uint8_t *ch; int ch_id, kind, val, until; } Zone;
++#define ZN_MAX 64
++static Zone g_zn[ZN_MAX]; static int g_nzn; static long g_nzone;
++static void zone_mark(uint8_t *ch, int kind, int val, int t) {
++    int k, id = I32(ch, 8);
++    for (k = 0; k < g_nzn && !(g_zn[k].ch == ch && g_zn[k].ch_id == id && g_zn[k].kind == kind); k++) {}
++    if (k == g_nzn) {
++        for (int i = g_nzn - 1; i >= 0; i--) if (g_zn[i].until < t) g_zn[i] = g_zn[--g_nzn];
++        if (g_nzn >= ZN_MAX) return;
++        k = g_nzn++; g_zn[k] = (Zone){ch, id, kind, 0, 0};
++    }
++    if (g_zn[k].until < t) g_zn[k].val = 0;
++    if (val > g_zn[k].val) g_zn[k].val = val;
++    g_zn[k].until = t + 1; g_nzone++;
++}
++static int zone_get(uint8_t *ch, int kind, int t) {
++    int id = I32(ch, 8), v = 0;
++    for (int i = 0; i < g_nzn; i++)
++        if (g_zn[i].ch == ch && g_zn[i].ch_id == id && g_zn[i].kind == kind && g_zn[i].until >= t && g_zn[i].val > v) v = g_zn[i].val;
++    return v;
++}
++
+ /* 0xba3230 */
+ static void *my_status_add(void *cont, uint8_t *ch, void *data, int src_player, int team, void *src_obj, uint8_t *src_ch) {
+     (void)cont; (void)team;
+@@ -174,7 +208,7 @@ static void on_char_update(uint64_t *ctx) {
+             if (c[i] && I32(c[i], 0x10) == 21 && I32(c[i], 0x38) > 0 && PTR(c[i], 8) == ch &&
+                 (*(void ***)c[i])[0x40 / 8] == (void *)B(0xba0048)) { ((void (*)(void *))B(0xba0048))(c[i]); g_nmount++; }
+     }
+-    int shield = 0, invis = 0, any = 0, cc = 0, lose = 0, stasis = 0, silence = 0, full = 0;
++    int shield = 0, invis = 0, any = 0, cc = 0, lose = 0, stasis = 0, silence = 0, full = 0, taunt = 0, fear = 0;
+     for (int i = 0; i < g_nst; i++) {
+         St *s = &g_st[i];
+         if (s->ch != ch || s->ch_id != I32(ch, 8)) continue;
+@@ -197,8 +231,10 @@ static void on_char_update(uint64_t *ctx) {
+         if (iv > invis) invis = iv;
+         cc |= U8(s->data, SE_CCIMM); lose |= U8(s->data, SE_LOSECTL); stasis |= U8(s->data, SE_STASIS);
+         silence |= U8(s->data, SE_SILENCE); full |= U8(s->data, SE_FULLSTUN);
++        taunt |= U8(s->data, SE_TAUNT); fear |= U8(s->data, SE_FEAR);
+     }
+     (void)any;
++    {   int z = zone_get(ch, ZN_SMOKE, t); if (z > invis) invis = z; }   /* SmokeScreen areas (superfix_status_area) */
+     I32(ch, CH_SHIELD) = shield;   /* nothing in this libg writes these: ours */
+     I32(ch, CH_INVIS) = invis;
+     {   /* issue #19: crowd control. A CcImmunity status keeps LosePlayerControl / FullStun / Silence off and clears the stun
+@@ -206,10 +242,10 @@ static void on_char_update(uint64_t *ctx) {
+          * character itself). Host-side silences (projectile SilenceDurationMS, Silence areas: superfix_cc.c) add theirs. */
+         extern int superfix_cc_silenced(uint8_t *, int) __attribute__((weak));
+         if (superfix_cc_silenced && superfix_cc_silenced(ch, t)) silence = 1;
+-        if (cc) { lose = full = silence = 0; I32(ch, CH_STUN_TICKS) = 0; }
++        if (cc) { lose = full = silence = taunt = fear = 0; I32(ch, CH_STUN_TICKS) = 0; }
+         if (lose && !U8(ch, CH_LOSECTL) && !stasis && !U8(ch, CH_STASIS) && I32(ch, CH_STUN_TICKS) <= 0) g_nstun++;
+         U8(ch, CH_CCIMM) = cc; U8(ch, CH_LOSECTL) = lose; U8(ch, CH_STASIS) = stasis; U8(ch, CH_SILENCE) = silence;
+-        U8(ch, CH_FULLSTUN) = full;
++        U8(ch, CH_FULLSTUN) = full; U8(ch, CH_TAUNT) = taunt; U8(ch, CH_FEAR) = fear;
+         extern void superfix_cc_tick(uint8_t *) __attribute__((weak)); if (superfix_cc_tick) superfix_cc_tick(ch);
+     }
+     if (g_superfix_dbg) {   /* MountUp (component type 21, char +0xa60 / count +0xa6c): its mount ticks +0x38 (0xb50be8) */
+@@ -248,7 +284,7 @@ void superfix_status_cancel(uint8_t *ch, int within) {
+ typedef struct { int spd_bp, spd_ba, spd_rp, spd_ra, dmg_bp, dmg_rp, recv_bp, recv_ba; } StMods;
+ int superfix_status_mods(uint8_t *ch, StMods *m) {
+     memset(m, 0, sizeof *m);
+-    if (!g_superfix || !mode() || !ch || !g_nst) return 0;
++    if (!g_superfix || !mode() || !ch || (!g_nst && !g_nzn)) return 0;
+     int t = now_tick(ch); if (t < 0) return 0;
+     static const int off[8] = {SE_SPD_BP, SE_SPD_BA, SE_SPD_RP, SE_SPD_RA, SE_DMG_BP, SE_DMG_RP, SE_RECV_BP, SE_RECV_BA};
+     int sum[8] = {0}, mx[8] = {0}, any = 0, id = I32(ch, 8);
+@@ -266,6 +302,7 @@ int superfix_status_mods(uint8_t *ch, StMods *m) {
+             if (U8(s->data, SE_STACK)) sum[k] += v; else if (v > mx[k]) mx[k] = v;
+         }
+     }
++    {   int zb = zone_get(ch, ZN_DMG, t); if (zb > 0) { any = 1; if (zb > mx[4]) mx[4] = zb; } }   /* DamageBoost areas */
+     if (!any) return 0;
+     int *o = (int *)m; for (int k = 0; k < 8; k++) o[k] = sum[k] > mx[k] ? sum[k] : mx[k];
+     return 1;
+@@ -289,11 +326,159 @@ int superfix_status_blocked(uint8_t *ch) {
+ int superfix_status_silenced(uint8_t *ch) { return ch && U8(ch, CH_SILENCE); }
+ int superfix_status_cc_immune(uint8_t *ch) { return ch && U8(ch, CH_CCIMM); }
+ 
++/* one int field over a character's live statuses (in their on phases), combined like superfix_status_mods: Stacking
++ * statuses add up once per source, the others count with their largest value, the larger of the two wins. src != NULL:
++ * only the statuses that character gave. */
++static int st_field(uint8_t *ch, int off, uint8_t *src) {
++    if (!g_nst || !ch) return 0;
++    int t = now_tick(ch); if (t < 0) return 0;
++    int sum = 0, mx = 0, id = I32(ch, 8), sid = src ? I32(src, 8) : -1;
++    for (int i = 0; i < g_nst; i++) {
++        const St *s = &g_st[i];
++        if (s->ch != ch || s->ch_id != id || t >= s->until || !pulse_on(s, t)) continue;
++        if (src && s->src_id != sid) continue;
++        int v = I32(s->data, off); if (v <= 0) continue;
++        if (!U8(s->data, SE_STACK)) { if (v > mx) mx = v; continue; }
++        int dup = 0;
++        for (int j = 0; j < i && !dup; j++) dup = g_st[j].ch == ch && g_st[j].ch_id == id && g_st[j].data == s->data &&
++                                               g_st[j].src_obj == s->src_obj && g_st[j].src_id == s->src_id && t < g_st[j].until;
++        if (!dup) sum += v;
++    }
++    return sum > mx ? sum : mx;
++}
++/* issue #19: reload. The skill tick 0xb7b268 adds dt * 1000 / T to the ammo charge (skill +0x18) at 0xb7cbd8, T from
++ * 0xb80b58(skill, ch), which ends with T = T * 100 / (100 + max(r, -99)), r = 0xb38e04(ch): the status reload aggregate,
++ * compiled out (`mov w0, wzr; ret`, its only caller 0xb80c84). DecreaseReloadTimePercent p (Starr Nova's hypercharged
++ * super 90, Nita's and Surge's buddy statuses) shortens T to T * (100 - p) / 100, so r = 100 p / (100 - p); p is capped at
++ * 95 (r 1900, a 20x faster reload) so T never reaches 0. */
++static long g_nreload, g_nsteal;
++static int my_reload_pct(uint8_t *ch) {
++    if (!g_superfix || !mode() || !is_char(ch)) return 0;
++    int p = st_field(ch, SE_RELOAD, NULL); if (p <= 0) return 0;
++    if (p > 95) p = 95;
++    g_nreload++;
++    return 100 * p / (100 - p);
++}
++/* issue #19: lifesteal. The damage root heals the attacker by damage x pct / 100 at 0xb439c4 (0xb41554 with the attacker's
++ * CharacterData, kind 4) when pct = 0xba3258(victim +0x890, attacker) >= 1, a manager query compiled out (`mov w0, wzr;
++ * ret`, one caller 0xb43954). In the shipped data it is SourceLifeSteal (+0x110: the victim's statuses the attacker gave it;
++ * Bull's first gadget 25) and, added here, the attacker's own LifeSteal (+0x10c: Starr Nova's super 30). The damage it
++ * scales is the root's w21, the amount env.c's my_root passed in. */
++static int my_lifesteal_pct(void *cont, uint8_t *att) {
++    if (!g_superfix || !mode() || !cont || !is_char(att)) return 0;
++    uint8_t *victim = (uint8_t *)cont - 0x890;
++    int p = (is_char(victim) ? st_field(victim, SE_SRC_LIFESTEAL, att) : 0) + st_field(att, SE_LIFESTEAL, NULL);
++    if (p > 0) { g_nsteal++; if (g_superfix_dbg) LOG("[superfix] st: lifesteal ch %d -> ch %d: %d %%\n", I32(att, 8), is_char(victim) ? I32(victim, 8) : -1, p); }
++    return p;
++}
++/* issue #19: taunt and fear. 1 = taunted (Ollie's super and gadgets, Colette's charm: it walks to the status's source and
++ * does not attack), 2 = feared (Glowy's super: it walks away from the source and does not attack), 0 = neither (or CC
++ * immune, or the source is gone). *x, *y = the source's position. The newest such status wins. libg has no code for either
++ * (no reader of char +0x985 / +0x986): env.c applies it to the policy's actions (apply_actions), the native AI's moves
++ * (rec_move) and attacks (my_skill_block). Not attacking is this host's reading of the game: the real rule is server code. */
++int superfix_status_taunt(uint8_t *ch, int *x, int *y) {
++    if (!g_superfix || !mode() || !is_char(ch) || !g_nst || U8(ch, CH_CCIMM)) return 0;
++    int t = now_tick(ch), id = I32(ch, 8), kind = 0, best = -1;
++    if (t < 0) return 0;
++    for (int i = 0; i < g_nst; i++) {
++        const St *s = &g_st[i];
++        if (s->ch != ch || s->ch_id != id || t >= s->until || s->src_id < 0 || !pulse_on(s, t)) continue;
++        int k = U8(s->data, SE_TAUNT) ? 1 : U8(s->data, SE_FEAR) ? 2 : 0;
++        if (!k || s->start < best) continue;
++        uint8_t *src = by_id(ch, s->src_id);
++        if (!src || src == ch || I32(src, 0x3c4) <= 0) continue;
++        best = s->start; kind = k; *x = I32(src, 0x38); *y = I32(src, 0x3c);
++    }
++    return kind;
++}
++
+ /* StatusEffect (type 36) areas, from superfix.c's area tick hook (0xb28c0c) */
+ typedef struct { void *a, *d; int start, end, next; } AreaRec;
+ #define AR_MAX 128
+ static AreaRec g_ar[AR_MAX]; static int g_nar;
+ typedef void (*apply_t)(void *, void *, int, int, void *, void *, int, int, int, int, int);   /* 0xb35dd0 */
++static AreaRec *area_rec(uint8_t *a, uint8_t *d, int t, int first) {   /* this area's record, made at its first tick */
++    int k;
++    for (k = 0; k < g_nar && !(g_ar[k].a == a && g_ar[k].d == d && g_ar[k].start == I32(a, 0xd0)); k++) {}
++    if (k == g_nar) {   /* forget the areas whose end tick (+0xd8, start +0xd0) has passed */
++        for (int i = g_nar - 1; i >= 0; i--) if (g_ar[i].end < t) g_ar[i] = g_ar[--g_nar];
++        if (g_nar >= AR_MAX) { g_nar = 0; LOG("[superfix] status: area records full, reset\n"); }
++        k = g_nar++;
++        g_ar[k] = (AreaRec){a, d, I32(a, 0xd0), I32(a, 0xd8), first};
++    }
++    return &g_ar[k];
++}
++/* issue #19 leftovers: area types the area apply 0xb29494 drops at its type gate (mask 0x10400440000015 at 0xb29600 after
++ * env.c's Dot / Hot patch, plus the list at 0xb296b4) and nothing else in libg reads. Type ints from the loader 0xa96604.
++ *   SmokeScreen 1 (Sandy's super, Leon's NinjaInvisibleArea, Daredevil's hide gadget): the owner's team inside is invisible
++ *     (level 1: encode.c hides it from enemies beyond 1200 u) while inside.
++ *   DamageBoost 10 (8-Bit's booster): the owner's team inside deals Damage +0x134 percent more (my_root, as DamageBoostPercent).
++ *   Heal 3 (no pushback: the gate admits type 3 only with PushbackStrength +0x154 > 0) and HealRegen 17 (Poco's regen
++ *     gadget): libg's own heal-over-time body runs once, at the area's first tick, with the data's type set to Hot 4 for the
++ *     call (superfix.c's re-apply: +0xd0 / +0xd4 / +0xd8 and the type are restored), so the heal amount, its DamageScaleType
++ *     and the team come from libg. HealRegen's CustomValue (100) is not used.
++ *   Cleanse 23 (Poco's cleanse gadget): once, the owner's team inside loses every status an enemy gave it, its stun ticks and
++ *     lose-control. Its CustomValue (80) is not used (an immunity after the cleanse is not modelled).
++ *   Super charge areas, every SC_TICKS ticks while they live: CustomValue +0x13c through libg's super charge add
++ *     0xb4f7f8(ch, amount, 5, 0xb6a884(area)) (the call and the field of the shipped ChargeSuperFromProjectiles code 0xb2aa00,
++ *     without its modifier). ExtraSuperCharge 31 (Bo's totem): every brawler of the owner's team inside. EnemyChargeSuper 26 /
++ *     AllyChargeSuper 29 (personal passive areas; Buster for 29): the owner, while an enemy / a teammate brawler is inside.
++ * Not done: ChargeSuper 18 / GiveUlti 57 (Max's hypercharge), SpeedBuff 11 / IncreaseHealth 22 (no row in use),
++ *   ReloadSpeedBuff 12 (only MechaDudeReloadTower's area, a summon nothing spawns), PetrolDistribution 19, SwitchSkill 33,
++ *   EnragerOverchargeSuper 32, BulletSpin 40, the Meeple types 42-44, HotAndOverheals 45, ShootsProjectileToSource 51,
++ *   GladiatorWallSpawn 55. */
++#define SC_TICKS 20   /* super charge areas: CustomValue once a second (a guess: the rate is server code, not in the client) */
++static long g_nsmoke_hits, g_nheal_area, g_ncleanse, g_ncharge;
++static void area_extra(uint8_t *a, uint8_t *d, int type) {
++    uint8_t *owner = PTR(a, 0x108);
++    if (!owner) return;
++    int t = now_tick(a); if (t < 0) return;
++    if (type == 3 && I32(d, 0x154) > 0) return;   /* libg's gate let it through */
++    int charge = type == 26 || type == 29 || type == 31;
++    AreaRec *r = area_rec(a, d, t, U8(d, 0x17c) && charge ? t + SC_TICKS : t);
++    if (t < r->next) return;
++    if (type == 3 || type == 17) {   /* once, through libg's Hot body */
++        r->next = 0x7fffffff;
++        int d0 = I32(a, 0xd0), d4 = I32(a, 0xd4), d8 = I32(a, 0xd8);
++        I32(d, 0x118) = 4; ((void (*)(void *))B(0xb29494))(a); I32(d, 0x118) = type;
++        I32(a, 0xd0) = d0; I32(a, 0xd4) = d4; I32(a, 0xd8) = d8;
++        g_nheal_area++;
++        if (g_superfix_dbg) LOG("[superfix] st: heal area %d type %d (owner ch %d) tick %d, damage %d\n", data_id(d), type,
++                                I32(owner, 8), t, I32(d, 0x134));
++        return;
++    }
++    r->next = type == 23 ? 0x7fffffff : charge ? t + SC_TICKS : t + 1;
++    int n; void **v = objects(owner, &n); if (!v) return;
++    int team = ((geti_t)B(0xb6a820))(a), ax = I32(a, 0x38), ay = I32(a, 0x3c), near_enemy = 0, near_ally = 0;
++    for (int i = 0; i < n; i++) {
++        uint8_t *o = v[i];
++        if (!is_char(o) || I32(o, 0x3c4) <= 0) continue;
++        long dx = I32(o, 0x38) - ax, dy = I32(o, 0x3c) - ay, rr = ((int (*)(void *, void *))B(0xb2b298))(d, o);
++        if (dx * dx + dy * dy > rr * rr) continue;
++        int same = ((geti_t)B(0xb6a820))(o) == team, hero = ((geti_t)B(0xb34de4))(o) & 1;
++        if (type == 1 && same) { zone_mark(o, ZN_SMOKE, 1, t); g_nsmoke_hits++; }
++        else if (type == 10 && same && I32(d, 0x134) > 0) zone_mark(o, ZN_DMG, I32(d, 0x134), t);
++        else if (type == 23 && same) {
++            int id = I32(o, 8), removed = 0;
++            for (int k = g_nst - 1; k >= 0; k--) {
++                St *s = &g_st[k]; uint8_t *src = s->src_id >= 0 ? by_id(o, s->src_id) : NULL;
++                if (s->ch != o || s->ch_id != id || !src || ((geti_t)B(0xb6a820))(src) == team) continue;
++                g_st[k] = g_st[--g_nst]; removed++;
++            }
++            I32(o, CH_STUN_TICKS) = 0; U8(o, CH_LOSECTL) = 0;
++            g_ncleanse++;
++            if (g_superfix_dbg) LOG("[superfix] st: cleanse ch %d tick %d: %d statuses removed\n", id, t, removed);
++        } else if (type == 31 && same && hero) {
++            ((void (*)(void *, int, int, int))B(0xb4f7f8))(o, I32(d, 0x13c), 5, ((geti_t)B(0xb6a884))(a)); g_ncharge++;
++        }
++        if (o != owner && hero) { if (same) near_ally = 1; else near_enemy = 1; }
++    }
++    if ((type == 26 && near_enemy) || (type == 29 && near_ally)) {
++        ((void (*)(void *, int, int, int))B(0xb4f7f8))(owner, I32(d, 0x13c), 5, ((geti_t)B(0xb6a884))(a)); g_ncharge++;
++        if (g_superfix_dbg) LOG("[superfix] st: charge area %d type %d: owner ch %d +%d tick %d\n", data_id(d), type, I32(owner, 8), I32(d, 0x13c), t);
++    }
++}
++
+ void superfix_status_area(uint8_t *a) {
+     if (!g_superfix || !mode() || !a) return;
+     uint8_t *d = ((getp_t)B(0xb6a384))(a);
+@@ -301,20 +486,16 @@ void superfix_status_area(uint8_t *a) {
+         extern void superfix_cc_area(uint8_t *, uint8_t *) __attribute__((weak)); if (superfix_cc_area) superfix_cc_area(a, d);
+         return;
+     }
++    if (d) { int ty = I32(d, 0x118);   /* issue #19 leftovers: the dropped types above */
++        if (ty == 1 || ty == 3 || ty == 10 || ty == 17 || ty == 23 || ty == 26 || ty == 29 || ty == 31) { area_extra(a, d, ty); return; } }
+     if (!d || I32(d, 0x118) != 36) return;
+     void *self = PTR(d, 0x88), *ally = PTR(d, 0x90), *enemy = PTR(d, 0x98);
+     uint8_t *owner = PTR(a, 0x108);
+     if ((!self && !ally && !enemy) || U8(d, 0x1b6) || !owner) return;   /* IgnoreCharacters: it slows projectiles */
+-    int t = now_tick(a), interval = I32(d, 0xa0), k;
+-    for (k = 0; k < g_nar && !(g_ar[k].a == a && g_ar[k].d == d && g_ar[k].start == I32(a, 0xd0)); k++) {}
+-    if (k == g_nar) {   /* first tick of this area: forget the areas whose end tick (+0xd8, start +0xd0) has passed */
+-        for (int i = g_nar - 1; i >= 0; i--) if (g_ar[i].end < t) g_ar[i] = g_ar[--g_nar];
+-        if (g_nar >= AR_MAX) { g_nar = 0; LOG("[superfix] status: area records full, reset\n"); }
+-        k = g_nar++;
+-        g_ar[k] = (AreaRec){a, d, I32(a, 0xd0), I32(a, 0xd8), U8(d, 0x17c) && interval > 0 ? t + interval : t};
+-    }
+-    if (t < g_ar[k].next) return;
+-    g_ar[k].next = interval > 0 ? t + interval : 0x7fffffff;
++    int t = now_tick(a), interval = I32(d, 0xa0);
++    AreaRec *ar = area_rec(a, d, t, U8(d, 0x17c) && interval > 0 ? t + interval : t);
++    if (t < ar->next) return;
++    ar->next = interval > 0 ? t + interval : 0x7fffffff;
+     int n; void **v = objects(owner, &n); if (!v) return;
+     int team = ((geti_t)B(0xb6a820))(a), player = ((geti_t)B(0xb6a754))(a), ax = I32(a, 0x38), ay = I32(a, 0x3c);
+     int heroes = U8(d, 0x1b4), hits = 0;
+@@ -352,11 +533,18 @@ void superfix_status_install(void) {
+     hook_replace(g_libg, 0xba3260, (void *)my_status_remove);
+     hook_replace(g_libg, 0xba3264, (void *)my_status_remove);
+     hook_enter(g_libg, 0xb3941c, on_char_update);
++    /* issue #19 leftovers: the reload and lifesteal queries (both `mov w0, wzr; ret`) */
++    if (*(uint32_t *)B(0xb38e04) == 0x2a1f03e0 && *(uint32_t *)B(0xb38e08) == 0xd65f03c0) hook_replace(g_libg, 0xb38e04, (void *)my_reload_pct);
++    else LOG("[superfix] status: reload query 0xb38e04 bytes differ, reload statuses left out\n");
++    if (*(uint32_t *)B(0xba3258) == 0x2a1f03e0 && *(uint32_t *)B(0xba325c) == 0xd65f03c0) hook_replace(g_libg, 0xba3258, (void *)my_lifesteal_pct);
++    else LOG("[superfix] status: lifesteal query 0xba3258 bytes differ, lifesteal left out\n");
+     if (g_superfix_dbg && *(uint32_t *)B(0xba0244) == 0xa9bd7bfd) hook_enter(g_libg, 0xba0244, on_mount_trigger);
+-    LOG("[superfix] status effects installed (store, shield / invisibility aggregates, damage / heal triggers, type-36 areas)\n");
++    LOG("[superfix] status effects installed (store, shield / invisibility aggregates, damage / heal triggers, type-36 areas, reload, lifesteal, taunt / fear, issue #19 area types)\n");
+ }
+ void superfix_status_status(void) {
+     LOG("[superfix] status: added %ld, refreshed %ld, full %ld, ended %ld, removed %ld, live %d; damage %ld, heal %ld; "
+-        "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld\n", g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal,
+-        g_narea_apply, g_narea_hits, g_nmount, g_nstun);
++        "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
++        "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld\n",
++        g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal, g_narea_apply, g_narea_hits, g_nmount, g_nstun,
++        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge);
+ }
