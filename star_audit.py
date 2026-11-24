@@ -1,12 +1,16 @@
 """Star power probe (issue #20, step 1): which star power cards the shipped libg v68.279 still reads in battle.
 
 Every star power read in libg goes through three loadout-config lookups (engine/native/loader/star.c). With NB_STAR_PROBE=1
-the host counts the calls per card Type enum and whether the config had a card of that type ("hit"), and logs the counts
-per battle. This module boots one host with the probe on, plays battles of 10 native-AI players where every player carries
-one star power card not yet probed (cards.csv MetaType 4, Target = its brawler), until every card has been carried
---rounds times, then reads the host log and puts each card in one class:
-  read     its type was asked for on a config that holds it: a live reader in this build took the card's values
-  asked    its type was asked for, but never on the carrier's config (the event it waits for did not happen to the carrier)
+the host counts the calls per card Type enum and whether the config had a card of that type ("hit"), and for every hit
+the card that answered and the player slot whose config it was ("[star] h" lines). It logs the counts per battle. This
+module boots one host with the probe on, plays battles of 10 native-AI players where every player carries one star power
+card not yet probed (cards.csv MetaType 4, Target = its brawler), until every card has been carried --rounds times, then
+reads the host log and puts each card in one class:
+  read     the card itself answered a lookup: a live reader in this build took this card's values. A hit on its type alone
+           does not count: two cards can share a Type (Gale's and Damian's star powers are both stun_wall_push), and the
+           config's +0x50 list also holds gadget and gear cards. Such a card is "asked", with shared_hits > 0 (the hits
+           another card of its type answered in the battles it was carried)
+  asked    its type was asked for, but the card never answered (the event it waits for did not happen to the carrier)
   generic  never asked for, but the row lists Traits or Components (attached at spawn, 0xc28600: no lookup needed)
   none     never asked for: no reader left in this build (likely compiled out with the server code)
   missing  the card did not reach the player (the host rejected it, or the player list never had it)
@@ -26,7 +30,8 @@ TICKS = 1600   # per battle (80 s at 20 ticks/s): most native-AI showdowns have 
 STEP = 40      # ticks per env step: the native AI plays every player, nothing to decide per tick
 
 # card names (cards.csv Name) the 2026-11-24 probes found "read" (all 212 cards x 3 battles of 3000 ticks, then the 27
-# "asked" / sim-site cards x 10 battles of 4000 ticks; filled in by hand from runs/star_audit/probe*.json)
+# "asked" / sim-site cards x 10 battles of 4000 ticks; filled in by hand from runs/star_audit/probe*.json). Confirmed
+# per card on main 7c84d84: each of the 15 answered on its carrier's own config (notes/issue20.md "Per-card hits")
 LIVE = frozenset({
     "Alternator_unique_2", "Blower_unique", "BowDude_unique_2", "Duelist_unique", "Duelist_unique_2", "FutureGirl_unique_2",
     "JetpackGirl_unique", "Leaper_unique_2", "Maisie_unique", "Mechanic_unique_2", "Meeple_unique", "Samurai_unique",
@@ -39,6 +44,8 @@ SIM_CODE = 0xa00000    # call sites below this are client / UI code (menus, aim 
 
 Q_RE = re.compile(r"\[star\] q battle=(\d+) type=(\d+) n=(\d+) hit=(\d+) lr=0x([0-9a-f]+)")
 P_RE = re.compile(r"\[star\] p battle=(\d+) slot=(\d+) card=(-?\d+) type=(-?\d+) off=(\d+)")
+H_RE = re.compile(r"\[star\] h battle=(\d+) card=(-?\d+) slot=(-?\d+) n=(\d+) lr=0x([0-9a-f]+)")
+LOST_RE = re.compile(r"\[star\] dump battle=\d+ .* lost=([1-9]\d*)")   # star.c's per-card table overflowed in that battle
 
 
 def star_rows():
@@ -76,28 +83,43 @@ def site_kind(sites):
 
 
 def parse_log(lines):
-    """host log lines -> (carried {battle: {slot: (card, type, off)}}, asked {battle: {type: (n, hit, lr)}})"""
-    carried, asked = collections.defaultdict(dict), collections.defaultdict(dict)
+    """host log lines -> (carried {battle: {slot: (card, type, off)}}, asked {battle: {type: (n, hit, lr)}},
+    answered {battle: {(card, slot): (n, lr)}})"""
+    carried, asked, answered = collections.defaultdict(dict), collections.defaultdict(dict), collections.defaultdict(dict)
     for ln in lines:
         m = P_RE.search(ln)
         if m:
             b, s, c, t, off = map(int, m.groups()); carried[b][s] = (c, t, off); continue
         m = Q_RE.search(ln)
         if m:
-            b, t, n, h = map(int, m.groups()[:4]); asked[b][t] = (n, h, int(m.group(5), 16))
-    return carried, asked
+            b, t, n, h = map(int, m.groups()[:4]); asked[b][t] = (n, h, int(m.group(5), 16)); continue
+        m = H_RE.search(ln)
+        if m:
+            b, c, s, n = map(int, m.groups()[:4]); answered[b][(c, s)] = (n, int(m.group(5), 16))
+    return carried, asked, answered
 
 
-def classify(rows, carried, asked):
-    """the classes above, per card id: {id: {"cls", "type", "n", "hit", "lr", "battles"}}"""
-    res = {cid: {"cls": "missing", "type": None, "n": 0, "hit": 0, "lr": 0, "battles": 0} for cid, *_ in rows}
+def classify(rows, carried, asked, answered):
+    """the classes above, per card id: {id: {"cls", "type", "n" (calls for its type), "hit" (hits the card itself
+    answered), "carrier" / "unattributed" (of those: on its carrier's config / before star_built or on no player's config),
+    "shared_hits" (hits on its type another card answered), "lr" (first caller of its type), "hit_lr" (first caller
+    the card answered), "battles"}}"""
+    res = {cid: {"cls": "missing", "type": None, "n": 0, "hit": 0, "carrier": 0, "unattributed": 0, "shared_hits": 0,
+                 "lr": 0, "hit_lr": 0, "battles": 0} for cid, *_ in rows}
     gen = {cid: g for cid, _, _, _, g in rows}
     for b, slots in carried.items():
         for s, (c, t, off) in slots.items():
             if c not in res or t < 0: continue
             r = res[c]; r["type"] = t; r["battles"] += 1; r["off"] = max(r.get("off", 0), off)
             n, h, lr = asked.get(b, {}).get(t, (0, 0, 0))
-            r["n"] += n; r["hit"] += h; r["lr"] = r["lr"] or lr
+            r["n"] += n; r["lr"] = r["lr"] or lr
+            own = 0
+            for (card, hs), (hn, hlr) in answered.get(b, {}).items():
+                if card != c: continue
+                own += hn; r["hit_lr"] = r["hit_lr"] or hlr
+                if hs == s: r["carrier"] += hn
+                elif hs < 0: r["unattributed"] += hn
+            r["hit"] += own; r["shared_hits"] += max(0, h - own)
     for c, r in res.items():
         if r["type"] is None: continue
         r["cls"] = "read" if r["hit"] else "asked" if r["n"] else "generic" if gen[c] else "none"
@@ -154,7 +176,12 @@ def main():
         inst.close()
     with open(inst.log_path, errors="replace") as f: f.seek(start); lines = f.readlines()
     if not any("[star] probe on" in ln for ln in open(inst.log_path, errors="replace")): raise SystemExit("host without star.c (rebuild: ./setup.sh)")
-    res = classify(rows, *parse_log(lines)); by = {cid: (n, t, ty) for cid, n, t, ty, _ in rows}
+    parsed = parse_log(lines)
+    if any(h for bt in parsed[1].values() for _, h, _ in bt.values()) and not parsed[2]:
+        raise SystemExit("host without per-card hits ([star] h lines): rebuild with the current star.c (./setup.sh)")
+    if any(LOST_RE.search(ln) for ln in lines):
+        raise SystemExit("star.c's per-card hit table overflowed (NH): the shared_hits would be wrong; raise NH and rebuild")
+    res = classify(rows, *parsed); by = {cid: (n, t, ty) for cid, n, t, ty, _ in rows}
     for c, *_ in skip: res[c]["cls"] = "skipped"
     st = lookup_sites(os.path.join(os.environ.get("NBHOST_APK", "engine/game"), "lib", "arm64-v8a", "libg.so"))
     for r in res.values(): r["site"] = site_kind(st.get(r["type"], [])) if r["type"] is not None else None
@@ -165,6 +192,11 @@ def main():
                "rejected": rej, "ticks": a.ticks, "rounds": a.rounds}, open(out, "w"), indent=1)
     for k in ("read", "asked", "generic", "none", "missing", "skipped"): print("%-8s %d" % (k, cnt.get(k, 0)))
     print("by call site: %s" % dict(collections.Counter("%s/%s" % (r["cls"], r["site"]) for r in res.values())))
+    shared = sorted(by[c][0] for c, r in res.items() if r["cls"] != "read" and r["shared_hits"])
+    if shared: print("type hit, but only by another card of the same type: %s" % ", ".join(shared))
+    probed = {by[c][0]: r["cls"] for c, r in res.items() if r["cls"] not in ("missing", "skipped")}
+    off = sorted(n for n in LIVE if n in probed and probed[n] != "read")
+    if off: print("LIVE cards not read in this run: %s" % ", ".join("%s (%s)" % (n, probed[n]) for n in off))
     print("rejected requests %d; written %s" % (rej, out))
     print("star_audit ok")
 
@@ -175,12 +207,25 @@ def _check():
     log = ["[star] p battle=3 slot=0 card=23000001 type=10 off=0", "[star] p battle=3 slot=1 card=23000002 type=11 off=0",
            "[star] p battle=3 slot=2 card=23000003 type=12 off=0", "[star] p battle=4 slot=0 card=23000004 type=13 off=0",
            "[star] q battle=3 type=10 n=50 hit=7 lr=0xb30278", "[star] q battle=3 type=11 n=9 hit=0 lr=0xc00000",
-           "[star] q battle=4 type=10 n=5 hit=0 lr=0xb30278", "[star] q battle=3 type=13 n=4 hit=4 lr=0x1", "noise"]
-    carried, asked = parse_log(log)
+           "[star] q battle=4 type=10 n=5 hit=0 lr=0xb30278", "[star] q battle=3 type=13 n=4 hit=4 lr=0x1",
+           "[star] h battle=3 card=23000001 slot=0 n=5 lr=0xb30278", "[star] h battle=3 card=23000001 slot=-1 n=2 lr=0xb3027c",
+           "[star] h battle=3 card=23000099 slot=3 n=4 lr=0x1", "noise"]
+    carried, asked, answered = parse_log(log)
     assert carried[3][1] == (23000002, 11, 0) and asked[3][10] == (50, 7, 0xb30278) and len(asked[4]) == 1
-    res = classify(rows, carried, asked)
+    assert answered[3][(23000001, -1)] == (2, 0xb3027c) and not answered[4]
+    res = classify(rows, carried, asked, answered)
     assert [res[c]["cls"] for c, *_ in rows] == ["read", "asked", "generic", "none", "missing"], res
     assert res[23000001]["lr"] == 0xb30278 and res[23000004]["n"] == 0   # battle 3's type 13 is not battle 4's
+    assert res[23000001]["hit"] == 7 and res[23000001]["carrier"] == 5 and res[23000001]["unattributed"] == 2
+    assert res[23000001]["shared_hits"] == 0 and res[23000001]["hit_lr"] == 0xb30278
+    # two cards of one type in a battle (Gale's and Damian's stun_wall_push): only the card that answered is read
+    rows2 = [(23000010, "G", "Blower", "stun_wall_push", False), (23000011, "D", "Gladiator", "stun_wall_push", False)]
+    log2 = ["[star] p battle=1 slot=0 card=23000010 type=87 off=0", "[star] p battle=1 slot=1 card=23000011 type=87 off=0",
+            "[star] q battle=1 type=87 n=30 hit=6 lr=0xb3e924", "[star] h battle=1 card=23000011 slot=1 n=6 lr=0xb3e924"]
+    res2 = classify(rows2, *parse_log(log2))
+    assert res2[23000010]["cls"] == "asked" and res2[23000010]["shared_hits"] == 6 and res2[23000010]["hit"] == 0
+    assert res2[23000011]["cls"] == "read" and res2[23000011]["carrier"] == 6 and res2[23000011]["shared_hits"] == 0
+    assert LOST_RE.search("[star] dump battle=4 types=20 cards=31 lost=3") and not LOST_RE.search("[star] dump battle=4 types=20 cards=31 lost=0")
     p = plan(rows, 3, per=2)
     assert sum(len(b) for b in p) == 15 and all(len({c[0] for c in b}) == len(b) for b in p)
     assert all(isinstance(n, str) for n in LIVE) and len(LIVE) == 15

@@ -31,6 +31,26 @@ and at least 145 + 16 = 161 have no reader that can run in a battle.
   Value columns) decides them. That check is also what should confirm the 15 before training leans on them.
 - Gears: unchanged, still no host field.
 
+## Per-card hits (follow-up to #34, closed #33)
+
+`star.c` counted lookups per card Type enum, so a hit on a type counted for every carried card of that type. Two star
+powers can share a Type (Gale's Blower_unique and Damian's Gladiator_unique are both stun_wall_push, enum 87), and the
+config's +0x50 list also holds gadget and gear cards. `star.c` now also logs, for every hit, the card that answered and the
+player slot whose config it was (`[star] h` lines). `star_audit` counts a card as read only when it answered itself, and
+reports the hits another card of its type answered as `shared_hits`.
+
+Measured on main 7c84d84 + this branch, 2026-11-24:
+- All 215 cards, 3 battles of 3000 ticks each (64 battles): read 13, asked 4, generic 11, none 184, skipped 3. The two
+  LIVE cards not read here (BowDude_unique_2 stun_trap, FutureGirl_unique_2 pet_extra_health) wait for rare events:
+  the longer run reads both.
+- The 15 LIVE cards plus Gladiator_unique, Baseball_unique_2 and Cocooner_unique, 10 battles of 4000 ticks each: all 15
+  LIVE cards read, every hit on the carrier's own config (JetpackGirl_unique also has 10 hits while the battle was being
+  built, before the slots are known). Gladiator_unique: asked, its 9 type hits were all answered by Gale's card.
+
+So `LIVE` stays as it is. Jessie, Wendy and Gale (and Damian) were "read for others" in #33 because #33 matched the
+player-level getters per type and did not hook 0xc34d10; here each hit is the carrier's own card. Damian's card is the
+one the type count would have turned into a false "read" whenever it shared a battle with Gale's.
+
 ## Card lists
 Type in brackets; for "none, sim site" also the first battle-logic call site.
 
