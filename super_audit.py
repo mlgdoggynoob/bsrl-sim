@@ -13,6 +13,8 @@ one normal attack at the shooter (so a self-heal is visible); fill the shooters'
 target, super_dist = d / CastingRange, a charge aims ~1 tile past the target); watch WATCH ticks. A super the player steers
 while it runs (FlyJump, Ww) has its shooter walk towards the target once its CastingTime is over (moves sent while it
 casts are dropped), so its "move" is plain walking.
+A ProjectileShield super (Buster) has its target SHIELD_D away, past the shield line, shooting into it at the first
+step POST_HIT_SHIELD ticks or more after the fire; a type-16 charge (Bonnie, who hits where she lands) is aimed at the target, not past it.
 Measured per shooter (state2 dump each step, attributed by owner player index): super consumed (charge < half of max),
 damage = target HP lost (or the shooter's NbeResp damage_dealt summed over the watch steps: the host reports it per step), own max displacement (dash / jump / charge; host `leaping` flag), target max
 displacement (pushback / pull), own HP gain (only when the pre-damage hit), new projectiles / summons / area effects
@@ -20,6 +22,7 @@ displacement (pushback / pull), own HP gain (only when the pre-damage hit), new 
 "active" word (state2 ultiActive, informational), foreign summons near the pair (contamination from phase A).
 Expected effects come from the game's tables (skills.csv UltimateSkill row, its projectiles_logic / projectiles_skin
 rows, area_effects_logic): damage, move, push, heal, projectile, summon, area, item, change (`expected()`).
+An EdgeCrossing area's PushbackStrength (Damian's arena) is not expected as a push: it pushes only at the arena's edge.
 Classes (`classify()`): works = consumed and every expected effect seen; partial = consumed, some effect seen but not all
 expected (listed as missing); unverified = consumed, but the super's effect is of a kind not visible here (shield,
 invisibility, status buff, a heal when the pre-damage missed); no_effect = consumed, nothing seen; not_fired = charge not
@@ -55,6 +58,8 @@ SPACING = 13                             # tiles between spot centres (3900 u: a
 WATCH = 50                               # ticks watched after the fire (2.5 s at 20 ticks/s; regen starts 3 s after a hit)
 STEP = 2                                 # ticks per env step while watching
 POST_HIT = 0                             # --post-hit: tick after the fire at which the target shoots the shooter again (0 off)
+POST_HIT_SHIELD = 8                      # ProjectileShield (Buster): the target shoots into the shield at the first step >= this tick
+SHIELD_D = 1500.0                        # ProjectileShield: target distance, past the shield line (CastingRange 9 -> 900 u in front)
 DIST_F = (0.6, 0.35)                     # target distance per attempt, as a fraction of the super's CastingRange
 DIST_MIN, DIST_MAX = 450, (CORR - 1) * TILE
 MOVE_MIN, PUSH_MIN, HEAL_MIN = 300, 100, 100   # units / units / HP: above walk jitter, setup rounding and regen ticks
@@ -181,7 +186,11 @@ def expected_skill(sk_name, s):
     heals_only = any(_num(r, "HealOwnPercent") > 0 for r in pl)   # Poco: the skill Damage is the heal, enemies are not hit
     if ((_num(s, "Damage") > 0 or any(_num(r, "Damage") > 0 and r.get("Type") not in NO_DAMAGE_AREAS for r in alog)) and not leap_bombs and not heals_only
             and bt not in ("ChangeCharacter", "ProjectileShield")): ex.append("damage")
-    if _num(s, "ChargePushback") > 0 or any(_num(r, "PushbackStrength") > 0 for r in pl + alog): ex.append("push")
+    # an EdgeCrossing ring (Damian's arena) pushes only who crosses its edge: the target here stands still inside it
+    # (charge_check checks the edge)
+    if _num(s, "ChargePushback") > 0 or any(_num(r, "PushbackStrength") > 0 and r.get("Type") != "EdgeCrossing" for r in pl + alog):
+        ex.append("push")
+    if any(r.get("Type") == "EdgeCrossing" for r in alog): notes.append("EdgeCrossing push: only at the arena edge, checked by charge_check")
     if (_num(s, "HealSelfOnActivationPower") > 0 or any(_num(r, "HealOwnPercent") > 0 for r in pl)
             or any(r.get("Type") in ("Heal", "Hot", "HealRegen", "HealAndDamage", "HotAndDot") for r in alog)): ex.append("heal")
     if bt in ("Shield", "Invisibility", "StatusEffect", "ProjectileShield", "MountUp", "Split", "Ww", "RecallWeapon"):
@@ -200,6 +209,8 @@ def expected_skill(sk_name, s):
     steer = bt in ("FlyJump", "Ww")   # the brawler moves under its player's control while the super runs: walk it to the target
     out = {"skill": sk_name, "type": bt, "kind": kind, "range": cr if cr > 0 else 2600.0, "charge": charge, "ring": ring, "east": east,
            "steer": steer, "cast": _num(s, "CastingTime"), "expect": ex,
+           "post_hit": POST_HIT_SHIELD if bt == "ProjectileShield" else 0,
+           "land": charge and s.get("ChargeType") == "16",   # Bonnie: she hits where she lands, aimed at the target (not past it)
            "projectiles": projs, "summons": summons, "areas": areas, "items": items, "notes": notes}
     return out
 
@@ -538,10 +549,11 @@ class Auditor:
             if inf.get("east") and (1, 0) in dirs: dx, dy = 1, 0
             d = float(np.clip(DIST_F[min(j.attempt, 1)] * inf["range"], DIST_MIN, DIST_MAX))
             if j.attempt and len(dirs) == 1: d = float(np.clip(d * 0.6, DIST_MIN, DIST_MAX))
+            if inf["type"] == "ProjectileShield": d = SHIELD_D   # the target shoots from beyond the shield line
             tx, ty = x + dx * d, y + dy * d
             if inf.get("ring") and inf["range"] > inf["ring"]:   # no damage inside InnerRadius (Kaze): land past the target
                 d = float(np.clip(inf["range"] - inf["ring"], DIST_MIN, DIST_MAX))
-            sd = min(1.0, (d + TILE if inf["charge"] else d + inf.get("ring", 0)) / inf["range"])
+            sd = min(1.0, (d + TILE if inf["charge"] and not inf.get("land") else d + inf.get("ring", 0)) / inf["range"])
             aim = float(np.degrees(np.arctan2(dy, dx)))
             geo[j] = dict(d=round(d), aim=aim, super_dist=round(sd, 3), spot=[round(x), round(y)])
             pos[s] = (int(x), int(y)); pos[t] = (int(tx), int(ty))
@@ -613,8 +625,11 @@ class Auditor:
                 p, q = r.pl[s], r.pl[t]; inf = self.info[j.name]
                 if inf.get("steer") and n * 50 > inf.get("cast", 0) + 100 and q.alive and np.hypot(q.x - p.x, q.y - p.y) > 150:
                     acts[s] = (int(round(np.degrees(np.arctan2(q.y - p.y, q.x - p.x)) / 22.5)) % 16, 0, 0.0, 0.0)
-            if POST_HIT and n >= POST_HIT and not any("ph_hp0" in M[j] for j, _, _ in run):   # shield / status supers: hit again
-                for j, s, t in run:
+            # shield / status supers: the target shoots the shooter again (--post-hit for all; a ProjectileShield always)
+            due = [(j, s, t) for j, s, t in run if "ph_hp0" not in M[j] and (POST_HIT or self.info[j.name].get("post_hit"))
+                   and n >= (POST_HIT or self.info[j.name]["post_hit"])]
+            if due:
+                for j, s, t in due:
                     M[j]["ph_hp0"] = int(r.pl[s].hp); M[j]["ph_hp_min"] = int(r.pl[s].hp); M[j]["ph_tick"] = n
                     acts[t] = (-1, 1, (geo[j]["aim"] + 180.0) % 360, 0.0)
                 r = stp(acts, 1); n += 1
@@ -757,6 +772,8 @@ def _check():
         assert {"projectile", "area", "damage"} <= set(inf["TntDude"]["expect"])
         assert "heal" in inf["DeadMariachi"]["expect"] and inf["Rosa"]["expect"] == [] and "change" in inf["MechaDude"]["expect"]
         assert all(i["range"] > 0 and i["skill"] for i in inf.values())
+        assert inf["Gladiator"]["expect"] == ["move", "area"] and any("EdgeCrossing" in x for x in inf["Gladiator"]["notes"]), inf["Gladiator"]
+        assert inf["ShieldTank"]["post_hit"] == POST_HIT_SHIELD and inf["BullDude"]["post_hit"] == 0
         assert "MechaDudeBig" in inf and len(env_v5.forms()) == 9 and "MechaDudeBig" not in env_v5.heroes()   # forms audited, never picked
         assert display("BullDude") == "Bull" and data_name(16000000 + list(_tables()["char"]).index("BullDude")) == "BullDude"
         hy = {h: expected(h, hyper=True) for h in ("Jester", "Beamer", "Twins", "Skater", "Domain", "Dancer", "MechaDudeBig", "ShotgunGirl", "PowerLeveler")}

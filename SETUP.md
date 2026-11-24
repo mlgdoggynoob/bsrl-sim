@@ -102,6 +102,12 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
 - `star_probe.patch` (issue #20, a diff on top of the others): `native/loader/star.c`, the star power probe. With
   `NB_STAR_PROBE=1` it counts the config lookups 0xc34be0 / 0xc34c6c / 0xc34d10 per card type and logs them per battle
   (`offline.c` calls it at each build and tick); without it nothing is hooked. `python -m star_audit`.
+- `broken_supers.patch` (issue #32 item 5, #6 / #5, a diff on top of the others): normal supers whose server half is
+  compiled out. `env.c`: Moe's dive (charge type 22; the folded change to DiggerDrill at 0xb3eae0 / 0xb3eae4 goes to
+  `dig_change`, which sets the drill timer and spawns the surfacing hit) and Bonnie's landing hit (type 16, `charge_land`).
+  `superfix.c`: Lou's Slippery area deals its damage once a second. `superfix_moves.c`: Kenji's cross slash (area type
+  38) and the area of a ChangeCharacter super (Bonnie's return to Clyde, `bl` at 0xb7d010). `superfix_status.c`:
+  `superfix_status_cancel` ends Kenji's hide at the slash.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

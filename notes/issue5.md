@@ -16,8 +16,8 @@ State: merged in #14 (branch claude/project-thread-nfu3i0).
 - Numbers that are guesses: wall radii, Berry heal = CustomValue % of damage, paint damage = Damage x2.
 
 ## Open
-- Bonnie (type 16) and Moe (type 22): blocked on the change-character stub 0xb4ffec (hp 0, returns NULL). Same work as
-  #6's ChangeCharacter items. Helpers: char factory 0xb5dd08, spawn pattern 0xb51100, world add 0xb63198.
+- Bonnie (type 16) and Moe (type 22): done in broken_supers.patch (#32 item 5, notes/broken_supers.md). Moe was not blocked
+  on start state: the type-22 end at 0xb3eae0 folds the stub's NULL into the code that follows (0xb3eae4 `mov x0, xzr`).
 - StatusEffect areas (36) spawn but act on nobody (slows, Stu's fire).
 - super_audit: a normal attack in its harness does not land (pre-damage often misses); charge_check uses Crow's super.
 
