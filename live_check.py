@@ -10,7 +10,9 @@
      are played by the native AI (cfg native_ctl), which collects cubes;
   8. area effects carry a radius (> 0) and a kind (harms / helps / slows me) in the observation;
   9. gas margin (env_v5.gas_margin from the latched storm step NbeResp.reserved[0], slider gas_safe) < 0 exactly where
-     the host flags in_gas.
+     the host flags in_gas;
+ 10. power level 11 (#22 wiki findings: +10 % HP per level, since 05/09/23): a player in play has max HP = 2 x its
+     characters.csv Hitpoints + 400 per cube held, from the spawn on and after every respawn (HP_OFF: known exceptions).
 python -m live_check --n 2 --minutes 8 [--gen 1]"""
 import argparse, collections, time, numpy as np
 import env_v5 as E, obs_v5 as O
@@ -19,6 +21,9 @@ from nbpc import fair as F
 RS = collections.Counter(); RD = []; RDN = []   # respawn stats; distance respawned -> nearest living mate (RDN: native-played battles)
 MP = collections.Counter(); OPENED = {}; CB = collections.Counter()   # live map; battle -> {tile index: now open}; cubes
 GS = collections.Counter()   # 9: alive player-steps, in gas, margin < 0 agrees with in_gas
+HP = collections.Counter(); HPB = collections.Counter()   # 10: player-steps in play, at 2x; brawlers off it
+HP_OFF = {"MechaDude"}   # Meg spawns in her mech (game rule, issue #6): MechaDudeBig's 3700 x 2 = 7400, not her 2400 x 2
+LV = 2.0                 # power 11 = 1 + 10 x 10 % (env.c my_root scales damage by the same 2)
 class T(E.Env):
     bg = {}; bl = {}
     def _finish_step(self, i, r):
@@ -28,6 +33,12 @@ class T(E.Env):
                 c0, m0 = s.held[p]; CB["out_with_cubes"] += 1; CB["dropped"] += int(r.pl[p].cubes_total == 0)
                 CB["max_hp_ok"] += int(r.pl[p].max_hp == m0 - 400 * c0); CB["cubes_step_neg"] += int(r.pl[p].cubes < 0)
             s.held[p] = (int(r.pl[p].cubes_total), int(r.pl[p].max_hp))
+        for p in range(10):                              # 10: max HP at power 11
+            pl, nm = r.pl[p], s.cfg["tag"]["chr"][p]
+            if not pl.alive or pl.eliminated or pl.reserved[3] > 0: continue
+            want = LV * int(O.D.table("characters.csv")[nm][1]["Hitpoints"]) + 400 * int(pl.cubes_total)
+            HP["n"] += 1; HP["ok"] += int(pl.max_hp == want); HP["back"] += int(p in getattr(s, "back", set()))
+            if pl.max_hp != want: HPB[nm] += 1
         for p in range(10):                              # 9: gas margin vs the host's in_gas flag
             pl = r.pl[p]
             if pl.alive and not pl.eliminated and pl.reserved[3] <= 0:
@@ -124,5 +135,7 @@ assert MP["refresh"] > 0 and MP["cover_or_bush_gone"] > 0 and MP["masks_live"] =
 assert MP["grid_open_ok"] > 0 and MP["grid_open_bad"] <= 0.01 * MP["grid_open_ok"], "observation grid not live"
 assert CB["out_with_cubes"] > 0 and CB["dropped"] == CB["out_with_cubes"] == CB["max_hp_ok"] and not CB["cubes_step_neg"]
 print("gas margin vs in_gas:", dict(GS))
+print("max HP at power 11: %d of %d player-steps (%d after a respawn); off by brawler %s" % (HP["ok"], HP["n"], HP["back"], dict(HPB)))
+assert HP["n"] and HP["back"] and not set(HPB) - HP_OFF, dict(HPB)
 assert GS["in_gas"] > 0 and GS["n"] - GS["match"] <= 0.02 * GS["in_gas"], dict(GS)
 assert area["radius>0"] > 0.8 * area["rows"] and area["harms"] > 0 and area["helps"] + area["slows"] > 0, dict(area)
