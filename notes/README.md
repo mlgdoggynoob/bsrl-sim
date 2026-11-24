@@ -14,4 +14,4 @@ docstrings and comments are the spec.
 | `issue21-leftovers.md` | #21 storm ramp and gas heal cut, meteors and mushrooms, WallSpawn shape | #35 |
 | `gadgets_batch2.md` | #3 gadgets, batch 2 (shots, volleys, items, R-T, Kit, Kenji) | #36 |
 | `hyper_supers.md` | #6 / #32 hypercharged supers that failed only hypercharged | #37 |
-| `broken_supers.md` | #32 item 5: Moe, Bonnie, Kenji, Lou (host); Damian, Buster (audit) | this branch |
+| `broken_supers.md` | #32 item 5: Moe, Bonnie, Kenji, Lou, Meg (host); Damian, Buster (audit) | this branch |

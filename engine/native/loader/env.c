@@ -185,6 +185,7 @@ int superfix_status_blocked(uint8_t *ch) __attribute__((weak));
 int superfix_status_silenced(uint8_t *ch) __attribute__((weak));
 void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) __attribute__((weak));   /* superfix_cc.c: projectile stuns */
 void hyper_install(void); void *hyper_super_data(int i, uint8_t *ch, void *sd); void hyper_unswap(int i, uint8_t *ch);
+void hyper_char_changed(uint8_t *old, uint8_t *nc);
 static void *owner_player(void *sim, void *c, int *idx) {   /* the player whose current brawler c is (NULL: none) */
     *idx = -1; if (!sim || !c || VTOF(c) != VT_CHAR) return NULL;
     int np; void **ps = players(sim, &np); *idx = brawler_owner(sim, c); return *idx >= 0 ? ps[*idx] : NULL;
@@ -217,9 +218,11 @@ static int sd_group_size(int i) {
 static void sd_mirror_cubes(void *sim, uint8_t *ch);
 /* a character change (superfix_change_character: Moe's dive and drill, Bonnie, Meg) builds a new object with a new id: the
  * power cubes (keyed by character id) move to it with their +400 max HP each, so the cube bonus, the pickup HP and the
- * death drop carry over */
+ * death drop carry over; a running hypercharge follows (hyper_char_changed) */
 void env_char_changed(uint8_t *old, uint8_t *nc) {
-    if (!old || !nc || !E.sim) return;
+    if (!old || !nc) return;
+    hyper_char_changed(old, nc);
+    if (!E.sim) return;
     int oid = I32(old, 8), nid = I32(nc, 8);
     for (int i = 0; i < E.ncube; i++) if (E.cube_id[i] == oid) {
         int k = E.cube_n[i]; E.cube_id[i] = nid;
@@ -383,6 +386,8 @@ static void record_event(uint8_t *victim, uint8_t *attacker, int before, int aft
     }
     if (vi >= 0 && vi < NBE_MAXP && known) E.taken[vi] += removed;
 }
+static int mech_pop(void *sim, uint8_t *c, int before);   /* Meg's mech at 0 HP: she ejects (below, after dig_ok) */
+static int just_popped(uint8_t *c);                       /* ... and takes no other hit in that tick */
 static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *attacker, void *src, int a7,
                         int s0, int s1, void *s2, int s3, int s4, int s5, int s6, int s7, int s8, int s9) {
     int mode3 = I32(g_libg->base, 0x12eefb4) == 3;
@@ -421,11 +426,13 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
         if (nd != dmg) { if (a3 == dmg) a3 = (int)nd; dmg = (int)nd; E.st_dmg++; }
     }
     int vchar = victim && VTOF(victim) == VT_CHAR, before = vchar ? I32(victim, 0x3c4) : 0;
+    if (vchar && mode3 && just_popped(victim)) { E.charge_level = saved_level; return 0; }
     int ow = vchar && mode3 && resp_on() && E.sim ? brawler_owner(E.sim, victim) : -1;
     uint64_t r = o_root(victim, a1, dmg, a3, a4, attacker, src, a7, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9);
     if (waiting(ow)) { I32(victim, 0x3c4) = before; E.charge_level = saved_level; return r; }   /* respawning: invulnerable */
-    if (vchar && mode3) record_event(victim, attacker, before, I32(victim, 0x3c4));
-    if (ow >= 0 && I32(victim, 0x3c4) <= 0 && resp_mate(E.sim, ow)) {   /* knocked out while a teammate lives */
+    int pop = vchar && mode3 && mech_pop(E.sim, victim, before);   /* the mech's HP is gone, Meg stands in its place */
+    if (vchar && mode3) record_event(victim, attacker, pop ? before + 1 : before, pop ? 1 : I32(victim, 0x3c4));   /* no kill */
+    if (!pop && ow >= 0 && I32(victim, 0x3c4) <= 0 && resp_mate(E.sim, ow)) {   /* knocked out while a teammate lives */
         E.resp_at[ow] = I32(E.sim, 0x10) + RESP_TICKS; E.resp_ai[ow] = U8(victim, 0x469); E.resp_n++;
         /* area round: it loses its power cubes (Duo Showdown: a respawned brawler starts at 0 cubes) and their +400 max HP
          * each; cubes0 moves with it so NbePlayer.cubes (picked up this step) stays >= 0. showdown round: the root above
@@ -501,12 +508,13 @@ static int my_gastest_call(int tx, int ty, int a2, int a3, int a4, int a5, int *
     return o_gastest(tx, ty, a2, a3, a4, a5, a6, a7, s0);
 }
 static void gas_hit(void *sim, uint8_t *victim, GasHit *g) {   /* applyGasDamageNative */
-    if (!victim || g->dmg <= 0) return;
+    if (!victim || g->dmg <= 0 || just_popped(victim)) return;
     int tick = I32(sim, 0x10), hp0 = I32(victim, 0x3c4);
     if (g->dmg >= hp0 && I32(victim, 0xaa0) != -1) I32(victim, 0xaa0) = -1;          /* gasNoKillCredit */
     E.in_own_call = 1;
     o_root(victim, -1, g->dmg, 0, 0, NULL, NULL, 1, I32(victim, 0x38), I32(victim, 0x3c), NULL, 0, 0, 0, 1, 0, 0, 0);
     E.in_own_call = 0;
+    if (mech_pop(sim, victim, hp0)) { int pi = I32(victim, 0x80); if (pi >= 0 && pi < NBE_MAXP) E.gasd[pi] += hp0; return; }
     int hp1 = I32(victim, 0x3c4);
     if (I32(victim, 0x7d8) != tick && hp1 > 0) I32(victim, 0x7d8) = tick;                /* gasBlockRegen belt and braces */
     int pi = I32(victim, 0x80);
@@ -613,11 +621,12 @@ static void zone_tick(void *sim) {   /* pre-snapshot, once per tick */
                 else if (z->dmg > 0) {
                     uint8_t *atk = NULL; for (int q = 0; q < n && !atk; q++) { uint8_t *o = v[q];
                         if (o && VTOF(o) == VT_CHAR && I32(o, 0x80) == z->owner && I32(o, 0x3c4) > 0) atk = o; }
-                    if (!atk) continue;   /* the painter is gone: no attacker for the damage root */
+                    if (!atk || just_popped(c)) continue;   /* the painter is gone: no attacker for the damage root */
                     int charge0 = pl_ ? I32(pl_, 0x54) : 0; E.in_own_call = 3;
                     o_root(c, z->owner, z->dmg, z->dmg, 0, atk, NULL, 1, z->x, z->y, NULL, 0, 0, 0, 1, 0, 0, 0);
                     if (pl_) I32(pl_, 0x54) = charge0;   /* a super's hits do not recharge that super */
-                    E.in_own_call = 0; record_event(c, atk, hp0, I32(c, 0x3c4)); g_zone_hits++; v = objvec(sim, &n);
+                    int pz = mech_pop(sim, c, hp0);
+                    E.in_own_call = 0; record_event(c, atk, pz ? hp0 + 1 : hp0, pz ? 1 : I32(c, 0x3c4)); g_zone_hits++; v = objvec(sim, &n);
                 }
             } else if (!ally) {   /* EdgeCrossing */
                 int s; for (s = 0; s < z->nside && z->side_id[s] != cid; s++) {}
@@ -744,16 +753,18 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
             if (seen || j->nhit >= 32) continue;
             j->hit[j->nhit++] = cid;
             int d = jround(j->dmg * 2.0 * (1 + 0.10 * cubes_of(j->id)));
+            if (just_popped(c)) continue;
             int hp0 = I32(c, 0x3c4); E.in_own_call = 3;
             /* a super's hits do not recharge that super (as the leap bombs: sf_explode restores the owner's charge) */
             int np_; void **ps_ = players(sim, &np_); uint8_t *pl_ = j->owner >= 0 && j->owner < np_ ? ps_[j->owner] : NULL;
             int charge0 = pl_ ? I32(pl_, 0x54) : 0;
             if (j->dmg > 0) o_root(c, j->owner, d, d, 0, ch, NULL, 1, x, y, NULL, 0, 0, 0, 1, 0, 0, 0);
             if (pl_ && j->ulti) I32(pl_, 0x54) = charge0;
+            int pc = mech_pop(sim, c, hp0);
             /* ChargePushback (Bull / El Primo 130 -> 780 u, Darryl 70, Surge / Stu 100), away from the charger as at 0xb5afd4;
              * not after a knock-out (the victim is parked or gone) */
             if (j->push > 0 && I32(c, 0x3c4) > 0) { KNOCKBACK(c, x, y, j->push, j->owner); g_charge_pushes++; }
-            E.in_own_call = 0; record_event(c, ch, hp0, I32(c, 0x3c4)); g_charge_hits++;
+            E.in_own_call = 0; record_event(c, ch, pc ? hp0 + 1 : hp0, pc ? 1 : I32(c, 0x3c4)); g_charge_hits++;
             v = objvec(sim, &n);
         }
     }
@@ -776,6 +787,46 @@ static void my_b29350(void *o, void *x1) { if (!o) { g_null_attach++; return; } 
 extern int g_superfix __attribute__((weak));
 uint64_t superfix_change_character(void *old, void *data) __attribute__((weak));
 static int dig_ok(void) { return superfix_change_character && &g_superfix && g_superfix; }
+/* Meg (bsrl-sim #32 item 5): she spawns in her mech (MechaDudeBig, UniqueProperty 2; the client's spawner swaps in the
+ * pet form). At 0 HP the damage root skips the mech's death block (0xb44990: only with stack arg s7, which no host call
+ * passes) and the eject to small Meg is server code, so the mech stayed at 0 HP and the player was out. The client still
+ * has the eject: 0xb95364(mech) (the Send It gadget's path) changes it into MechaDude through 0xb4ffec (battle_fix my_die
+ * -> superfix_change_character: full HP, the cubes move), hops her to a free spot within 600 u and applies her star
+ * powers (Force Field's shield). Called by every damage path after the root: the hit is no kill and no duo / trio
+ * knock-out, the retired mech drops nothing (0xb4ffec writes its HP 0 outside the root). Her super charge is reset
+ * (player +0x54): she earns the next mech [?]. The ejected Meg takes no other hit in the tick she ejected (just_popped: the
+ * explosion, zone or charge that broke the mech is still walking the object list, which now holds her too; on the server
+ * the eject follows the resolved hits [?]). Knocked out as small Meg in Duo / Trio, she respawns in her mech, as she
+ * spawned (respawn_tick). Only with superfix (dig_ok), else the mech's player is out as before. */
+static long g_mech_pops, g_mech_remechs;
+static int g_pop_id[NBE_MAXP], g_pop_tick[NBE_MAXP];          /* player i's ejected Meg and the tick */
+static void *g_meg_mech[NBE_MAXP], *g_meg_small[NBE_MAXP];    /* player i's mech and small Meg CharacterData */
+static void mech_reset(void) {
+    memset(g_pop_id, 0, sizeof g_pop_id); memset(g_pop_tick, 0, sizeof g_pop_tick);
+    memset(g_meg_mech, 0, sizeof g_meg_mech); memset(g_meg_small, 0, sizeof g_meg_small);
+}
+static int just_popped(uint8_t *c) {
+    if (!c || !E.sim) return 0;
+    int id = I32(c, 8), now = I32(E.sim, 0x10);
+    for (int i = 0; i < NBE_MAXP; i++) if (g_pop_id[i] == id && g_pop_tick[i] == now) return 1;
+    return 0;
+}
+static int mech_pop(void *sim, uint8_t *c, int before) {
+    if (!sim || !c || before <= 0 || I32(c, 0x3c4) > 0 || VTOF(c) != VT_CHAR || I32(g_libg->base, 0x12eefb4) != 3 || !dig_ok()) return 0;
+    void *cd = ((void *(*)(void *))B(0xb6a384))(c);
+    if (!cd || ((int (*)(void *))B(0xab3d04))(cd) != 2 || !((int (*)(void *))B(0xb34de4))(c)) return 0;   /* the mech, a hero */
+    int ow = brawler_owner(sim, c); if (ow < 0) return 0;
+    uint8_t *nc = ((uint8_t *(*)(void *))B(0xb95364))(c);
+    if (!nc || nc == c) return 0;
+    int np; void **ps = players(sim, &np); if (ow < np && ps[ow]) I32(ps[ow], 0x54) = 0;
+    g_pop_id[ow] = I32(nc, 8); g_pop_tick[ow] = I32(sim, 0x10);
+    g_meg_mech[ow] = cd; g_meg_small[ow] = ((void *(*)(void *))B(0xb6a384))(nc);
+    E.sent_valid[ow] = 0; E.moving[ow] = 0; E.pf[ow].n = 0;   /* a new brawler: resend the move */
+    g_mech_pops++;
+    LOG("[env] mech pop: player %d mech %d -> Meg %d hp %d/%d at %d,%d\n", ow, I32(c, 8), I32(nc, 8), I32(nc, 0x3c4), I32(nc, 0x3c8),
+        I32(nc, 0x38), I32(nc, 0x3c));
+    return 1;
+}
 static long g_dig_changes, g_dig_surface;
 static uint64_t dig_change(uint8_t *old, void *nd, uint64_t a2, uint64_t a3) {
     if (!dig_ok() || !old) return 0;
@@ -850,10 +901,12 @@ static void sf_explode(void *sim, Bomb *b) {
         uint8_t *c = v[i]; if (!c || VTOF(c) != VT_CHAR) continue;
         if (I32(c, 0x80) == o || I32(c, 0x3c4) <= 0) continue;
         int dx = I32(c, 0x38) - b->x, dy = I32(c, 0x3c) - b->y; if ((long)dx * dx + (long)dy * dy > 600L * 600) continue;
+        if (just_popped(c)) continue;
         E.in_own_call = 2;
         int hp0 = I32(c, 0x3c4);
         o_root(c, o, dmg, dmg, 0, alive ? atk : NULL, NULL, 1, b->x, b->y, NULL, 0, 0, 0, 1, 0, 0, 0);
-        record_event(c, alive ? atk : NULL, hp0, I32(c, 0x3c4));
+        int pb = mech_pop(sim, c, hp0);
+        record_event(c, alive ? atk : NULL, pb ? hp0 + 1 : hp0, pb ? 1 : I32(c, 0x3c4));
         E.in_own_call = 0;
         v = objvec(sim, &n);
     }
@@ -1146,6 +1199,10 @@ static void respawn_tick(void *sim) {
         sf_stop(c); E.moving[i] = 0; E.sent_valid[i] = 0; E.pf[i].n = 0;
         if (!m) { E.resp_at[i] = 0; I32(c, 0x3c4) = 0; E.resp_wipe++; continue; }   /* team out: eliminated like its mates */
         if (tick >= E.resp_at[i]) {
+            if (g_meg_mech[i] && dig_ok() && ((void *(*)(void *))B(0xb6a384))(c) == g_meg_small[i]) {   /* small Meg: back in her mech */
+                uint8_t *nc = ((uint8_t *(*)(void *, void *, uint64_t, uint64_t))B(0xb4ffec))(c, g_meg_mech[i], 0, 0);
+                if (nc && nc != c) { c = nc; g_mech_remechs++; }
+            }
             E.resp_at[i] = 0; E.resp_done++; I32(c, 0x38) = I32(m, 0x38); I32(c, 0x3c) = I32(m, 0x3c);
             I32(c, 0x3c4) = I32(c, 0x3c8); U8(c, 0x469) = E.resp_ai[i]; sf_stop(c);
             /* showdown round: spawn protection (every character tick sets +0x431 = +0x4f0 > tick, 0xb3995c; the root blocks
@@ -1604,7 +1661,7 @@ static void div_publish(void *sim) {   /* RESET response: read the battle back f
     R->div_variation = I32(sim, 0x104);
     R->div_reserved[0] = U8(sim, 0x134);   /* the builder's "cards" flag (global 0x12eefd4): 0 = player configs get no star power /
                                               gadget / overcharge cards (0xc27d64) */
-    int np; void **ps = players(sim, &np); gadget_clear(); hyper_clear();
+    int np; void **ps = players(sim, &np); gadget_clear(); hyper_clear(); mech_reset();
     for (int i = 0; i < NBE_MAXP; i++) {
         R->pl_char[i] = R->pl_skin[i] = 0;
         if (i >= np || !ps[i]) continue;

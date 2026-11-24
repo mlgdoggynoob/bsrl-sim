@@ -114,6 +114,11 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   `superfix.c`: Lou's Slippery area deals its damage once a second. `superfix_moves.c`: Kenji's cross slash (area type
   38) and the area of a ChangeCharacter super (Bonnie's return to Clyde, `bl` at 0xb7d010). `superfix_status.c`:
   `superfix_status_cancel` ends Kenji's hide at the slash.
+- `meg_mech.patch` (issue #32 item 5, a diff on top of `broken_supers.patch`): Meg spawns in her mech and the eject at
+  0 HP is server code. `env.c` `mech_pop`: when the mech reaches 0 HP in any damage path, the client's own eject 0xb95364
+  makes her small Meg (no kill, no duo / trio knock-out, super reset, no other hit that tick); knocked out as small Meg
+  she respawns in her mech (`respawn_tick`). `hyper.c` `hyper_char_changed`: a running hypercharge follows any character
+  change. `python -m charge_check` scene 5.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
