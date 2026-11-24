@@ -29,18 +29,26 @@ Branch broken-supers, base main 7c84d84. Host change: `engine/patches/broken_sup
   target 1500 u away and a shot into the shield 8 ticks after the fire.
 - Character changes (Moe, Bonnie): the new object has a new id, so env.c's `env_char_changed` moves the power cubes
   (keyed by id) and their +400 max HP each to it. Bonnie's landing hit goes through the hooked damage root (my_root).
+- Meg (`MechaDude`, branch meg-mech, `meg_mech.patch`): the client's spawner puts her in her mech (MechaDudeBig) at the
+  start, so her first super is the mech's melee swing; super_audit audits that (START_FORM). At 0 HP the damage root skips
+  the mech's death block (0xb44990, only with stack arg s7, which no host call passes) and the eject is server code, so the
+  mech stayed at 0 HP and the player was out. `mech_pop` (every damage path) calls the client's eject 0xb95364 (the Send It
+  gadget's path): small Meg at full HP, a hop to a free spot, her star powers. No kill, no duo / trio knock-out, her super
+  starts empty, no other hit that tick. Knocked out as small Meg she respawns in her mech. A running hypercharge follows
+  every character change (`hyper_char_changed`). charge_check scene 5: eject, then her own super builds the mech again.
+  Measured: mech 7400 -> 0, Meg 4800/4800, not out, super 0; her super -> mech 7400/7400; Duo knock-out -> respawn in the
+  mech; hypercharge 99 -> 95 ticks left across the eject.
+  Since the hypercharge follows the change, Bonnie's hypercharged launch also passes `--hyper` (CannonGirlExplosionOvercharged
+  where she lands; on broken-supers alone it was the normal explosion).
 - Nani (`Controller`): works on main 7c84d84 (3600 damage, push 900 u); the earlier miss was before hyper.c's on_travel.
 
 ## Guesses ([?] in the code)
 - Kenji's slash: X shape, 600 u each way, 250 u wide. The server's geometry is compiled out.
 - Lou: one hit per second; the slide (CustomValue 90) and freeze build-up (CustomValue2) are not done.
 - Bonnie: landing radius = CannonGirlExplosion's 200 (else 200); straight flight over walls is not done (pathfinder).
+- Meg: her super charge resets at the eject; the ejected Meg takes no other hit in that tick; the mech's destroyer gets
+  no kill credit. The server's rules for these are unknown.
 - Moe: the surfacing damage is the skill's 600 (the area's own 100 is inside it); the dive follows the pathfinder.
 
 ## Left for later
-- Bonnie's hypercharged launch: `super_audit --hyper` sees the normal CannonGirlExplosion, not the hypercharged
-  CannonGirlExplosionOvercharged (stack [1] carries the normal area). The other six pass `--hyper`.
-- Meg (`MechaDude`): the mech -> small Meg pop-out at 0 HP is server code. It needs a hook after every damage-root call,
-  the duo respawn block skipped, kills not counted, cubes and super charge decided. MechaDudeBig's melee super may also
-  need a host hit resolver. Its own PR.
 - R-T (`Splitter`): the split needs the partner getter 0xb392d4 (hard NULL), the link, control handover and rejoin. L.

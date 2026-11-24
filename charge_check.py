@@ -1,5 +1,5 @@
-"""Live check of the charge supers' extras (issue #5) that super_audit cannot see: wall breaking, Damian's arena edge and
-Berry's paint. One boot, one battle on super_audit.MAP (storm off, every native AI off), four scenes in a row:
+"""Live check of the supers' extras (issues #5 / #6) that super_audit cannot see: wall breaking, Damian's arena edge,
+Berry's paint and Meg's eject. One boot, one battle on super_audit.MAP (storm off, every native AI off), five scenes in a row:
   1. Bull charges along a lane whose fourth tile is a destructible wall: the wall tile opens (live map, F_MAP) and Bull
      ends past it;
   2. El Primo lands on an open tile next to a destructible wall: that wall tile opens;
@@ -7,7 +7,9 @@ Berry's paint. One boot, one battle on super_audit.MAP (storm off, every native 
      the centre (EdgeCrossing);
   4. Berry, hurt by one shot, paints a lane through his target: the target keeps losing HP after the charge (HotAndDot
      damage) and Berry, hurt by Crow's super just before and walking back into his paint, gains HP (HotAndDot heal)
-     within the 3 s before regen starts.
+     within the 3 s before regen starts;
+  5. Meg (who spawns in her mech) is hit by three Shellys' supers until the mech breaks: she goes on as small Meg at full
+     HP with an empty super, not out, and her own super then builds the mech again.
 Wall lanes come from the map reference (tiles.csv BlocksMovement / IsDestructible; spawn digits count as blocked).
 python -m charge_check            python -m charge_check --check   (no host: the lane finder and the judging rules)"""
 import argparse, sys, time
@@ -20,7 +22,9 @@ PRIMO_RUN = 4                              # El Primo: open tiles behind the lan
 EDGE_IN = 100                              # Damian: the target goes this far inside the arena's 1500 u edge
 PUSH_IN_MIN = 200                          # ... and must end at least this much farther in (one knockback is 420 u)
 WATCH = 40                                 # ticks after a fire (2 s)
-NAMES = ["BullDude", "Luchador", "Gladiator", "Painter", "Crow"]   # shooters 0-4; Crow hurts Berry
+EJECT_ROUNDS = 6                           # Meg: volleys of three Shelly supers at most (the mech has 7400 HP; one volley breaks it)
+REMECH_TRIES = 10                          # Meg: super fills and fires at most, after the eject's protection
+NAMES = ["BullDude", "Luchador", "Gladiator", "Painter", "Crow", "MechaDude"]   # shooters 0-5; Crow hurts Berry
 TARGET = SA.FILLER
 
 
@@ -95,6 +99,17 @@ def judge_edge(d_put, d_end):
     return [] if d_end <= d_put - PUSH_IN_MIN else ["target not pushed back in: %.0f u from the centre -> %.0f" % (d_put, d_end)]
 
 
+def judge_eject(cid0, after, remech):
+    """after: (alive, eliminated, char_id, data, hp, max_hp, super_charge) of Meg's player once her mech broke; remech: her
+    brawler's data after her own super -> [problems]"""
+    alive, elim, cid, data, hp, mx, sc = after; bad = []
+    if not alive or elim: bad.append("Meg is out after her mech broke")
+    elif cid == cid0 or data != "MechaDude": bad.append(f"no small Meg after the mech broke (brawler {cid}, {data})")
+    elif hp != mx or sc != 0: bad.append(f"small Meg starts at {hp}/{mx} HP, super {sc} (want full HP, an empty super)")
+    if not bad and remech != "MechaDudeBig": bad.append(f"her super did not build the mech again ({remech})")
+    return bad
+
+
 def judge_paint(target_loss, heal, pre_damaged):
     bad = []
     if target_loss <= 0: bad.append("the target lost no HP standing in the paint after the charge")
@@ -128,6 +143,13 @@ class Run:
         r = self.step(map_=True); return self.inst.map_tiles().reshape(r.map_h, r.map_w)
 
 
+def _form(inst, i):
+    """the data name of player i's brawler (None: none)"""
+    st = SA.parse_state(inst.state_bytes()); bid = SA.brawler_ids(st).get(i) if st is not None else None
+    rows = [x for x in st["ch"] if int(x[0]) == bid] if bid is not None else []
+    return SA.data_name(int(rows[0][1])) if rows else None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--check", action="store_true", help="self-check of the lane finder and the judging (no host)")
@@ -146,7 +168,7 @@ def main():
     print("charge_check: host ready in %.0f s" % (time.time() - t0), flush=True)
     fails = {}
     try:
-        names = NAMES + [TARGET] * (10 - len(NAMES))   # shooters 0-4, targets 5-9
+        names = NAMES + [TARGET] * (10 - len(NAMES))   # shooters 0-5, targets 6-9
         inst.reset(93500000 + a.seed, gas=0, flags=0, native_mask=0, obs_mask=0, div=D.make_div(location=SA.MAP, chr=names))
         R = Run(inst); R.step(ticks=10)
         ref = np.asarray(D.map_reference(SA.MAP)[0]).reshape(g.shape); live = R.tiles()
@@ -171,13 +193,13 @@ def main():
 
         # 3. Damian's arena edge (spot 0, corridor 0)
         (sx, sy, dirs) = spots[0]; dx, dy = dirs[0]; tx, ty = sx + dx * 1200, sy + dy * 1200
-        R.place({2: (sx, sy), 5: (tx, ty)})
+        R.place({2: (sx, sy), 7: (tx, ty)})
         r = R.fire(2, float(np.degrees(np.arctan2(dy, dx))), min(1.0, 1500 / info["Gladiator"]["range"]), watch=20)
         cx, cy = r.pl[2].x, r.pl[2].y
-        R.place({5: (cx - dx * (1500 - EDGE_IN), cy - dy * (1500 - EDGE_IN)), 2: (cx, cy)})
+        R.place({7: (cx - dx * (1500 - EDGE_IN), cy - dy * (1500 - EDGE_IN)), 2: (cx, cy)})
         d_put = 1500.0 - EDGE_IN   # the push starts within the placement steps, so the requested distance counts
         for _ in range(10): r = R.step()
-        fails["Damian arena edge"] = judge_edge(d_put, float(np.hypot(r.pl[5].x - cx, r.pl[5].y - cy)))
+        fails["Damian arena edge"] = judge_edge(d_put, float(np.hypot(r.pl[7].x - cx, r.pl[7].y - cy)))
 
         # 4. Berry's paint (spot 1)
         (sx, sy, dirs) = spots[1]; dx, dy = dirs[0]; tx, ty = sx + dx * 900, sy + dy * 900; aim = float(np.degrees(np.arctan2(dy, dx)))
@@ -193,6 +215,28 @@ def main():
         print("charge_check: Berry hp %d -> %d after his paint, target lost %d after the charge" % (hp_low, r.pl[3].hp, thp - r.pl[6].hp), flush=True)
         fails["Berry paint"] = judge_paint(thp - r.pl[6].hp if r.pl[6].alive else thp, r.pl[3].hp - hp_low, pre)
         if not pre: print("charge_check: Berry's pre-damage missed: heal not checked", flush=True)
+
+        # 5. Meg's eject (her own spot): Shellys 7-9 stand 350 u in front of her, side by side, and super her until the mech breaks
+        meg, att = 5, (7, 8, 9); (sx, sy, dirs) = spots[meg]; dx, dy = dirs[0]
+        pos = {meg: (sx, sy)}
+        for k, q in enumerate(att): pos[q] = (sx + dx * 350 + (k - 1) * dy * 150, sy + dy * 350 + (k - 1) * dx * 150)
+        r = R.place(pos); cid0 = r.pl[meg].char_id; back = (float(np.degrees(np.arctan2(dy, dx))) + 180) % 360
+        for _ in range(EJECT_ROUNDS):
+            inst.setup(super_fill=list(att)); R.step(ticks=1)
+            r = R.step({q: (-1, 2, back, 0.15) for q in att}, 1)
+            for _ in range(6):
+                r = R.step()
+                if not r.pl[meg].alive or r.pl[meg].char_id != cid0: break
+            if not r.pl[meg].alive or r.pl[meg].char_id != cid0: break
+        R.place({q: spots[q][:2] for q in att})   # the Shellys leave: small Meg is not hit again
+        p = r.pl[meg]; after = (bool(p.alive), bool(p.eliminated), int(p.char_id), _form(inst, meg), int(p.hp), int(p.max_hp), int(p.super_charge))
+        print("charge_check: Meg after her mech broke: alive %d out %d brawler %d %s %d/%d HP super %d" % after, flush=True)
+        remech = None
+        if after[0] and after[3] == "MechaDude":
+            for _ in range(REMECH_TRIES):   # the eject's protection can swallow a fire: fill and fire again
+                R.fire(meg, back, 0.5, watch=30); remech = _form(inst, meg)
+                if remech != "MechaDude": break
+        fails["Meg eject"] = judge_eject(cid0, after, remech)
     finally:
         inst.close()
     bad = 0
@@ -217,6 +261,10 @@ def _check():
     assert len(judge_wall(0, 0, 0, 5.0, 3, B)) == 1 and len(judge_wall(1, 0, 0, 2.0, 3, B)) == 1 and judge_wall(1, 0, 0, None, 0, B) == []
     assert judge_edge(1400, 1000) == [] and judge_edge(1400, 1350)
     assert judge_paint(200, 100, True) == [] and len(judge_paint(0, 0, True)) == 2 and judge_paint(200, 0, False) == []
+    ok = (True, False, 7, "MechaDude", 4800, 4800, 0)
+    assert judge_eject(1, ok, "MechaDudeBig") == [] and len(judge_eject(1, ok, "MechaDude")) == 1
+    assert len(judge_eject(1, (False, True, 1, None, 0, 0, 0), None)) == 1 and len(judge_eject(7, ok, "MechaDudeBig")) == 1
+    assert len(judge_eject(1, ok[:4] + (100, 4800, 0), "MechaDudeBig")) == 1
     print("charge_check ok: lane finder, landing finder, judging")
 
 

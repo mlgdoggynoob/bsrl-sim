@@ -127,6 +127,11 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   Enemy / AllyChargeSuper (26 / 29). `env.c`: a taunted character walks at the source and a feared one away from it,
   for the policy's actions (`apply_actions`) and the native AI (`rec_move`), and neither attacks (`my_skill_block`).
   `superfix_cc.c` logs the taunt counters.
+- `meg_mech.patch` (issue #32 item 5, a diff on top of the others): Meg spawns in her mech and the eject at
+  0 HP is server code. `env.c` `mech_pop`: when the mech reaches 0 HP in any damage path, the client's own eject 0xb95364
+  makes her small Meg (no kill, no duo / trio knock-out, super reset, no other hit that tick); knocked out as small Meg
+  she respawns in her mech (`respawn_tick`). `hyper.c` `hyper_char_changed`: a running hypercharge follows any character
+  change. `python -m charge_check` scene 5.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

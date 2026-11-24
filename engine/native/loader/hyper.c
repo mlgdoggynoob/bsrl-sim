@@ -29,7 +29,7 @@
  * third skill instance (char+0x458[2], 0xb34560) but what picks it for a super cast is compiled out; here instances 1
  * (the super) and 2 are swapped while hypercharged, so the game's own super code casts it, and swapped back once the
  * hypercharge ended and that super is idle (hyper_unswap). Meg's mech (MechaDudeBig, what MechaDude's super turns into)
- * takes Meg's card. NbeResp hyp_supers / hyp_super_id count the supers cast while hypercharged and name the SkillData of
+ * takes Meg's card. A character change hands a running hypercharge to the new form (hyper_char_changed). NbeResp hyp_supers / hyp_super_id count the supers cast while hypercharged and name the SkillData of
  * the last one (hyper_super_data, from env.c fire_input_now).
  * The visual effects (client side) are whatever the client draws from +0xa0 and the overcharged skill data.
  * Also here: the steering of homing projectiles (on_travel), which Belle's and Hank's hypercharged supers need; it applies
@@ -270,6 +270,17 @@ static void swap_ulti(uint8_t *ch) {
 static int has_oc_ulti(uint8_t *ch) {
     uint8_t **sk = ch ? PTR(ch, 0x458) : NULL; int n = ch ? I32(ch, 0x464) : 0;
     return sk && n >= 3 && n <= 16 && sk[1] && sk[2];
+}
+/* a character change (env_char_changed: Meg's eject and her mech, Bonnie, Moe) builds a new object: a running hypercharge
+ * follows the player's new brawler (isOvercharged, char+0x68, the swapped OverchargedUltimateSkill when the new form has
+ * one); the old object's swap ends with it */
+void hyper_char_changed(uint8_t *old, uint8_t *nc) {
+    for (int i = 0; i < NBE_MAXP; i++) {
+        if (g_sw[i] == old) g_sw[i] = NULL;
+        if (!old || g_oc[i] != old) continue;
+        g_oc[i] = nc; U8(nc, 0x68) = U8(old, 0x68);
+        if (has_oc_ulti(nc)) { swap_ulti(nc); g_sw[i] = nc; }
+    }
 }
 /* the super player i casts now (sd = its SkillData, SKILL_SUPER): counted in hyp_supers / hyp_super_id while hypercharged */
 void *hyper_super_data(int i, uint8_t *ch, void *sd) {

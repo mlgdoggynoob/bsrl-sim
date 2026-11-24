@@ -23,6 +23,8 @@ displacement (pushback / pull), own HP gain (only when the pre-damage hit), new 
 Expected effects come from the game's tables (skills.csv UltimateSkill row, its projectiles_logic / projectiles_skin
 rows, area_effects_logic): damage, move, push, heal, projectile, summon, area, item, change (`expected()`).
 An EdgeCrossing area's PushbackStrength (Damian's arena) is not expected as a push: it pushes only at the arena's edge.
+Meg's row is her mech's super (START_FORM: the client spawns her as MechaDudeBig); the eject and small Meg's change back
+are charge_check's.
 Classes (`classify()`): works = consumed and every expected effect seen; partial = consumed, some effect seen but not all
 expected (listed as missing); unverified = consumed, but the super's effect is of a kind not visible here (shield,
 invisibility, status buff, a heal when the pre-damage missed); no_effect = consumed, nothing seen; not_fired = charge not
@@ -64,6 +66,9 @@ DIST_F = (0.6, 0.35)                     # target distance per attempt, as a fra
 DIST_MIN, DIST_MAX = 450, (CORR - 1) * TILE
 MOVE_MIN, PUSH_MIN, HEAL_MIN = 300, 100, 100   # units / units / HP: above walk jitter, setup rounding and regen ticks
 FILLER = "ShotgunGirl"                   # target-only slot filler when a battle has fewer than 10 brawlers to audit
+# brawlers the client spawns in another form (the spawner 0xc2806c swaps in the pet form): Meg starts in her mech, so the
+# super she casts is the mech's; small Meg's ChangeCharacter (after the mech breaks) is charge_check's "Meg eject" scene
+START_FORM = {"MechaDude": "MechaDudeBig"}
 CLASSES = ("works", "partial", "unverified", "no_effect", "not_fired", "crash")   # best first
 P2, C2, J2, I2, HDR = 8, 23, 18, 12, 8   # state2 row sizes (engine/py/state2.py)
 BOX_IDS = {16000120}
@@ -143,10 +148,15 @@ def _num(r, k):
 
 def expected(name, hyper=False):
     """the brawler's super from the tables -> dict(skill, type (BehaviorType), kind (finer group label), range (units),
-    charge (bool), expect (effects that must be seen), notes). hyper: its hypercharged super (hyper_skill); expect adds
+    charge (bool), expect (effects that must be seen), notes). A brawler in START_FORM (Meg: the client spawns her in her
+    mech) gets its start form's super, with a note. hyper: its hypercharged super (hyper_skill); expect adds
     hyper_cast (the host cast it while hypercharged, with this skill's data where characters.csv names an
     OverchargedUltimateSkill) and hyper (one of the projectiles / summons / areas / items only the hypercharged super has,
     `hyper_names`, when it has any)"""
+    if name in START_FORM:
+        out = expected(START_FORM[name], hyper)
+        out["notes"].append(f"spawns as {START_FORM[name]}: its super is audited; the eject and the change back: charge_check")
+        return out
     T = _tables(); ch = T["char"][name]; sk_name = ch.get("UltimateSkill", ""); s = T["skill"].get(sk_name, {})
     if hyper:
         base = expected(name); sk_name, s = hyper_skill(name)
@@ -770,7 +780,8 @@ def _check():
         assert {"projectile", "summon"} <= set(inf["Shaman"]["expect"]) and "damage" not in inf["Shaman"]["expect"]
         assert inf["Sniper"]["expect"] == ["move", "item"], inf["Sniper"]            # leap: bombs at the start, no target damage
         assert {"projectile", "area", "damage"} <= set(inf["TntDude"]["expect"])
-        assert "heal" in inf["DeadMariachi"]["expect"] and inf["Rosa"]["expect"] == [] and "change" in inf["MechaDude"]["expect"]
+        assert "heal" in inf["DeadMariachi"]["expect"] and inf["Rosa"]["expect"] == [] and "change" in inf["CannonGirlSmall"]["expect"]
+        assert inf["MechaDude"]["skill"] == "MechaDudeBigUlti" and "damage" in inf["MechaDude"]["expect"]   # Meg starts in her mech
         assert all(i["range"] > 0 and i["skill"] for i in inf.values())
         assert inf["Gladiator"]["expect"] == ["move", "area"] and any("EdgeCrossing" in x for x in inf["Gladiator"]["notes"]), inf["Gladiator"]
         assert inf["ShieldTank"]["post_hit"] == POST_HIT_SHIELD and inf["BullDude"]["post_hit"] == 0
