@@ -47,7 +47,7 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   `gad_*`, mirrored in `nbpc/proto.py`) and the host's own gadget activation in `native/loader/gadget.c`, which
   `env.c` `gadget_input` tries first. It implements dash gadgets (the native charge mover, through `env.c`
   `env_dash_start`) and heal-over-time gadgets (Bibi, Byron; ticked from `env.c` `pre_snapshot`), with 3 uses per
-  battle and the game's own cooldown. Every other gadget still reads as not usable.
+  battle (unlimited since `guessed_numbers.patch`) and the game's own cooldown. Every other gadget still reads as not usable.
 - `area_gadgets.patch` (issue #3, a diff on top of the patches above): `gadget.c`'s AREA kind (published as SPAWN), the
   gadgets that only drop their area at the brawler (Barley, Poco x2, Tick, Shade, Trunk), spawned with libg's
   `0xb35c40` after the row's ActivationDelay. `python -m super_audit --gadget` checks their effects.
@@ -114,7 +114,20 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   `superfix.c`: Lou's Slippery area deals its damage once a second. `superfix_moves.c`: Kenji's cross slash (area type
   38) and the area of a ChangeCharacter super (Bonnie's return to Clyde, `bl` at 0xb7d010). `superfix_status.c`:
   `superfix_status_cancel` ends Kenji's hide at the slash.
-- `meg_mech.patch` (issue #32 item 5, a diff on top of `broken_supers.patch`): Meg spawns in her mech and the eject at
+- `guessed_numbers.patch` (issue #22, #32 item 7, a diff on top of the others): numbers checked against the game data and
+  public sources. Gadgets have no per-battle use limit, only their cooldown, as in the live game since February 2025
+  (`gadget.c` `GAD_USES`; `NB_GAD_USES=3` restores 3 uses). The meteor's warning and the mushroom's growth take 2.5 s,
+  the ExplosionSpawn / HealingSpawn areas' TimeMs (`showdown_mods.c`). The other changes are source comments next to
+  the numbers that stay guesses (`notes/issue22.md`).
+- `status_leftovers.patch` (issue #19 leftovers, a diff on top of the others): `superfix_status.c` answers libg's
+  compiled-out reload query 0xb38e04 (statuses' DecreaseReloadTimePercent: Starr Nova's hypercharged super) and
+  lifesteal query 0xba3258 (LifeSteal / SourceLifeSteal: Starr Nova's super), keeps the Taunt / Fear flags of a
+  character's statuses (`superfix_status_taunt`), and runs area types the apply drops: SmokeScreen (1, hides the owner's
+  team inside, Sandy), DamageBoost (10), Heal without pushback (3), HealRegen (17), Cleanse (23), ExtraSuperCharge (31),
+  Enemy / AllyChargeSuper (26 / 29). `env.c`: a taunted character walks at the source and a feared one away from it,
+  for the policy's actions (`apply_actions`) and the native AI (`rec_move`), and neither attacks (`my_skill_block`).
+  `superfix_cc.c` logs the taunt counters.
+- `meg_mech.patch` (issue #32 item 5, a diff on top of the others): Meg spawns in her mech and the eject at
   0 HP is server code. `env.c` `mech_pop`: when the mech reaches 0 HP in any damage path, the client's own eject 0xb95364
   makes her small Meg (no kill, no duo / trio knock-out, super reset, no other hit that tick); knocked out as small Meg
   she respawns in her mech (`respawn_tick`). `hyper.c` `hyper_char_changed`: a running hypercharge follows any character

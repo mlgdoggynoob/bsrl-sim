@@ -196,11 +196,11 @@ void superfix_cc_install(void) {
     g_cc_on = 1;
     LOG("[superfix] stuns, silences and Draco's weapon swap installed\n");
 }
-void env_status_counts(long o[5]) __attribute__((weak));
+void env_status_counts(long o[7]) __attribute__((weak));
 void superfix_cc_status(void) {
-    if (env_status_counts) { long o[5]; env_status_counts(o);
+    if (env_status_counts) { long o[7]; env_status_counts(o);
         LOG("[superfix] env (this battle): moves re-timed by statuses %ld, rooted %ld; hits scaled %ld; inputs refused %ld; "
-            "moves re-sent %ld\n", o[0], o[1], o[2], o[3], o[4]); }
+            "moves re-sent %ld; taunted / feared steps %ld, native moves %ld\n", o[0], o[1], o[2], o[3], o[4], o[5], o[6]); }
     LOG("[superfix] cc: stuns trap %ld, projectile %ld, area %ld; silences projectile %ld, area %ld; immune %ld; paths stopped %ld; "
         "weapon swaps %ld (waited %ld)\n", g_nstun_trap, g_nstun_proj, g_nstun_area, g_nsil, g_nsil_area, g_nimm, g_nstop, g_nswap, g_nswap_wait);
 }

@@ -14,6 +14,18 @@ AI off), scenes in a row:
   6. Leon's super (NinjaUlti, Invisibility, SeeInvisibilityDistance 1200): in the observation of an enemy 2000 units away
      his cell of grid channel 5 (enemy brawlers) is set before the super, empty while invisible, set again after he
      attacks (BreakInvisibilityOnAttack); an enemy 600 units away sees him throughout (obs v5.9, host encode.c).
+A second battle on the same boot (issue #19 leftovers; NAMES2 shoot, every player has its hypercharge card):
+  7. Ollie's super (SkaterUltiTaunt, 50 ticks) lands on a target, which then tries to walk away and to shoot him: it fires
+     nothing and does not get away (gains < TAUNT_AWAY from him);
+  8. Glowy's super (MenderUltiProjectile: MenderUltiFear, 40 ticks, when the target faces her) hits a target walking at her
+     and shooting: it fires nothing and ends farther from her than it started;
+  9. Starr Nova's super (MagicalGirlUltiStatus: LifeSteal 30) after the target shot her: she heals >= STEAL_MIN of the damage
+     her super deals;
+ 10. Starr Nova's hypercharged super (MagicalGirlUltiStatusOvercharged: DecreaseReloadTimePercent 90, 30 ticks): after
+     it and some quick attacks of her transformed weapon, its ammo refills at least RELOAD_MIN times as fast as after her
+     normal super (the super swaps her weapon, so both are measured on the transformed one);
+ 11. Sandy's super (Sandy_def_ulti, SmokeScreen r2000) dropped at her feet: an enemy 1600 units away sees her before it and
+     not inside it, one 600 units away sees her throughout (the level-1 reveal distance 1200 of obs v5.9).
 python -m status_check            python -m status_check --check   (no host: the judging rules)
 --host-args '--env-arg ...' passes extra host arguments; NB_SUPERFIX=0 in the environment turns the host parts off
 (scenes 2-5 then fail), NB_SUPERFIX_CC=0 the stuns and Draco's swap (scenes 4, 5)."""
@@ -27,6 +39,10 @@ SPEED_TOL = 0.12          # plain walk vs the table Speed (the joystick target a
 BOOST_MIN, SLOW_MIN = 150, 150   # u/s: Max's +300 and Spike's -400, with room for the measurement
 STUN_MOVE = 120           # units a stunned target may still move (the stop lands within the hit's tick)
 NAMES = ["Speedy", "Cactus", "HammerDude", "DragonRider", "Ninja"]   # shooters 0-4; targets 5-9
+NAMES2 = ["Skater", "Mender", "MagicalGirl", "Sandstorm", "ShotgunGirl"]   # battle 2 (issue #19 leftovers)
+TAUNT_AWAY = 150          # units a taunted target may gain from Ollie while it tries to walk away (6 steps walk ~460 u)
+STEAL_MIN = 0.2           # Starr Nova's heal / her super's damage (LifeSteal 30 %, with room for regen and rounding)
+RELOAD_MIN = 3.0          # refill after her hypercharged / normal super (reload 10x faster while it lasts: ~700 vs ~70 a tick)
 TARGET = SA.FILLER
 SPEED = {"Speedy": 820, "DragonRider": 720, "ShotgunGirl": 770}   # characters.csv Speed (u/s)
 
@@ -64,6 +80,40 @@ def judge_invis(far0, far1, far2, near1):
     if far1: bad.append("Leon seen from 2000 u while invisible")
     if not near1: bad.append("Leon not seen from 600 u while invisible")
     if not far2: bad.append("Leon still unseen from 2000 u after he attacked")
+    return bad
+
+
+def judge_taunt(hit, away, fired):
+    if not hit: return ["Ollie's super did not hit the target"]
+    bad = []
+    if fired: bad.append("the taunted target fired %d projectiles" % fired)
+    if away > TAUNT_AWAY: bad.append("the taunted target got %.0f u away from Ollie" % away)
+    return bad
+
+
+def judge_fear(hit, d0, d1, fired):
+    if not hit: return ["Glowy's super did not reach the target (no status, no move)"]
+    bad = []
+    if fired: bad.append("the feared target fired %d projectiles" % fired)
+    if d1 <= d0: bad.append("the feared target ended %.0f u from Glowy, started %.0f u" % (d1, d0))
+    return bad
+
+
+def judge_steal(dmg, heal):
+    if dmg <= 0: return ["Starr Nova's super dealt no damage"]
+    return [] if heal >= STEAL_MIN * dmg else ["Starr Nova healed %d of %d damage" % (heal, dmg)]
+
+
+def judge_reload(g0, g1):
+    if g0 <= 0: return ["Starr Nova's ammo did not refill after her normal super (%d)" % g0]
+    return [] if g1 >= RELOAD_MIN * g0 else ["Starr Nova's ammo refilled %d after her hypercharged super, %d after her normal one" % (g1, g0)]
+
+
+def judge_smoke(far0, far1, near1):
+    bad = []
+    if not far0: bad.append("Sandy not seen from 1600 u before her super")
+    if far1: bad.append("Sandy seen from 1600 u in her sandstorm")
+    if not near1: bad.append("Sandy not seen from 600 u in her sandstorm")
     return bad
 
 
@@ -127,6 +177,7 @@ def main():
     ap.add_argument("--check", action="store_true", help="self-check of the judging (no host)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--host-args", default="", help="extra game host arguments")
+    ap.add_argument("--verbose", action="store_true", help="print raw values of the leftover scenes")
     ap.add_argument("--tag", default="sc", help="instance tag (two checks at once need two tags)")
     a = ap.parse_args()
     if a.check: return _check()
@@ -214,6 +265,78 @@ def main():
         print("status_check: Leon seen from 2000 u before / during / after attacking %s %s %s, from 600 u during %s" %
               (far0, far1, far2, near1), flush=True)
         fails["Leon invisible"] = judge_invis(far0, far1, far2, near1)
+
+        # battle 2 (issue #19 leftovers)
+        names = NAMES2 + [TARGET] * (10 - len(NAMES2)); info2 = {n: SA.expected(n) for n in NAMES2[:4]}
+        div = D.make_div(location=SA.MAP, chr=names); div["hyper"] = list(range(10))
+        inst.reset(93600001 + a.seed, gas=0, flags=0, native_mask=0, obs_mask=0, div=div)
+        R = Run(inst); R.step(ticks=10); R.place(home)
+
+        def dist(r, i, j): return float(np.hypot(r.pl[i].x - r.pl[j].x, r.pl[i].y - r.pl[j].y))
+
+        # 7. Ollie's super on target 5 (600 u), then the target walks away from him, shooting at him
+        p, (dx, dy), d = at(0, 0); tp = (p[0] + dx * 600, p[1] + dy * 600); aim = float(np.degrees(np.arctan2(dy, dx)))
+        r = R.place({0: p, 5: tp}); hp0 = r.pl[5].hp
+        R.fire(0, aim, min(1.0, 600 / info2["Skater"]["range"]))
+        hit = False
+        for _ in range(30):   # he jumps, lands (1500 ms), then the taunt area hits: wait for the damage (<= 60 ticks)
+            r = R.step()
+            if r.pl[5].hp < hp0: hit = True; break
+        R.step(); r = R.step(); d0 = dist(r, 0, 5)
+        if a.verbose: print("  ollie hp", hp0, r.pl[5].hp, "pos", r.pl[0].x, r.pl[0].y, r.pl[5].x, r.pl[5].y, flush=True)
+        _, _, fired = R.walk(5, d, steps=6, fire=1, aim=aim + 180)
+        r = R.step(); away = dist(r, 0, 5) - d0
+        print("status_check: Ollie's super hit %s; taunted target fired %d, distance to Ollie %.0f -> %.0f" %
+              (hit, fired, d0, d0 + away), flush=True)
+        fails["Ollie super taunt"] = judge_taunt(hit, away, fired)
+
+        # 8. Glowy's super on target 6 (spot 1, 700 u), which walks at her and shoots (it faces her)
+        p, (dx, dy), d = at(1, 1); tp = (p[0] + dx * 700, p[1] + dy * 700); aim = float(np.degrees(np.arctan2(dy, dx)))
+        r = R.place({1: p, 6: tp}); R.step({6: ((d + 8) % 16, 0, aim + 180, 0.0)}); r = R.step(); d0 = dist(r, 1, 6)
+        R.fire(1, aim, min(1.0, 700 / info2["Mender"]["range"]))
+        for _ in range(4): R.step({6: ((d + 8) % 16, 0, aim + 180, 0.0)})
+        _, _, fired = R.walk(6, (d + 8) % 16, steps=6, fire=1, aim=aim + 180)
+        r = R.step(); d1 = dist(r, 1, 6)
+        print("status_check: Glowy's super: feared target fired %d, distance to Glowy %.0f -> %.0f" % (fired, d0, d1), flush=True)
+        fails["Glowy super fear"] = judge_fear(True, d0, d1, fired)
+
+        # 9. Starr Nova (spot 2): target 7 (500 u) shoots her, then her super hits it
+        p, (dx, dy), d = at(2, 2); tp = (p[0] + dx * 500, p[1] + dy * 500); aim = float(np.degrees(np.arctan2(dy, dx)))
+        r = R.place({2: p, 7: tp})
+        R.step({7: (-1, 1, aim + 180, 0.0)}, 1)
+        for _ in range(6): r = R.step()
+        hp_s, hp_t = r.pl[2].hp, r.pl[7].hp
+        R.fire(2, aim, min(1.0, 600 / info2["MagicalGirl"]["range"]))
+        for _ in range(10): r = R.step()
+        dmg, heal = hp_t - r.pl[7].hp, r.pl[2].hp - hp_s
+        print("status_check: Starr Nova's super dealt %d, she healed %d (hp %d -> %d)" % (dmg, heal, hp_s, r.pl[2].hp), flush=True)
+        fails["Starr Nova lifesteal"] = judge_steal(dmg, heal)
+
+        # 10. Starr Nova's transformed attacks after her normal and her hypercharged super: ammo left after 4 of them
+        def after_super(hyper):
+            for _ in range(40): R.step()   # the earlier transformation over, ammo full
+            inst.setup(super_fill=[2], hyper_fill=[2] if hyper else []); R.step(ticks=1)
+            if hyper: R.step({2: (-1, 4, aim, 0.0)}, 1)
+            R.step({2: (-1, 2, aim, 1.0)}, 1)
+            for _ in range(2): R.step()   # the dash
+            s = []
+            for _ in range(4): R.step({2: (-1, 1, aim + 90, 0.0)}, 1); s.append(R.step(ticks=3).pl[2].ammo)
+            if a.verbose: print("  ammo", s, flush=True)
+            return max((y - x for x, y in zip(s, s[1:]) if x < 3000), default=0)   # refill between attacks, ammo not full
+        p, (dx, dy), d = at(2, 2); R.place({2: p})
+        g0 = after_super(False); g1 = after_super(True)
+        print("status_check: Starr Nova's ammo refill between attacks %d after her normal super, %d after her hypercharged one" % (g0, g1), flush=True)
+        fails["Starr Nova reload"] = judge_reload(g0, g1)
+
+        # 11. Sandy's super at her feet (spot 3); enemies 8 (1600 u) and 9 (600 u)
+        p, (dx, dy), d = at(3, 3); aim = float(np.degrees(np.arctan2(dy, dx)))
+        R.place({3: p, 8: (p[0] + dx * 1600, p[1] + dy * 1600), 9: (p[0] + dx * 600, p[1] + dy * 600)})
+        far0 = R.sees(8, 3)
+        R.fire(3, aim + 180, 0.05)
+        for _ in range(8): R.step()
+        far1, near1 = R.sees(8, 3), R.sees(9, 3)
+        print("status_check: Sandy seen from 1600 u before / in her sandstorm %s %s, from 600 u in it %s" % (far0, far1, near1), flush=True)
+        fails["Sandy smoke screen"] = judge_smoke(far0, far1, near1)
     finally:
         inst.close()
     bad = 0
@@ -231,6 +354,11 @@ def _check():
     assert judge_stun(True, 0, 2, 900) and judge_stun(True, 0, 0, 50)
     assert not judge_mount(860, 720, {1}, {2}) and judge_mount(730, 720, {1}, {2}) and judge_mount(860, 720, {1}, {1})
     assert judge_mount(860, 720, set(), {2})
+    assert not judge_taunt(True, 20, 0) and judge_taunt(False, 0, 0) and judge_taunt(True, 400, 0) and judge_taunt(True, 0, 1)
+    assert not judge_fear(True, 600, 900, 0) and judge_fear(True, 600, 500, 0) and judge_fear(True, 600, 900, 2)
+    assert not judge_steal(600, 180) and judge_steal(600, 20) and judge_steal(0, 0)
+    assert not judge_reload(71, 714) and judge_reload(71, 150) and judge_reload(0, 700)
+    assert not judge_smoke(True, False, True) and judge_smoke(True, True, True) and judge_smoke(False, False, True)
     assert not judge_invis(True, False, True, True) and judge_invis(True, True, True, True) and judge_invis(True, False, False, True)
     print("status_check judging ok")
 

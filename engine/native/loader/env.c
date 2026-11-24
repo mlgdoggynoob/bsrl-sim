@@ -129,6 +129,7 @@ static struct {
     long hyper_dmg, hyper_moves;   /* hypercharge round: damage hits scaled, moves sped up */
     long st_moves, st_roots, st_dmg, st_blocked, st_resend;   /* issue #19: moves re-timed / rooted by statuses, hits scaled,
                                                                * inputs refused (stun / silence), moves re-sent on a change */
+    long st_taunts, st_taunt_moves;   /* issue #19: policy steps and native moves steered by a taunt / fear */
     int st_key[NBE_MAXP];          /* issue #19: last status speed / stun state per player (a change re-sends the move) */
     int in_own_call;    /* 1 = gas, 2 = bomb (our own calls to the damage root) */
     int seed_applied;
@@ -155,8 +156,9 @@ static int player_char_id(void *p) { int c = I32(p, 0x1e4); return c ? c : I32(p
  * teammate's position. Its team wiped meanwhile: hp 0 -> eliminated as usual. The client libg has no respawn (server code). */
 static uint32_t g_div_team;
 #define RESP_TICKS 340     /* game_mode_variations.csv RespawnSeconds 17 (Duo / Trio Showdown) */
-#define RESP_PROTECT 60    /* spawn protection after a respawn: +0x4f0 = tick + 60 (3 s). [?] the server's respawn value is
-                            * not in the client; 60 = the post-intro protection of the battle start (0xc2806c: intro + 60) */
+#define RESP_PROTECT 60    /* spawn protection after a respawn: +0x4f0 = tick + 60 (3 s; the wiki's Duo / Trio Showdown pages:
+                            * "immunity shield for 3 seconds"). Not in the client data; 60 is also the post-intro protection
+                            * of the battle start (0xc2806c: intro + 60) */
 #define PARK_X (-150)
 #define PARK_Y 150
 static int resp_on(void) { return (int)(g_div_team >> 31); }
@@ -183,6 +185,17 @@ int superfix_status_speed(uint8_t *ch, int base) __attribute__((weak));
 int superfix_status_mods(uint8_t *ch, StMods *m) __attribute__((weak));
 int superfix_status_blocked(uint8_t *ch) __attribute__((weak));
 int superfix_status_silenced(uint8_t *ch) __attribute__((weak));
+int superfix_status_taunt(uint8_t *ch, int *x, int *y) __attribute__((weak));   /* issue #19: 1 taunted, 2 feared */
+/* issue #19: where a taunted (1) / feared (2) character is made to walk: to its source, or 1000 u straight away from it */
+static int taunt_target(uint8_t *ch, int *tx, int *ty) {
+    int sx, sy, k = superfix_status_taunt ? superfix_status_taunt(ch, &sx, &sy) : 0;
+    if (!k) return 0;
+    if (k == 1) { *tx = sx; *ty = sy; return 1; }
+    double dx = I32(ch, 0x38) - sx, dy = I32(ch, 0x3c) - sy, d = sqrt(dx * dx + dy * dy);
+    if (d < 1) { dx = 1; dy = 0; d = 1; }
+    *tx = I32(ch, 0x38) + (int)(dx / d * 1000); *ty = I32(ch, 0x3c) + (int)(dy / d * 1000);
+    return 2;
+}
 void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) __attribute__((weak));   /* superfix_cc.c: projectile stuns */
 void hyper_install(void); void *hyper_super_data(int i, uint8_t *ch, void *sd); void hyper_unswap(int i, uint8_t *ch);
 void hyper_char_changed(uint8_t *old, uint8_t *nc);
@@ -458,6 +471,8 @@ static uint64_t my_charge(void *p, int d, int a2, int a3, void *a4, int a5) {
 }
 
 /* ------------------------------------------------------------------ storm */
+/* [?] ring schedule: first step at tick 440, then one step every 100 ticks (5 s). The phone agent's measured clock; not in
+ * the client data (game_mode_variations.csv only has ModeHasFillingPoison) or on the wiki (issue #22). */
 static int gas_step(int tick) { int t = tick - 440; return t > 0 ? t / 100 : 0; }
 typedef int (*fn_gas)(int, int, int, int, int, int, int *, int, int);
 static fn_gas o_gastest;
@@ -550,8 +565,10 @@ int g_native_charge = 1; static long g_native_charges;
  * ChargePushback with the game's knockback. The charge's areas and Bull's wall breaking are env's too (charge_end, below).
  * --native-charge 2 = movement only (no env contact damage, pushback, areas or wall breaking). */
 #define CHARGE_HIT_R 250
-#define CHARGE_WALL_R 200    /* Bull: tiles within 200 u of his centre break (1 tile wide lane; [?] the server's radius is unknown) */
-#define CHARGE_LAND_WALL_R 300   /* El Primo: tiles around the landing point ([?] radius unknown; one tile ring) */
+#define CHARGE_WALL_R 200    /* Bull: tiles within 200 u of his centre break (1 tile wide lane; [?] the server's radius is unknown:
+                              * no data column, the wiki only says he breaks what he touches; his CollisionRadius is 145) */
+#define CHARGE_LAND_WALL_R 300   /* El Primo: tiles around the landing point ([?] radius unknown: LuchadorUlti has no area, the
+                                  * wiki only says "in a radius around him"; one tile ring) */
 #define CHARGE_LAND_R 200        /* Bonnie (type 16): her landing hit, CannonGirlExplosion's Radius ([?] the server's rule is compiled out) */
 typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; } ChargeJob;
 static ChargeJob g_cj[NBE_MAXP]; static int g_ncj; static long g_charge_hits, g_charge_pushes, g_charge_areas, g_charge_walls;
@@ -954,7 +971,8 @@ static void rec_put(int kind, uint8_t *ch, int a, int b, int c, int d) {
 /* issue #19: and the brawler's statuses (slows, speed boosts, roots, Draco's mount speed: superfix_status_speed) on top of the
  * hypercharged or the CharacterData speed; a root (speed 0) turns the move into a stop where the character stands (the mover
  * would divide by 0). A stunned character's moves are refused by the mover itself (0xb38b54). */
-void env_status_counts(long o[5]) { o[0] = E.st_moves; o[1] = E.st_roots; o[2] = E.st_dmg; o[3] = E.st_blocked; o[4] = E.st_resend; }
+void env_status_counts(long o[7]) { o[0] = E.st_moves; o[1] = E.st_roots; o[2] = E.st_dmg; o[3] = E.st_blocked; o[4] = E.st_resend;
+    o[5] = E.st_taunts; o[6] = E.st_taunt_moves; }
 static int base_speed(uint8_t *ch) {   /* the CharacterData speed the mover uses with useSpeed 0 (0xab31e0) */
     void *cd = ((void *(*)(void *))B(0xb6a384))(ch); return cd ? ((int (*)(void *))B(0xab31e0))(cd) : 0;
 }
@@ -964,6 +982,8 @@ static void rec_move(uint64_t *ctx) {
         uint8_t *ch = (uint8_t *)ctx[0];
         int i; void *p = owner_player(E.sim, ch, &i); int sp = p ? hyper_speed(i, p, ch) : 0;
         if (sp > 0) { ctx[3] = 1; ctx[4] = (uint64_t)(uint32_t)sp; E.hyper_moves++; }
+        if (VTOF(ch) == VT_CHAR) { int tx, ty; if (taunt_target(ch, &tx, &ty)) {   /* issue #19: the native AI's moves too */
+            ctx[1] = (uint64_t)(uint32_t)tx; ctx[2] = (uint64_t)(uint32_t)ty; E.st_taunt_moves++; } }
         if (superfix_status_speed && VTOF(ch) == VT_CHAR) {
             int base = sp > 0 ? sp : base_speed(ch), ss = superfix_status_speed(ch, base);
             if (ss == 0) { ctx[1] = (uint64_t)(uint32_t)I32(ch, 0x38); ctx[2] = (uint64_t)(uint32_t)I32(ch, 0x3c); E.st_roots++; }
@@ -1007,6 +1027,8 @@ static void lead_set(const NbeCmd *c) { g_lead_mask = c->lead_mask; g_lead_dt = 
 static void my_skill_block(uint64_t *ctx) {   /* 0xb487c4 onEnter: no attack/super while airborne */
     if (g_lead_mask) lead_aim(ctx);
     if (E.njobs && ctx[0]) { int id = I32(ctx[0], 8); if (leaping(id)) { ctx[1] = 1; E.sf_blocked++; } }
+    if (ctx[0] && VTOF((uint8_t *)ctx[0]) == VT_CHAR && superfix_status_taunt) {   /* issue #19: taunted / feared: no attack */
+        int x, y; if (superfix_status_taunt((uint8_t *)ctx[0], &x, &y)) { ctx[1] = 1; E.st_blocked++; } }
     rec_put(1, (uint8_t *)ctx[0], (int)ctx[2], (int)ctx[3], (int)ctx[6], ctx[1] == 1 ? 1 : 0);
 }
 static uint8_t g_empty_list[64] __attribute__((aligned(16)));
@@ -1481,6 +1503,15 @@ static void apply_actions(void *sim, const NbeCmd *c) {
         if (blk) { E.st_blocked += a->fire != 0; E.pf[i].n = 0; continue; }
         NbeAction q;
         if (sil && (a->fire == 2 || a->fire == 3 || a->fire == 4)) { E.st_blocked++; q = *a; q.fire = 0; a = &q; }
+        {   /* issue #19: taunted / feared: the move goes to (away from) the source, no attack (superfix_status_taunt) */
+            int tx, ty;
+            if (taunt_target(ch, &tx, &ty)) {
+                q = *a; E.st_blocked += q.fire != 0; q.fire = 0; E.pf[i].n = 0; E.st_taunts++;
+                q.move_dir = (int)lround(atan2(ty - I32(ch, 0x3c), tx - I32(ch, 0x38)) / (M_PI / 8)) & 15;
+                if ((long)(tx - I32(ch, 0x38)) * (tx - I32(ch, 0x38)) + (long)(ty - I32(ch, 0x3c)) * (ty - I32(ch, 0x3c)) < 150L * 150) q.move_dir = -1;
+                a = &q;
+            }
+        }
         if (client_intents(sim, i, ch, a)) continue;
         if (a->move_dir >= 0 && a->move_dir < 16) {
             double r = a->move_dir * M_PI / 8; int tx, ty, cx, cy; client_pos(i, ch, &cx, &cy);
