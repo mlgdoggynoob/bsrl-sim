@@ -119,6 +119,14 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   (`gadget.c` `GAD_USES`; `NB_GAD_USES=3` restores 3 uses). The meteor's warning and the mushroom's growth take 2.5 s,
   the ExplosionSpawn / HealingSpawn areas' TimeMs (`showdown_mods.c`). The other changes are source comments next to
   the numbers that stay guesses (`notes/issue22.md`).
+- `status_leftovers.patch` (issue #19 leftovers, a diff on top of the others): `superfix_status.c` answers libg's
+  compiled-out reload query 0xb38e04 (statuses' DecreaseReloadTimePercent: Starr Nova's hypercharged super) and
+  lifesteal query 0xba3258 (LifeSteal / SourceLifeSteal: Starr Nova's super), keeps the Taunt / Fear flags of a
+  character's statuses (`superfix_status_taunt`), and runs area types the apply drops: SmokeScreen (1, hides the owner's
+  team inside, Sandy), DamageBoost (10), Heal without pushback (3), HealRegen (17), Cleanse (23), ExtraSuperCharge (31),
+  Enemy / AllyChargeSuper (26 / 29). `env.c`: a taunted character walks at the source and a feared one away from it,
+  for the policy's actions (`apply_actions`) and the native AI (`rec_move`), and neither attacks (`my_skill_block`).
+  `superfix_cc.c` logs the taunt counters.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
