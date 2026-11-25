@@ -43,7 +43,9 @@ $SIM_WORK/super_audit.md (also stdout): a checklist grouped by class then super 
 merged into an existing super_audit.json.
 --hyper (hypercharge round): every player gets its hypercharge card; each shooter's hypercharge is filled with its super and
 activated (fire 4) one tick before the super. The expected effects are the hypercharged super's (`hyper_skill`: characters.csv
-OverchargedUltimateSkill, else the UltimateSkill's OverchargedVersion, with the row's Overcharged* columns), plus hyper_cast
+OverchargedUltimateSkill, else the UltimateSkill's OverchargedVersion, with the row's Overcharged* columns; a negative
+OverchargedChargePushback expects a pull, the target ending nearer the shooter; a projectile only teammates get, Max's drinks
+(TEAM_ONLY), is not expected in this solo battle), plus hyper_cast
 (the host reports a super cast while hypercharged, NbeResp hyp_supers / hyp_super_id, with the OverchargedUltimateSkill's data
 where there is one) and hyper (a projectile / summon / area / item only the hypercharged super has, when it has one).
 Output: super_audit_hyper.json / .md.
@@ -108,7 +110,8 @@ def skill_name(did):
 # hypercharged super (--hyper): the skills.csv columns the game's own code reads while isOvercharged (host hyper.c)
 OC_COLS = (("Projectiles", "OverchargedProjectiles"), ("AreaEffectObject", "OverchargedAreaEffectObject"),
            ("AreaEffectObject2", "OverchargedAreaEffectObject2"), ("SummonedCharacters", "OverchargedSummonedCharacters"),
-           ("SpawnedItem", "OverchargedSpawnedItem"))
+           ("SpawnedItem", "OverchargedSpawnedItem"), ("ChargePushback", "OverchargedChargePushback"))
+TEAM_ONLY = {"SpeedyOverchargedProjectile"}   # thrown only at teammates (Max's drinks, superfix.c max_drinks): none in a solo battle
 
 
 def hyper_skill(name):
@@ -120,7 +123,7 @@ def hyper_skill(name):
     if s.get("OverchargedVersion") in T["skill"]: n = s["OverchargedVersion"]; s = T["skill"][n]
     s = dict(s)
     for k, ko in OC_COLS:
-        if s.get(ko): s[k] = s[ko]
+        if s.get(ko) and s[ko] != "0": s[k] = s[ko]   # an empty or 0 overcharged column keeps the normal value
     return n, s
 
 
@@ -196,6 +199,9 @@ def expected(name, hyper=False):
         names = lambda i: set(i["projectiles"]) | set(i["summons"]) | set(i["areas"]) | set(i["items"])
         out["hyper_names"] = sorted(names(out) - names(base)); out["own_skill"] = bool(ch.get("OverchargedUltimateSkill"))
         ex.append("hyper_cast")
+        if out["projectiles"] and set(out["projectiles"]) <= TEAM_ONLY:
+            ex.remove("projectile"); notes.append("its projectiles go to teammates only: none in this solo battle")
+            out["hyper_names"] = [n for n in out["hyper_names"] if n not in TEAM_ONLY]
         if out["hyper_names"]: ex.append("hyper")
         else: notes.append("hypercharged super: no projectile / summon / area / item of its own (its difference is not visible here)")
     return out
@@ -231,6 +237,7 @@ def expected_skill(sk_name, s):
     # (charge_check checks the edge)
     if _num(s, "ChargePushback") > 0 or any(_num(r, "PushbackStrength") > 0 and r.get("Type") != "EdgeCrossing" for r in pl + alog):
         ex.append("push")
+    if _num(s, "ChargePushback") < 0: ex.append("pull")   # El Primo hypercharged (OverchargedChargePushback -100): hit enemies pulled to the landing point
     if any(r.get("Type") == "EdgeCrossing" for r in alog): notes.append("EdgeCrossing push: only at the arena edge, checked by charge_check")
     if (_num(s, "HealSelfOnActivationPower") > 0 or any(_num(r, "HealOwnPercent") > 0 for r in pl)
             or any(r.get("Type") in ("Heal", "Hot", "HealRegen", "HealAndDamage", "HotAndDot") for r in alog)): ex.append("heal")
@@ -370,6 +377,7 @@ def observed(m):
     if m.get("damage", 0) > 0 and not m.get("foreign_near"): o.add("damage")
     if m.get("move", 0) >= MOVE_MIN or m.get("leaping"): o.add("move")
     if m.get("push", 0) >= PUSH_MIN: o.add("push")
+    if m.get("pull", 0) >= PUSH_MIN: o.add("pull")
     if m.get("heal", 0) >= HEAL_MIN: o.add("heal")
     for k, e in (("projectiles", "projectile"), ("summons", "summon"), ("areas", "area"), ("items", "item")):
         if m.get(k): o.add(e)
@@ -401,7 +409,8 @@ def describe(m, missing=()):
     p = []
     if m.get("damage", 0) > 0: p.append("%d damage%s" % (m["damage"], " (foreign summon near: not counted)" if m.get("foreign_near") else ""))
     if m.get("move", 0) >= MOVE_MIN or m.get("leaping"): p.append("moved %d u%s" % (m.get("move", 0), " (leap)" if m.get("leaping") else ""))
-    if m.get("push", 0) >= PUSH_MIN: p.append("target pushed %d u" % m["push"])
+    if m.get("pull", 0) >= PUSH_MIN: p.append("target pulled %d u nearer" % m["pull"])
+    elif m.get("push", 0) >= PUSH_MIN: p.append("target pushed %d u" % m["push"])
     if m.get("heal", 0) >= HEAL_MIN: p.append("healed %d" % m["heal"])
     cnt = lambda xs: ", ".join("%s x%d" % (k, v) if v > 1 else k for k, v in collections.Counter(xs).items())
     if m.get("projectiles"): p.append("projectiles: " + cnt(m["projectiles"]))
@@ -632,7 +641,7 @@ class Auditor:
             M[j] = dict(geo[j], spawned=True, filled=bool(p.super_max > 0 and p.super_charge >= p.super_max), super_max=int(p.super_max),
                         sc0=int(p.super_charge), sc_min=int(p.super_charge), hp0=int(p.hp), hp_max=int(p.hp), max_hp=int(p.max_hp),
                         pre_damaged=bool(p.hp < p.max_hp), x0=int(p.x), y0=int(p.y), tx0=int(q.x), ty0=int(q.y), thp0=int(q.hp), thp_min=int(q.hp),
-                        move=0, push=0, leaping=False, projectiles={}, summons={}, areas={}, items={},
+                        move=0, push=0, pull=0, leaping=False, projectiles={}, summons={}, areas={}, items={},
                         changed=False, data0=int(ch[0, 1]) if len(ch) else NIL, ulti0=int(ch[0, 15]) if len(ch) else NIL,
                         ulti_active=False, foreign_near=False, target_dead=False, s=s, t=t)
         acts = dict(idle)
@@ -648,7 +657,10 @@ class Auditor:
                 m["thp_min"] = min(m["thp_min"], int(q.hp) if q.alive else 0); m["target_dead"] |= bool(not q.alive or q.eliminated)
                 m["leaping"] |= bool(p.leaping)
                 if p.alive: m["move"] = max(m["move"], int(np.hypot(p.x - m["x0"], p.y - m["y0"])))
-                if q.alive and not q.eliminated: m["push"] = max(m["push"], int(np.hypot(q.x - m["tx0"], q.y - m["ty0"])))
+                if q.alive and not q.eliminated:
+                    m["push"] = max(m["push"], int(np.hypot(q.x - m["tx0"], q.y - m["ty0"])))
+                    if p.alive and m["push"] >= PUSH_MIN:   # pull: the target ends nearer the shooter than it started from
+                        m["pull"] = max(m["pull"], int(np.hypot(m["tx0"] - p.x, m["ty0"] - p.y) - np.hypot(q.x - p.x, q.y - p.y)))
                 m["dd"] = m.get("dd", 0) + int(p.damage_dealt)   # per step (the host clears it after every response)
                 if st is None: continue
                 if bid.get(s) != bid0.get(s): m["changed"] = True
@@ -807,7 +819,7 @@ DMG_AREAS = ("Damage", "Dot", "DelayedDamage", "DamageAndStatusEffect", "HealAnd
              "CrossSlashGround")   # area types that hit enemies (Effect / StatusEffect rows carry a Damage column that hits no one)
 # (range / speed: the audit aims at a fixed distance and records no speed, so neither maps to its move field)
 HDESC_LIVE = {"count": "objects", "split": "projectiles", "spray": "projectiles", "damage": "damage", "dot": "damage", "push": "push",
-              "pull": "push", "heal": "heal"}
+              "pull": "pull", "heal": "heal"}
 
 
 def _hd_rows():
@@ -1037,16 +1049,18 @@ def live_claim(claim, mh, mn, name):
     if fld == "heal" and not mh.get("pre_damaged"): return "live_unchecked", "heal not testable (pre-damage missed)"
     n_obj = lambda m: sum(len(m.get(k, [])) for k in ("projectiles", "items", "summons", "areas"))
     get = {"objects": n_obj, "projectiles": lambda m: len(m.get("projectiles", [])), "damage": lambda m: m.get("damage", 0),
-           "push": lambda m: m.get("push", 0), "heal": lambda m: m.get("heal", 0)}[fld]
+           "push": lambda m: m.get("push", 0), "pull": lambda m: m.get("pull", 0), "heal": lambda m: m.get("heal", 0)}[fld]
     vh = get(mh)
+    if fld == "pull":   # the normal super never pulls: judged on the hypercharged run alone
+        return ("live_ok" if vh >= PUSH_MIN else "live_wrong"), "target pulled %d u nearer the shooter" % vh
     if mn is not None and mn.get("consumed"):
         vn = get(mn); why = "%s %g -> %g (normal run -> hypercharged run)" % (fld, vn, vh)
         if fld == "heal" and vh == vn: return "live_unchecked", why + ": equal, capped by the pre-damage"
         if vh == vn == 0: return "live_unchecked", why + ": none in either run (the setup does not reach it)"
         return ("live_ok" if vh > vn else "live_wrong"), why
     ex = expected(name)["expect"]
-    if fld in ("damage", "push", "heal") and fld not in ex:
-        return ("live_ok" if vh > {"damage": 0, "push": PUSH_MIN, "heal": HEAL_MIN}[fld] - (fld == "damage") else "live_wrong",
+    if fld in ("damage", "push", "pull", "heal") and fld not in ex:
+        return ("live_ok" if vh > {"damage": 0, "push": PUSH_MIN, "pull": PUSH_MIN, "heal": HEAL_MIN}[fld] - (fld == "damage") else "live_wrong",
                 "%s %g (the normal super's tables expect none)" % (fld, vh))
     if fld == "objects" and claim.get("hyper"):
         return ("live_ok" if n_obj(mh) >= claim["hyper"] else "live_wrong"), "%d objects seen, hypercharged tables %g" % (n_obj(mh), claim["hyper"])
@@ -1122,6 +1136,7 @@ def _check():
                 summons=[], areas=[], items=[], changed=False, leaping=False, foreign_near=False)
     m = lambda **k: dict(base, **k)
     assert classify(m(), ["damage"])[0] == "no_effect"
+    assert classify(m(push=300, pull=300), ["pull"])[0] == "works" and classify(m(push=780), ["pull"])[:2] == ("partial", ["pull"])   # El Primo hyper: a push is not a pull
     assert classify(m(consumed=False, damage=500), ["damage"])[0] == "not_fired"
     assert classify(m(spawned=False), ["damage"])[0] == "not_fired"
     assert classify({"crashed": True}, ["damage"])[0] == "crash"
@@ -1169,6 +1184,7 @@ def _check():
     assert live_claim({"feature": "count"}, hm, m(items=["B"] * 5), "x")[0] == "live_ok"
     assert live_claim({"feature": "count"}, hm, m(items=["B"] * 7), "x")[0] == "live_wrong"
     assert live_claim({"feature": "pull"}, hm, m(push=780), "x")[0] == "live_wrong" and live_claim({"feature": "radius"}, hm, None, "x")[0] == "live_unchecked"
+    assert live_claim({"feature": "pull"}, m(hyper_cast=True, push=300, pull=300), m(push=780), "x")[0] == "live_ok"
     assert live_claim({"feature": "push"}, hm, m(), "x")[0] == "live_unchecked"           # nothing in either run: the setup does not reach it
     assert live_claim({"feature": "count"}, m(items=["B"]), m(), "x") == ("live_unchecked", "super not cast hypercharged")
     # best attempt, descriptions, checklist
@@ -1204,6 +1220,9 @@ def _check():
         assert "MechaDudeBig" in inf and len(env_v5.forms()) == 9 and "MechaDudeBig" not in env_v5.heroes()   # forms audited, never picked
         assert display("BullDude") == "Bull" and data_name(16000000 + list(_tables()["char"]).index("BullDude")) == "BullDude"
         hy = {h: expected(h, hyper=True) for h in ("Jester", "Beamer", "Twins", "Skater", "Domain", "Dancer", "MechaDudeBig", "ShotgunGirl", "PowerLeveler")}
+        lh, mx = expected("Luchador", hyper=True), expected("Speedy", hyper=True)   # El Primo pulls, Max's drinks need teammates
+        assert "pull" in lh["expect"] and "push" not in lh["expect"] and "push" in inf["Luchador"]["expect"], lh["expect"]
+        assert "projectile" not in mx["expect"] and "area" in mx["expect"], mx["expect"]
         assert hy["Jester"]["skill"] == "JesterOverchargedUlti" and "ChesterOverchargedUltiProjectile" in hy["Jester"]["hyper_names"]
         assert {"TwinsHCUltiProjectile", "TwinsPetHyper"} <= set(hy["Twins"]["hyper_names"]) and hy["Twins"]["own_skill"]
         assert hy["Skater"]["hyper_names"] == ["SkaterUltiLandingOvercharged"] and "hyper" in hy["Skater"]["expect"]
