@@ -28,7 +28,8 @@
  *   Issue #19 leftovers: DecreaseReloadTimePercent +0x124 through libg's compiled-out reload query 0xb38e04 (my_reload_pct),
  *   LifeSteal +0x10c / SourceLifeSteal +0x110 through the damage root's compiled-out lifesteal query 0xba3258
  *   (my_lifesteal_pct), Taunt +0x132 / Fear +0x133 for env.c (superfix_status_taunt), and the area types the area apply
- *   drops (area_extra: SmokeScreen, DamageBoost, Heal, HealRegen, Cleanse, super charge areas).
+ *   drops (area_extra: SmokeScreen, DamageBoost, Heal, HealRegen, Cleanse, super charge areas; issue #19 final: ChargeSuper,
+ *   GiveUlti, EnragerOverchargeSuper, SwitchSkill, BulletSpin, HotAndOverheals).
  * Not modelled: DamageBoostTargetCurrentHealthPercent +0x114, boolean attributes other than Fear (Kaze's HasStormVision),
  *   CancelOn* conditions. Those statuses are stored (so their duration and target are right) but change nothing.
  *   0xba3274 (called at stop / charge end / respawn) and the other manager stubs are left alone.

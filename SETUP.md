@@ -141,6 +141,15 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   site. `env.c`: Berry's paint (DamageScaleType 4) is a percent of his main attack Damage (660 damage / 330 heal per second
   at power 1, x2 at power 11) and his dash heals the teammates he passes by the skill's Damage. `python -m charge_check`
   scenes 4 and 6.
+- `status_final.patch` (issue #19 final, a diff on top of `split_and_paint.patch`): `superfix_cc.c` applies Stun, Silence
+  and HpBasedStun areas (Meeple's RageQuit, longer the less HP she has) with libg's own target test (circle, InnerRadius
+  ring, RequireLineOfSight through the tile map's line test: Fang's sweep) and swaps Angelo's weapon to its SecondarySkill
+  inside his SwitchSkill area. `superfix_status.c` runs more area types the apply drops: ChargeSuper and GiveUlti (Max's
+  hypercharge), EnragerOverchargeSuper (Edgar: reload and super charge), BulletSpin (Darryl), HotAndOverheals (Pam's
+  turret, as Hot). `superfix.c`: Max's hypercharged drinks to each teammate, and a summon's own AreaEffect (the turrets'
+  heal, 8-Bit's booster, ...), which no client code spawns. `spawnfix.c`: Meeple's and Damian's wall areas. `gadget.c`: Fang's
+  sweep, Painter's push and Meeple's RageQuit are AREA gadgets. `env.c`: Edgar's super charge percent. `python -m status_check`
+  scenes 12-20.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
