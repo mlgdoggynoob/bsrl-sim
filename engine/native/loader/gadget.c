@@ -36,8 +36,10 @@
  *         Shelly, Emz x2, ...; published PROJECTILE): NumBulletsInOneAttack of the skill's first projectile over Spread degrees
  *         centred on the aim, to CastingRange, with the skill's Damage scaled by the brawler's damage percent (0xb4b660, as the
  *         attack path scales it), spawned with the projectile spawn 0xb78190 (spawnfix.c) at kind 4. What the projectile
- *         does on hit or at its end (areas, items, summons, pull / push) is libg's and the earlier rounds'. Not applied: the
- *         skill's timing (ActiveTime, MsBetweenAttacks waves), TwoGuns, AttackPattern.
+ *         does on hit or at its end (areas, items, summons, pull / push) is libg's and the earlier rounds'. A projectile
+ *         row with DamageOnlyWithOneProj (Emz's spray) damages each target with one projectile of the volley only, through
+ *         the attack path's sibling list (volley). Not applied: the skill's timing (ActiveTime, MsBetweenAttacks waves),
+ *         TwoGuns, AttackPattern.
  *   SKILL AREA  the same, but the skill has no projectile, only an AreaEffectObject (published SPAWN): Bull's Stomp (Attack:
  *         at the brawler), 8-Bit's Extra Credits (AimableArea: at the aim point at CastingRange).
  *   AUTO AIMER  Piper's Sniper_HandGun (repeat_shot; card 23000268 only; published PROJECTILE): one CustomObject projectile
@@ -208,12 +210,15 @@ static int dmg_scaled(uint8_t *ch, int dmg) {
 /* one projectile from the brawler along `deg` (math degrees) to `range` units, through the projectile spawn 0xb78190 as
  * spawnfix.c calls it (owner twice, no lateral offset, no inherited hit list) -> 1 = spawned */
 static long g_shots;
+static void *g_last_shot;   /* the projectile the last shoot() spawned (NULL = none), for volley's sibling list */
 static int shoot(void *sim, uint8_t *ch, void *pd, double deg, int range, int dmg) {
+    g_last_shot = NULL;
     if (!pd || !PTR(ch, 0x20)) return 0;
     int X = I32(ch, 0x38), Y = I32(ch, 0x3c); double r = deg * M_PI / 180;
     int tx = (int)floor(X + range * cos(r) + 0.5), ty = (int)floor(Y + range * sin(r) + 0.5);
     void *p = ((SpawnProj)B(0xb78190))(X, Y, ch, ch, pd, tx, ty, dmg, dmg, 0, 0, NULL, sim, 0, GAD_PROJ_KIND, NULL);
     if (p) g_shots++;
+    g_last_shot = p;
     if (g_shots <= 4) LOG("[gadget] shot %p to %d,%d dmg %d (proj +0xd4 %d)\n", p, tx, ty, dmg, p ? I32(p, 0xd4) : -1);
     return p != NULL;
 }
@@ -222,10 +227,20 @@ static void *lookup_by_name(uint64_t fn, void *str) {   /* getXByName(String*, r
 }
 static void *custom_proj(void *ad) { return lookup_by_name(0xad2f1c, ((void *(*)(void *))B(AD_CUSTOM_OBJ))(ad)); }
 static void *custom_item(void *ad) { return lookup_by_name(0xad3c30, ((void *(*)(void *))B(AD_CUSTOM_OBJ))(ad)); }
-/* a volley of n projectiles over `spread` degrees centred on deg (n = 1: straight) -> how many spawned */
+/* a volley of n projectiles over `spread` degrees centred on deg (n = 1: straight) -> how many spawned. A projectile row with
+ * DamageOnlyWithOneProj (ProjectileData +0x1ed, getter 0xafaa08; Emz's spray) damages a target with one projectile of the
+ * attack only, as the attack path does it: it keeps the attack's projectiles in a list (char +0xd38, 0xb4dc6c) and, after
+ * the volley, gives each one the ids of the others (0xb791dc(proj, list) -> proj +0x1a8, at 0xb4e350); on a hit, libg's
+ * projectile hit (0xb730bc -> 0xb77894) then puts the target on every sibling's hit list (proj +0x160) for good. */
+typedef struct { void **data; int cap, count; } LArr;   /* LogicArrayList: data, capacity, count (0xb791dc reads +0, +12) */
 static int volley(void *sim, uint8_t *ch, void *pd, double deg, int n, double spread, int range, int dmg) {
-    int k = 0;
-    for (int i = 0; i < n; i++) k += shoot(sim, ch, pd, n > 1 ? deg - spread / 2 + spread * i / (n - 1) : deg, range, dmg);
+    int k = 0; void *ps[16]; LArr l = { ps, 16, 0 };
+    for (int i = 0; i < n; i++) {
+        k += shoot(sim, ch, pd, n > 1 ? deg - spread / 2 + spread * i / (n - 1) : deg, range, dmg);
+        if (g_last_shot && l.count < 16) ps[l.count++] = g_last_shot;
+    }
+    if (l.count > 1 && (((int (*)(void *))B(0xafaa08))(pd) & 1))
+        for (int i = 0; i < l.count; i++) ((void (*)(void *, void *))B(0xb791dc))(ps[i], &l);
     return k;
 }
 
