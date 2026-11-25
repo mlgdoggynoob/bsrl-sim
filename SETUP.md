@@ -53,7 +53,8 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   `0xb35c40` after the row's ActivationDelay. `python -m super_audit --gadget` checks their effects.
 - `gadgets_batch2.patch` (issue #3, a diff on top of `area_gadgets.patch`): more kinds in `gadget.c`. The gadget's own
   skill fired as its projectile(s) through libg's projectile spawn `0xb78190` (SHOT, published PROJECTILE) or as its area
-  (Bull's Stomp, 8-Bit's Extra Credits); repeat_shot / spin_shoot volleys of the row's CustomObject projectile; items
+  (Bull's Stomp, 8-Bit's Extra Credits); repeat_shot / spin_shoot volleys of the row's CustomObject projectile (off since
+  `repeat_spin_off.patch`); items
   through the item factory `0xb55684` (Bolt, Gale); R-T's super charge (new `NBE_GAD_SUPER`, mirrored in `nbpc/proto.py`);
   instant heals through libg's heal `0xb41554` (Kit, Kenji). Eight rows that classify but showed no effect live are masked
   (`gadget.c` `g_masked`). `python -m super_audit --gadget [--gadget-slot 1]` and `python -m gadget_check` check them.
@@ -167,6 +168,10 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   re-implements the compiled-out ones: damage below 50 % hp and the 900 shield (`env.c` my_root), speed in bushes
   (`env.c` rec_move), reload (`superfix_status.c`); `NB_GEARS=0` turns those off. `NbeResp` gear_* fields.
   `python -m gear_check`. Notes: `notes/issue51.md`.
+- `repeat_spin_off.patch` (issue #54, a diff on top of `gears.patch`): `gadget.c` no longer publishes the REPEAT / SPIN
+  kinds (repeat_shot / spin_shoot rows with a projectile: Fang's Mines, Dynamike, Piper, Leaper, Gene, Barley's HealPotion,
+  Bea, Darryl, Amber): they fired N copies of the main attack at full damage and range (Piper 5 x 1800), not the game's
+  numbers, so they publish kind NONE until redone from the game data (the code is kept under `#if 0`).
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

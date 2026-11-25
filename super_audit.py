@@ -45,11 +45,11 @@ OverchargedUltimateSkill, else the UltimateSkill's OverchargedVersion, with the 
 where there is one) and hyper (a projectile / summon / area / item only the hypercharged super has, when it has one).
 Output: super_audit_hyper.json / .md.
 --gadget (gadget round, issue #3): the brawlers with a gadget the host implements and this audit can see (`audit_gadgets`,
-`gadget_kind` mirrors nbhost gadget.c's classify functions: area at the brawler, the gadget's own skill shot or area, repeat /
-spin volleys, items, instant heals; R-T's super charge is gadget_check's). Each shooter gets that gadget card and fires it
-(fire 3, aimed at the target) in place of the super; consumed = the host counted a use (NbeResp gad_used). Expected effects
-come from the tables (`expected_gadget`). --gadget-slot 1 audits each brawler's second such gadget. Output:
-super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*)."""
+`gadget_kind` mirrors nbhost gadget.c's classify functions: area at the brawler, the gadget's own skill shot or area, items,
+instant heals; R-T's super charge is gadget_check's; repeat_shot / spin_shoot volleys are off, issue #54). Each shooter gets
+that gadget card and fires it (fire 3, aimed at the target) in place of the super; consumed = the host counted a use
+(NbeResp gad_used). Expected effects come from the tables (`expected_gadget`). --gadget-slot 1 audits each brawler's second
+such gadget. Output: super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*)."""
 import argparse, collections, functools, json, os, sys, threading, time
 import numpy as np
 
@@ -235,7 +235,7 @@ HEAL_TYPES = ("Heal", "Hot", "HealRegen", "HealAndDamage", "HotAndDot")
 
 MASKED = {"BowDude_Totem", "Speedy_Rewind", "HammerDude_Pull", "HookDude_Homing", "AssaultShotgun_Bomb", "Ninja_InvisibleArea",
           "Gladiator_Amp", "MagicalGirl_FlyArea"}   # gadget.c g_masked: classified, but no effect in this audit -> not usable
-GADGET_KINDS = ("area", "shot", "skill_area", "repeat", "spin", "item", "heal_now", "super")
+GADGET_KINDS = ("area", "shot", "skill_area", "item", "heal_now", "super")
 
 
 def gadget_kind(a):
@@ -252,8 +252,7 @@ def gadget_kind(a):
         if bt == "Attack" and sk.get("Projectiles"): return "shot"
         if bt in ("Attack", "AimableArea") and not sk.get("Projectiles") and sk.get("AreaEffectObject"): return "skill_area"
         return None
-    if t == "repeat_shot" and is_proj and num("CustomValue1") > 0: return "repeat"
-    if t == "spin_shoot" and is_proj and num("CustomValue1") > 0 and num("ActiveTicks") > 0: return "spin"
+    if t in ("repeat_shot", "spin_shoot"): return None   # issue #54: gadget.c's REPEAT / SPIN are off (N main attacks at full damage)
     if t == "spawn" and obj in T["item"]: return "item"
     if t in ("heal_attached_and_self", "heal_damage_taken") and num("CustomValue1") > 0: return "heal_now"
     if t == "charge_ulti" and num("CustomValue1") > 0: return "super"
@@ -276,7 +275,7 @@ def all_gadgets():
     return out
 
 
-AUDIT_KINDS = ("area", "shot", "skill_area", "repeat", "spin", "item", "heal_now")   # "super" (R-T): gadget_check checks it
+AUDIT_KINDS = ("area", "shot", "skill_area", "item", "heal_now")   # "super" (R-T): gadget_check checks it
 
 
 @functools.lru_cache(None)
@@ -298,9 +297,8 @@ def area_gadgets():
 def expected_gadget(name, slot=0):
     """--gadget: the brawler's audit_gadgets(slot) gadget -> the same dict as expected(). area: area always; damage, push,
     heal from the area's area_effects_logic row, range = its radius (the target stands inside it). shot / skill_area: the
-    gadget's own skill as expected_skill() reads a super. repeat / spin: projectile + damage (the host gives them the main
-    attack's damage) at the main attack's range (spin: CustomValue4). item: an item. heal_now: a heal (the target hits the
-    shooter first)."""
+    gadget's own skill as expected_skill() reads a super. item: an item. heal_now: a heal (the target hits the shooter
+    first)."""
     from nbpc import diversity as D
     T = _tables(); card, acc, kind = audit_gadgets(slot)[name]
     a = {r["Name"]: r for r in D._rows("accessories.csv") if r.get("Name")}[acc]
@@ -317,11 +315,6 @@ def expected_gadget(name, slot=0):
     if kind in ("shot", "skill_area"):
         e = expected_skill(a["Skill"], T["skill"].get(a["Skill"], {}))
         return {**e, "skill": acc, "type": "Gadget", "kind": "Gadget: " + kind, "card": card, "delay": 0.0, "gadget_kind": kind}
-    att = T["skill"].get(T["char"].get(name, {}).get("WeaponSkill", ""), {})
-    if kind in ("repeat", "spin"):
-        obj = a["CustomObject"].split(";")[0]
-        rng = _num(a, "CustomValue4") if kind == "spin" and _num(a, "CustomValue4") > 0 else _num(att, "CastingRange") * 100 or 2000.0
-        return {**base, "kind": "Gadget: " + kind, "range": rng, "expect": ["projectile", "damage"], "projectiles": [obj]}
     if kind == "item":
         return {**base, "kind": "Gadget: item", "range": 600.0, "expect": ["item"], "items": [a["CustomObject"].split(";")[0]]}
     return {**base, "kind": "Gadget: heal_now", "range": 600.0, "expect": ["heal"]}
@@ -803,12 +796,12 @@ def _check():
         assert tk["skill"] == "ClusterBombDude_Explosion" and tk["expect"] == ["area", "damage", "push"] and tk["delay"] == 20, tk
         assert expected_gadget("DeadMariachi")["expect"] == ["area", "heal"] and expected_gadget("Ghost")["expect"] == ["area"]
         kinds = collections.Counter(k for gs in all_gadgets().values() for _, _, k in gs)   # gadget.c's coverage of the enabled cards
-        assert sum(kinds.values()) == 213 and kinds["shot"] == 25 and kinds["repeat"] + kinds["spin"] == 8, kinds
+        assert sum(kinds.values()) == 213 and kinds["shot"] == 25 and not {"repeat", "spin"} & set(kinds), kinds
         assert kinds["item"] == 2 and kinds["heal_now"] == 2 and kinds["super"] == 1 and kinds["skill_area"] == 2, kinds
         assert audit_gadgets(0)["Gunslinger"][1] == "Gunslinger_Reload" and audit_gadgets(1)["Gunslinger"][1] == "Gunslinger_BigBullet"
         assert expected_gadget("Gunslinger")["expect"][:1] == ["projectile"] and expected_gadget("Gunslinger", 1)["gadget_kind"] == "shot"
         assert not {"BowDude", "HookDude"} & set(audit_gadgets(0))
-        assert expected_gadget("Barkeep", 1)["expect"] == ["projectile", "damage"] and expected_gadget("ElectroSniper")["expect"] == ["item"]
+        assert "Barkeep" not in audit_gadgets(1) and expected_gadget("ElectroSniper")["expect"] == ["item"]   # HealPotion: repeat_shot, off (#54)
         assert expected_gadget("BullDude", 1)["gadget_kind"] == "skill_area" and "area" in expected_gadget("BullDude", 1)["expect"]
         assert expected_gadget("Samurai")["expect"] == ["heal"] and "Splitter" not in audit_gadgets(0)
         sp = find_spots(MAP)

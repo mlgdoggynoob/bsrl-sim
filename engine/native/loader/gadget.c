@@ -40,18 +40,17 @@
  *         skill's timing (ActiveTime, MsBetweenAttacks waves), TwoGuns, AttackPattern.
  *   SKILL AREA  the same, but the skill has no projectile, only an AreaEffectObject (published SPAWN): Bull's Stomp (Attack:
  *         at the brawler), 8-Bit's Extra Credits (AimableArea: at the aim point at CastingRange).
- *   REPEAT  repeat_shot with a CustomObject projectile (6 rows, PROJECTILE): CustomValue1 projectiles over CustomValue2 degrees
- *         at the main attack's range and damage (the reading of the values is this host's, see repeat_fire).
- *   SPIN  spin_shoot with a CustomObject projectile (TntDude, BarrelBot, KickerDude_Mines; PROJECTILE): volleys around the
- *         brawler for ActiveTicks (spin_fire). The two rows without a projectile (KickerDude_Sweep, Painter_Push) are AREA.
  *   ITEM  spawn rows whose CustomObject is an items.csv row (Bolt's trap, Gale's wind wall; SPAWN): the item at the
  *         brawler through the item factory 0xb55684.
  *   SUPER charge_ulti (R-T; published SUPER): the super charge to CustomValue1 % of its maximum.
  *   HEAL_NOW  heal_attached_and_self (Kit) and heal_damage_taken (Kenji) (HEAL): an instant heal through libg's heal 0xb41554.
- * Every other gadget publishes kind NONE (not usable): next_attack_change, summons / turrets, status buffs, shields,
- * Nori's fish heal (needs his fish count), the Charge skills (Brock's jump, Max's dash, ...), ... Each player gets GAD_USES
- * uses per battle (unlimited by default, as in the live game since February 2025) and the accessory's cooldown between
- * uses. The accessory's Type parses to the int at +0x24 (0xb2731c:
+ * Every other gadget publishes kind NONE (not usable): repeat_shot and spin_shoot rows with a CustomObject projectile
+ * (issue #54: the re-implementation fired N copies of the main attack at its full damage and range, e.g. Piper's Auto Aimer
+ * 5 x 1800, not the game's numbers; the code is kept under `#if 0` until it is redone from the game data: Fang's
+ * KickerDude_Mines, Dynamike, Piper, Leaper, Gene, Barley's HealPotion, Bea, Darryl, Amber), next_attack_change, summons /
+ * turrets, status buffs, shields, Nori's fish heal (needs his fish count), the Charge skills (Brock's jump, Max's dash,
+ * ...), ... Each player gets GAD_USES uses per battle (unlimited by default, as in the live game since February 2025) and
+ * the accessory's cooldown between uses. The accessory's Type parses to the int at +0x24 (0xb2731c:
  * spin_shoot 3, spawn 9, repeat_shot 13, heal_attached_and_self 50, charge_ulti 56, heal_damage_taken 58).
  *
  * To add a kind: write classify (accessory -> 1 if this implementation handles it) and fire (the effect at the brawler, with
@@ -253,6 +252,7 @@ static int skill_area_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick)
     return 1;
 }
 
+#if 0   /* issue #54: REPEAT and SPIN are off (kind NONE): N copies of the main attack at full damage and range */
 /* ---- REPEAT: repeat_shot, CustomObject = the projectile, CustomValue1 of them over CustomValue2 degrees (Leaper 5 / 25,
  * Bea 4 / 75, Gene 5 / 80: read as count / spread; a negative spread is taken as its size) at the brawler's main attack
  * range, each with the main attack's damage (the projectile rows have no Damage of their own). The real game's timing
@@ -292,6 +292,7 @@ static void spin_tick(void *sim, Gad *g, int tick) {
     if (!ch || I32(ch, 0x3c4) <= 0 || tick >= g->spin_end) { g->spin_end = 0; return; }
     while (g->spin_end && tick >= g->spin_next && g->spin_next < g->spin_end) spin_volley(sim, g, ch);
 }
+#endif
 
 /* ---- ITEM: spawn rows whose CustomObject is an items.csv row (Bolt's ElectroTrap, Gale's WindWall): the item at the
  * brawler, through the item factory 0xb55684 as the shipped character-owned item at 0xb583cc calls it (1 item, at most
@@ -350,8 +351,10 @@ static const GadImpl g_impl[] = {
     {NBE_GAD_SPAWN, area_classify, area_fire},
     {NBE_GAD_PROJECTILE, shot_classify, shot_fire},
     {NBE_GAD_SPAWN, skill_area_classify, skill_area_fire},
+#if 0   /* issue #54: off until redone from the game data (see the REPEAT / SPIN code above) */
     {NBE_GAD_PROJECTILE, repeat_classify, repeat_fire},
     {NBE_GAD_PROJECTILE, spin_classify, spin_fire},
+#endif
     {NBE_GAD_SPAWN, item_classify, item_fire},
     {NBE_GAD_SUPER, super_classify, super_fire},
     {NBE_GAD_HEAL, heal_now_classify, heal_now_fire},
@@ -411,7 +414,9 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
     for (int i = 0; i < NBE_MAXP; i++) {
         if (g_gad[i].hot_end) heal_tick(sim, &g_gad[i], tick);
         if (g_gad[i].area_at && tick >= g_gad[i].area_at) area_spawn(sim, &g_gad[i]);
+#if 0   /* issue #54: SPIN is off */
         if (g_gad[i].spin_end) spin_tick(sim, &g_gad[i], tick);
+#endif
         if (g_gad[i].im && g_gad[i].type == ACC_HEAL_TAKEN) taken_tick(sim, &g_gad[i], tick);
     }
 }

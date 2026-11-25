@@ -6,10 +6,19 @@
      with its test). The effect has to show in at least EFFECT_SHARE of the activations of each kind: a dash aimed into
      a wall stops short and enemy fire can outweigh a heal over time, and the check plays random agents in a real battle;
   3. fire 3 on a gadget that is not ready (no use left / cooldown / kind not implemented) spends nothing;
-  4. env_v5.Env.gadget (obs_v5 self 3) agrees with the response.
+  4. env_v5.Env.gadget (obs_v5 self 3) agrees with the response;
+  5. volley damage (issue #54), a scripted scene on the same boot after the random battles: every brawler with a SHOT
+     gadget (super_audit.all_gadgets kind "shot", gadget.c SHOT, published PROJECTILE) stands on a super_audit.find_spots
+     spot on super_audit.MAP (storm off, native AI off) with an enemy target ADJ units in front along its corridor.
+     Teleport + heal, one main attack (fire 1) aimed at the target, HIT_WATCH ticks; teleport + heal again, one gadget
+     use (fire 3) aimed the same way, HIT_WATCH ticks. Damage = the target's HP lost (or the shooter's damage_dealt
+     summed over the watch, if more). One use must deal at most VOLLEY_K x the main attack's damage and must not kill the
+     full-HP target (`volley`); a gadget that deals none (a push, a pull) passes, a main attack that deals none leaves it
+     unjudged, and at least one must be judged.
 With no implemented kind in play (an old host build) it checks 1, 3 and 4 and says so.
-python -m gadget_check [--minutes 4] [--per-kind 6] [--roster Splitter,Attacher,Samurai]   (--roster: only these brawlers,
-e.g. to reach a kind that one brawler has: R-T's SUPER)      python -m gadget_check --check   (no game: the judging rules)"""
+python -m gadget_check [--minutes 4] [--per-kind 6] [--roster Splitter,Attacher,Samurai] [--volleys 99]   (--roster: only
+these brawlers, e.g. to reach a kind that one brawler has: R-T's SUPER; --volleys: SHOT gadgets judged in 5, 0 = skip it)
+python -m gadget_check --check   (no game: the judging rules)"""
 import argparse, collections, sys, time, numpy as np
 P = None   # nbpc.proto, imported in main / _check (the self-check needs no host)
 
@@ -17,6 +26,13 @@ SETTLE = 6         # ticks from the fire to the effect judgement; a heal over ti
 DASH_MIN = 400.0   # world units in SETTLE ticks: a walk covers < 220 (720 u/s x 6 ticks x 50 ms), a dash (600..1300 u at
                    # 2000..3500 u/s) 600 unless a wall stops it
 EFFECT_SHARE = 0.6
+ADJ = 300.0        # target distance in 5 (one tile): a 30-degree spread is +-80 u wide there, every bullet reaches the target
+HIT_WATCH = 24     # ticks watched after a fire in 5 (1.2 s): the fire lands a step late, a bullet crosses ADJ in < 4 ticks,
+                   # a lobbed shot or its explosion in < 20; regen starts 3 s after a hit
+VOLLEY_K = 4.0     # one SHOT use vs one main attack at ADJ: the gadget fires its own skill once (NumBulletsInOneAttack x
+                   # Damage, 1..5 bullets), about one attack's worth (a 5-bullet shotgun gadget point-blank ~ the shotgun
+                   # attack, Colt's single bullet < his 6); 4 leaves room for attacks weak at point blank (Piper's grows
+                   # with distance). The issue #54 bug: Piper's 5 x 1800 vs a 720 attack = 12.5 x
 
 
 def snap(r, p):
@@ -37,8 +53,8 @@ def effect_dash(a, b): d = float(np.hypot(b["x"] - a["x"], b["y"] - a["y"])); re
 def effect_heal(a, b): return b["hp"] > a["hp"], "hp %d -> %d" % (a["hp"], b["hp"])
 def effect_spawn(a, b):   # an area / item (gadget.c AREA, SKILL AREA, ITEM): not in NbeResp; its effects: `super_audit --gadget`
     return True, "use spent (area / item: super_audit --gadget)"
-def effect_projectile(a, b):   # projectiles (gadget.c SHOT, REPEAT, SPIN): not in NbeResp; seen by `super_audit --gadget`
-    return True, "use spent (projectiles: super_audit --gadget)"
+def effect_projectile(a, b):   # projectiles (gadget.c SHOT): not in NbeResp; seen by `super_audit --gadget`, damage by 5
+    return True, "use spent (projectiles: super_audit --gadget, damage: the volley scene)"
 def effect_super(a, b): return b["sc"] > a["sc"], "super %d -> %d of %d" % (a["sc"], b["sc"], b["sm"])
 EFFECT = {"DASH": effect_dash, "HEAL": effect_heal, "SPAWN": effect_spawn, "PROJECTILE": effect_projectile,
           "SUPER": effect_super}   # by GAD_* name; add one with each kind gadget.c implements
@@ -61,6 +77,63 @@ def judge(a, b):
 def effect(a, c):
     """snapshot before a (spent) fire 3, snapshot SETTLE ticks later -> (effect happened, what was measured)"""
     return EFFECT[KIND[a["kind"]]](a, c)
+
+
+def volley(att, gad, hp, k=VOLLEY_K):
+    """damage of one main attack / one gadget use on the adjacent target, its full HP before the use -> (ok, what); ok None
+    = unjudged (no reference). A kill from full HP fails too: the damage is capped at the target's HP, so a big attack's
+    k x can be more than the target has"""
+    if att <= 0: return None, "attack %d, gadget %d: no reference" % (att, gad)
+    return gad <= k * att and gad < hp, "attack %d, gadget %d of %d hp (%.1f x, limit %g x)" % (att, gad, hp, gad / att, k)
+
+
+def shot_gadgets(roster=None):
+    """[(brawler, card, accessories.csv row)] of every enabled SHOT gadget (super_audit's mirror of gadget.c)"""
+    import super_audit as SA
+    return [(b, c, n) for b, gs in sorted(SA.all_gadgets().items()) for c, n, k in gs if k == "shot" and (not roster or b in roster)]
+
+
+def volleys(inst, shots, seed=0):
+    """check 5 on a booted instance, 5 shooters a battle (players 0-4, targets 5-9) -> [(brawler, row, attack, gadget, target
+    hp before the use, why unjudged or "")]"""
+    import super_audit as SA
+    from nbpc import diversity as D
+    spots = SA.find_spots(SA.MAP); npair = min(5, len(spots)); out = []
+    idle = {i: (-1, 0, 0.0, 0.0) for i in range(10)}
+    stp = lambda acts=None, ticks=2: inst.step(actions=acts or idle, ticks=ticks, flags=0, native_mask=0)
+    for b0 in range(0, len(shots), npair):
+        grp = shots[b0:b0 + npair]; sh = range(len(grp))
+        div = D.make_div(location=SA.MAP, chr=[g[0] for g in grp] + [SA.FILLER] * (10 - len(grp)))
+        div["gadget"] = [g[1] for g in grp] + [0] * (10 - len(grp))
+        inst.reset(93700000 + seed + b0, gas=0, flags=0, native_mask=0, obs_mask=0, div=div); stp(ticks=10)
+        pos, aim = {}, {}
+        for s in sh:
+            x, y, dirs = spots[s]; dx, dy = dirs[0]
+            pos[s] = (int(x), int(y)); pos[s + 5] = (int(x + dx * ADJ), int(y + dy * ADJ)); aim[s] = float(np.degrees(np.arctan2(dy, dx)))
+
+        def hit(fire):   # teleport + heal, every shooter fires at its target -> ({s: damage}, {s: snapshot before})
+            inst.setup(positions=pos, ai_off=list(range(10)), unprotect=list(range(10)))
+            for _ in range(4): r = stp()
+            if fire == 3:
+                for _ in range(100):   # a gadget that starts on cooldown
+                    if all(ready(snap(r, s)) for s in sh): break
+                    r = stp()
+            b = {s: snap(r, s) for s in sh}; hp0 = {s: int(r.pl[s + 5].hp) for s in sh}; low = dict(hp0); dd = dict.fromkeys(sh, 0)
+            r = stp({**idle, **{s: (-1, fire, aim[s], 0.0) for s in sh}}, 1); n = 1
+            while True:
+                for s in sh:
+                    q = r.pl[s + 5]; low[s] = min(low[s], int(q.hp) if q.alive else 0); dd[s] += int(r.pl[s].damage_dealt)
+                if n >= HIT_WATCH: break
+                r = stp(); n += 2
+            return {s: max(hp0[s] - low[s], dd[s]) for s in sh}, b, r, hp0
+
+        att = hit(1)[0]; gad, b, r, hp = hit(3)
+        for s, (name, card, row) in zip(sh, grp):
+            why = ("card %d not on the player (host has %d)" % (card, b[s]["card"]) if b[s]["card"] != card else
+                   "kind %s, not PROJECTILE" % KIND[b[s]["kind"]] if b[s]["kind"] != P.GAD_PROJECTILE else
+                   "gadget not ready" if not ready(b[s]) else "no use spent" if int(r.gad_used[s]) <= b[s]["used"] else "")
+            out.append((name, row, att[s], gad[s], hp[s], why))
+    return out
 
 
 KIND = {}
@@ -93,6 +166,10 @@ def _check():
     assert WANT["SUPER"](s(sc=0)) and not WANT["SUPER"](s(sc=3000))
     assert judge(s(cd=5), s(cd=4)) == [] and judge(s(cd=5), s(cd=4, used=1)) == ["not ready, yet a use was spent"]
     assert judge(s(kind=P.GAD_NONE, charges=0), s(kind=P.GAD_NONE, charges=0)) == []
+    assert volley(720, 5 * 1800, 12000) == (False, "attack 720, gadget 9000 of 12000 hp (12.5 x, limit 4 x)")   # issue #54: Piper's Auto Aimer
+    assert volley(720, 720, 4000)[0] and volley(1000, 4000, 5000)[0] and not volley(1000, 4001, 5000)[0]
+    assert not volley(720, 2600, 2600)[0] and not volley(1200, 3600, 3600)[0]               # a one-shot from full hp (capped at it)
+    assert volley(2000, 0, 4000)[0] and volley(0, 500, 4000)[0] is None and volley(0, 0, 4000)[0] is None   # a push gadget; attack missed
     print("gadget_check self-check ok")
 
 
@@ -100,11 +177,13 @@ def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--minutes", type=float, default=4)
     ap.add_argument("--per-kind", type=int, default=6, help="activations to judge per implemented kind")
     ap.add_argument("--roster", default="", help="comma-separated brawlers (characters.csv Name) to draw from (default: all)")
+    ap.add_argument("--volleys", type=int, default=99, help="SHOT gadgets whose volley damage is judged (check 5; 0 = skip)")
     ap.add_argument("--check", action="store_true", help="the judging rules on made-up responses (no game)")
     a = ap.parse_args()
     if a.check: return _check()
     _load_proto(); import env_v5 as E
-    env = E.Env(1, E.make_battle_fn(10, roster=[x for x in a.roster.split(",") if x] or None, gadgets=True), ticks=2, fair=True, max_ticks=4000)
+    roster = [x for x in a.roster.split(",") if x] or None
+    env = E.Env(1, E.make_battle_fn(10, roster=roster, gadgets=True), ticks=2, fair=True, max_ticks=4000)
     rng = np.random.default_rng(0); pend = {}; fails = []; done = collections.Counter(); refused = collections.Counter()
     settle = {}; eff = collections.Counter(); eff_ok = collections.Counter(); eff_what = collections.defaultdict(list)
     seen = collections.Counter(); t0 = None; steps = 0
@@ -143,11 +222,21 @@ def main():
             env.send(ids, act)
             impl = {k for (c, k) in seen if k != "NONE"}
             if impl and all(eff[k] >= a.per_kind for k in impl) and sum(refused.values()) >= 5: break
+        vol = []
+        if not fails and a.volleys > 0:
+            inst = env.I[0].inst; inst.wait()   # the random battles' last command, then the instance is the scene's
+            vol = volleys(inst, shot_gadgets(roster)[:a.volleys])
     finally:
         env.close()
     print("agent-steps %d | loadouts seen (agent-steps): %s | checked activations %s, fire 3 while not ready %s"
           % (steps, dict(seen), dict(done), dict(refused)))
     for k in sorted(eff): print("  %s effect after %d ticks in %d of %d: %s" % (k, SETTLE, eff_ok[k], eff[k], ", ".join(eff_what[k][:12])))
+    judged = 0
+    for name, row, att, gad, hp, why in vol:
+        ok, what = volley(att, gad, hp) if not why else (None, why)
+        judged += ok is not None; print("  SHOT %s %s: %s%s" % (name, row, what, "" if ok or ok is None else "  FAIL"))
+        if ok is False: fails.append("%s %s: one gadget use dealt more than %g x the main attack or killed from full hp (%s)" % (name, row, VOLLEY_K, what))
+    if vol and not judged: fails.append("no SHOT gadget volley judged (%d tried)" % len(vol))
     for f in fails[:20]: print("FAIL", f)
     assert not fails, "%d failures" % len(fails)
     assert any(c == "card" for c, _ in seen), "no player got a gadget card (loadout request lost?)"
