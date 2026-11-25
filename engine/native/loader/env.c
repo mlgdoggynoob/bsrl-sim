@@ -621,7 +621,7 @@ int g_native_charge = 1; static long g_native_charges;
 #define CHARGE_LAND_WALL_R 300   /* El Primo: tiles around the landing point ([?] radius unknown: LuchadorUlti has no area, the
                                   * wiki only says "in a radius around him"; one tile ring) */
 #define CHARGE_LAND_R 200        /* Bonnie (type 16): her landing hit, CannonGirlExplosion's Radius ([?] the server's rule is compiled out) */
-typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; void *hit_st; } ChargeJob;
+typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; void *hit_st; int dx, dy; } ChargeJob;
 static ChargeJob g_cj[NBE_MAXP]; static int g_ncj; static long g_charge_hits, g_charge_pushes, g_charge_areas, g_charge_walls, g_charge_heals;
 /* knockback 0xb49834(victim, srcX, srcY, strength, a4..a7, 10 stack slots, the last = pusher's owner index): pushes the victim
  * 6 * strength u away from (srcX, srcY) over 10 ticks (half for CollisionRadius >= 150), the call the game's own charge sweep
@@ -772,7 +772,7 @@ static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type
         if (k == g_ncj) g_ncj++; else if (g_cj[k].type) PTR(ch, 0x550) = g_cj[k].old550;   /* a charge restarted mid-charge */
         /* Bonnie's launch (type 16) changes her into CannonGirlSmall before the start (0xb7bb58): no Charge skill, +0x6d8 stays 0 */
         g_cj[k] = (ChargeJob){id, I32(ch, 0x80), dmg, I32(sim, 0x10), 0, I32(ch, 0x6d8) == 2 || type == 16, type, push, -1000000, -1000000,
-                              area1, area_end, PTR(ch, 0x550), area2, {0}, hit_st};
+                              area1, area_end, PTR(ch, 0x550), area2, {0}, hit_st, tx - x0, ty - y0};
         /* trail (Stu's fire, Berry's paint, Trunk's ants): while +0x490 is set and +0x550 holds area data, the character tick
          * spawns it through 0xb47360 each time the charger is farther than the area's Radius (+0x12c) from the last spawn point
          * (+0xc98/+0xc9c); the far point makes the first one land at the start. Only the client constructor writes +0x550. */
@@ -833,6 +833,21 @@ static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge f
     static int nlog; if (nlog++ < 20) LOG("[env] charge end type %d at %d,%d: hits %ld, ally heals %ld, pushes %ld, areas %ld, wall calls %ld, zones %d (zone hits %ld, heals %ld, pushes %ld) (totals)\n",
         j->type, x, y, g_charge_hits, g_charge_heals, g_charge_pushes, g_charge_areas, g_charge_walls, g_nzone, g_zone_hits, g_zone_heals, g_zone_pushes);
 }
+/* Berry's hypercharge (overcharge_painter, Painter_overcharge 1 / 90 / 400: "Sweet Swirl drops double the scoops of ice
+ * cream"; RE-IMPLEMENTED: no libg call site reads this card type): with each trail scoop the game drops, Value more of the
+ * same area, the e-th Value3 u from it at e x Value2 degrees from the dash direction (one more scoop 400 u to the dash's left).
+ * [?] the server's placement: compiled out; Value2 read as an angle, Value3 as a distance. */
+int hyper_card_live(void *ch, int type, int idx);   /* hyper.c: Value<idx> of ch's hypercharge card of that type, -1 if none */
+#define CT_PAINTER 273   /* overcharge_painter (the card Type enum) */
+static void painter_scoops(void *sim, ChargeJob *j, uint8_t *ch) {
+    int n = hyper_card_live(ch, CT_PAINTER, 1), deg = hyper_card_live(ch, CT_PAINTER, 2), off = hyper_card_live(ch, CT_PAINTER, 3);
+    double L = hypot(j->dx, j->dy);
+    if (n <= 0 || n > 4 || off <= 0 || L < 1) return;
+    for (int e = 1; e <= n; e++) {
+        double a = e * deg * M_PI / 180.0, ux = j->dx / L, uy = j->dy / L;
+        charge_area(sim, ch, j->area1, jround(j->tx + off * (ux * cos(a) - uy * sin(a))), jround(j->ty + off * (ux * sin(a) + uy * cos(a))));
+    }
+}
 static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
     for (int k = 0; k < g_ncj; k++) {
         ChargeJob *j = &g_cj[k]; uint8_t *ch = obj_by_id(sim, j->id);
@@ -841,7 +856,8 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
         int x = I32(ch, 0x38), y = I32(ch, 0x3c), n; void **v = objvec(sim, &n);
         if (j->type == 1) charge_break(sim, ch, x, y, CHARGE_WALL_R);   /* Bull breaks the walls and bushes of his lane */
         if (j->area1 && PTR(ch, 0x550) == j->area1 && (I32(ch, 0xc98) != j->tx || I32(ch, 0xc9c) != j->ty) && I32(ch, 0xc98) > -1000000) {
-            j->tx = I32(ch, 0xc98); j->ty = I32(ch, 0xc9c); zone_add(sim, ch, j->area1, j->tx, j->ty); }   /* the game spawned a trail area */
+            j->tx = I32(ch, 0xc98); j->ty = I32(ch, 0xc9c); zone_add(sim, ch, j->area1, j->tx, j->ty);   /* the game spawned a trail area */
+            if (j->type == 21) painter_scoops(sim, j, ch); }
         if (j->dmg <= 0 && j->push <= 0) continue;
         if (j->type == 16) continue;   /* Bonnie is in the air: she hits where she lands (charge_end) */
         if (j->type == 22) continue;   /* Moe is underground (0xb5033c: untouchable while +0x490 and type 22): he hits when he surfaces (dig_change) */

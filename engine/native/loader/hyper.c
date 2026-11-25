@@ -347,9 +347,11 @@ static int my_card_value(uint8_t *ch, int type, int idx) {
  *   OverchargedAutoAttackProjectile (CharacterData +0x68, read at 0xb3e848 / 0xb3f4ac only when +0xaac is set: Juju's
  *   "bigger needles", Jessie's and Penny's turrets) and its DeathOverchargedAreaEffect (Tick's head). A pet with a
  *   DeathOverchargedAreaEffect (CharacterData +0xd0, count +0xdc) takes no damage buff: Tick's Value2 5 is the minimines
- *   his text names ("leaving behind 5 of his minimines"), not a damage percent. */
+ *   his text names ("leaving behind 5 of his minimines"), not a damage percent. Value4 (Penny 5, "a bigger cannon that shoots
+ *   <VALUE1> cannonballs at a time instead of 1"): each OverchargedAutoAttackProjectile the pet fires comes Value4 times
+ *   (my_spawn). */
 #define PET_MAX 32
-static struct { uint8_t *ch; int id, dmg_pct, speed_pct, death_oc, owner_id, x, y; } g_pet[PET_MAX];
+static struct { uint8_t *ch; int id, dmg_pct, speed_pct, death_oc, owner_id, x, y, shots; } g_pet[PET_MAX];
 void *env_obj_by_id(void *sim, int id);   /* env.c */
 /* A dead hypercharged pet's DeathOverchargedAreaEffect (Tick's ClusterBombPetOverchargedExplosion) has no owner (+0x108 NULL
  * when it expires), so superfix_items.c's ChainAreaEffect (ClusterBombOverchargedExplosion, 6 ClusterOverchargedMine) had
@@ -445,6 +447,7 @@ static void hyper_proj_spawn(uint8_t *pr) {
         g_pet[s].ch = c; g_pet[s].id = I32(c, 8); g_pet[s].dmg_pct = dm > 0 && !death_oc ? dm : 0; g_pet[s].speed_pct = sp > 0 ? sp : 0;
         { int pi = I32(c, 0x80); g_pet[s].death_oc = death_oc; g_pet[s].x = I32(c, 0x38); g_pet[s].y = I32(c, 0x3c);   /* summoner: the hypercharged brawler of its player */
           g_pet[s].owner_id = pi >= 0 && pi < NBE_MAXP && g_card_ch[pi] ? g_card_id[pi] : 0; }
+        int shots = card_value(card, 4); g_pet[s].shots = shots > 1 && shots <= 8 ? shots : 0;   /* Value4: Penny's cannonballs (my_spawn) */
         U8(c, 0x68) = 1; U8(c, 0xaac) = 1; g_npet_buff++;
         static int nlog2; if (nlog2++ < 20) LOG("[hyper] pet %d (data %d): hp %d/%d, damage +%d%%, speed +%d%%%s\n", I32(c, 8), I32(pd, 0x20),
                                                 I32(c, 0x3c4), I32(c, 0x3c8), g_pet[s].dmg_pct, g_pet[s].speed_pct, death_oc ? ", overcharged death area" : "");
@@ -472,6 +475,12 @@ static uint8_t *oc_card(uint8_t *ch) {   /* the card of the hypercharged brawler
     for (int i = 0; ch && i < NBE_MAXP; i++) if (g_oc[i] == ch && U8(ch, 0x68) && g_hyp[i].card) return div_data(g_hyp[i].card);
     return NULL;
 }
+/* The value Value<idx> of the hypercharge card of type `type` while ch is hypercharged, else -1: for the card types whose
+ * code no libg call site has and env.c re-implements (overcharge_painter 273: Berry's double scoops, charge_contact_tick) */
+int hyper_card_live(void *ch, int type, int idx) {
+    uint8_t *card = oc_card(ch);
+    return card && ((int (*)(void *))B(0xaa9500))(card) == type ? card_val(card, idx) : -1;
+}
 static int oc_proj_index(uint8_t *ch, void *d) {   /* d's place in the brawler's super's OverchargedProjectiles, -1 if none */
     uint8_t *cd = ((void *(*)(void *))B(0xb6a384))(ch), *sd = cd ? PTR(cd, 0x268) : NULL;   /* UltimateSkill */
     void **l = sd ? PTR(sd, 0x68) : NULL; int n = sd ? I32(sd, 0x74) : 0;
@@ -490,10 +499,30 @@ static int proj_area_radius(uint8_t *d) {   /* the Radius of the projectile data
     }
     last_d = d; last_r = r; return r;
 }
+/* A pet's volley (overcharge_pet_buff_stats Value4, Penny's turret): its OverchargedAutoAttackProjectile (CharacterData +0x68)
+ * spawned shots - 1 more times, aimed on a ring around the target at the shot's explosion radius (SpawnAreaEffectObject,
+ * 450 u for ArtilleryDudeOverchargedTurretExplosion) so the cannonballs land side by side. [?] the real spread. */
+static int pet_volley(uint64_t *a, uint8_t *ch) {
+    int k = pet_slot(ch); uint8_t *pd = k >= 0 && g_pet[k].shots > 1 ? ((void *(*)(void *))B(0xb6a384))(ch) : NULL;
+    if (!pd || !PTR(pd, 0x68) || (void *)a[4] != PTR(pd, 0x68)) return 0;
+    int tx = (int)a[5], ty = (int)a[6], r = proj_area_radius((uint8_t *)a[4]), n = 0;
+    if (r <= 0) r = 300;   /* one tile */
+    g_spawn_rec = 1;
+    for (int j = 1; j < g_pet[k].shots; j++) {
+        int deg = 360 * j / (g_pet[k].shots - 1), ox = tx + r * sin1024((deg + 90) % 360) / 1024, oy = ty + r * sin1024(deg) / 1024;
+        n += o_spawn(a[0], a[1], a[2], a[3], a[4], (uint64_t)(uint32_t)ox, (uint64_t)(uint32_t)oy, a[7], a[8], a[9], a[10], a[11], a[12],
+                     a[13], a[14], a[15]) != 0;
+    }
+    g_spawn_rec = 0; g_oc_extra += n;
+    static int nlog; if (nlog++ < 10) LOG("[hyper] pet %d volley: %d more of projectile %d around %d,%d (r %d)\n", I32(ch, 8), n,
+                                          I32((uint8_t *)a[4], 0x20), tx, ty, r);
+    return n;
+}
 static uint64_t my_spawn(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
                          uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14, uint64_t a15) {
     uint64_t p = o_spawn(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15);
     uint8_t *ch = (uint8_t *)a2, *card;
+    if (!g_spawn_rec && p) { uint64_t a[16] = {a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15}; if (pet_volley(a, ch)) return p; }
     if (g_spawn_rec || !p || !(card = oc_card(ch))) return p;
     int type = ((int (*)(void *))B(0xaa9500))(card);
     if (type != CT_MORNINGSTAR) return p;
