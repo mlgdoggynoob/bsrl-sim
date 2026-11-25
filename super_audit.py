@@ -710,7 +710,7 @@ class Auditor:
                 inf = self.info[j.name]; seen = set(m["projectiles"]) | set(m["summons"]) | set(m["items"]) | {a["name"] for a in m["areas"]}
                 m["hyper_skill"] = skill_name(m["hyper_id"]) if m["hyper_supers"] > 0 else ""
                 m["hyper_cast"] = bool(m["hyper_on"] and m["hyper_supers"] > 0 and (not inf["own_skill"] or m["hyper_skill"] == inf["skill"]))
-                m["hyper_seen"] = sorted(seen & set(inf.get("hyper_names", []))   # none for a no_hyper brawler)
+                m["hyper_seen"] = sorted(seen & set(inf.get("hyper_names", [])))   # none for a no_hyper brawler
             out.append((j, m))
         return out
 
