@@ -57,6 +57,14 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   through the item factory `0xb55684` (Bolt, Gale); R-T's super charge (new `NBE_GAD_SUPER`, mirrored in `nbpc/proto.py`);
   instant heals through libg's heal `0xb41554` (Kit, Kenji). Eight rows that classify but showed no effect live are masked
   (`gadget.c` `g_masked`). `python -m super_audit --gadget [--gadget-slot 1]` and `python -m gadget_check` check them.
+- `gadgets_batch3.patch` (issue #46, a diff on top of `gears.patch`): more kinds in `gadget.c`. SKILL: a gadget's Skill run by
+  the game's own skill path (its instance in slot 3 of the character's skill array, built with libg's constructor; the
+  input of a type-5 skill through `env.c` `env_skill_fire`): the Charge gadgets (six rows) and five skill rows the
+  shot path ran without their summon / item / handler (`gadget.c` `g_native_skill`). NEXT: `gadget_install` makes
+  Character::getAccessory (0xb422c8, a NULL stub) return the player's accessory, so the shipped skill code changes the next
+  attack of an armed next_attack_change gadget (SubType 2 projectile swaps and SubType 21 area swaps, 8
+  rows); the host arms it on use and disarms it after that attack. AREA also takes spawn / heal rows with an AreaEffect.
+  83 of 213 gadgets usable. `python -m super_audit --gadget [--gadget-slot 1]` and `python -m gadget_check` check them.
 - `charge.patch` (issue #5, a diff on top of the four above): the charge supers in `native/loader/env.c`. The skill's
   ChargePushback after each contact hit (the game's knockback 0xb49834), Bull's straight lane that breaks walls and bushes
   up to the first unbreakable tile, El Primo breaking the tiles around his landing, trail areas (Stu, Berry, Trunk)
@@ -188,7 +196,7 @@ downloaded game build, default `work/`), `SIM_VENV`.
   scripts to `wsl.exe ... bash -s` on stdin.
 - **Slow start.** One boot takes 60-90 s. Batch your checks into one run.
 - **The fire head never uses most gadgets.** The game build compiles gadget activation out, and the
-  host activates only the kinds `native/loader/gadget.c` implements (dash, heal over time, area at the brawler), so for every other
+  host activates only the kinds `native/loader/gadget.c` implements (83 of 213, `notes/issue46.md`), so for every other
   gadget the class stays masked. `python -m gadget_check` shows which kinds the built host publishes.
 - **The fire head never uses hypercharge.** It needs `--hyper 1` (players get their card) and a host built with
   `native/loader/hyper.c`. `python -m hyper_check` checks the built host.
