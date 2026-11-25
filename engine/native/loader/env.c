@@ -605,7 +605,7 @@ int g_native_charge = 1; static long g_native_charges;
 /* env charge contact (RE-IMPLEMENTED, not the game's code): the native start state for the charge's own hit processing is not
  * known, so env applies the charge skill's Damage once to every living enemy character (brawlers, summons, boxes) the charger
  * passes within CHARGE_HIT_R, through the damage root like the leap bombs (x2 power level, +10 % per cube), then the skill's
- * ChargePushback with the game's knockback; Berry (type 21) heals a teammate he passes by the same amount instead. The
+ * ChargePushback with the game's knockback (a negative one pulls the hit enemies to the landing point, charge_end); Berry (type 21) heals a teammate he passes by the same amount instead. The
  * charge's areas and Bull's wall breaking are env's too (charge_end, below).
  * --native-charge 2 = movement only (no env contact damage, pushback, areas or wall breaking). */
 #define CHARGE_HIT_R 250
@@ -808,6 +808,15 @@ static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge f
     if (j->area1 && j->type == 2) charge_area(sim, ch, j->area1, x, y);
     if (j->area_end) charge_area(sim, ch, j->area_end, x, y);   /* AreaEffect2AtEndOfCharge: Bull's slow, Nori, Ollie, Damian */
     if (j->type == 16) charge_land(sim, j, ch, x, y);
+    /* a negative ChargePushback pulls (LuchadorUlti's OverchargedChargePushback -100, the hypercharged super the game passes
+     * as the start's x5): every enemy the charge hit is drawn to the landing point by the game's knockback, which for a
+     * negative strength moves the victim min(6 * |strength|, its distance) u toward the source (0xb49ba8..0xb49bc8, 0xb49cd0) */
+    if (j->push < 0 && g_native_charge == 1)
+        for (int h = 0; h < j->nhit; h++) { uint8_t *c = obj_by_id(sim, j->hit[h]);
+            if (!c || c == ch || VTOF(c) != VT_CHAR || I32(c, 0x3c4) <= 0 || I32(c, 0x84) == I32(ch, 0x84)) continue;
+            static int npl; if (npl++ < 10) LOG("[env] charge pull: %d at %d,%d, %d u from the landing point %d,%d\n", I32(c, 8),
+                I32(c, 0x38), I32(c, 0x3c), (int)hypot(I32(c, 0x38) - x, I32(c, 0x3c) - y), x, y);
+            KNOCKBACK(c, x, y, j->push, j->owner); g_charge_pushes++; }
     static int nlog; if (nlog++ < 20) LOG("[env] charge end type %d at %d,%d: hits %ld, ally heals %ld, pushes %ld, areas %ld, wall calls %ld, zones %d (zone hits %ld, heals %ld, pushes %ld) (totals)\n",
         j->type, x, y, g_charge_hits, g_charge_heals, g_charge_pushes, g_charge_areas, g_charge_walls, g_nzone, g_zone_hits, g_zone_heals, g_zone_pushes);
 }
@@ -849,6 +858,8 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
             /* ChargePushback (Bull / El Primo 130 -> 780 u, Darryl 70, Surge / Stu 100), away from the charger as at 0xb5afd4;
              * not after a knock-out (the victim is parked or gone) */
             if (j->push > 0 && I32(c, 0x3c4) > 0) { KNOCKBACK(c, x, y, j->push, j->owner); g_charge_pushes++; }
+            /* a negative ChargePushback (El Primo's hypercharged OverchargedChargePushback -100, "brings enemies to the
+             * Epicenter") pulls: charge_end draws the hit enemies to the landing point */
             E.in_own_call = 0; record_event(c, ch, pc ? hp0 + 1 : hp0, pc ? 1 : I32(c, 0x3c4)); g_charge_hits++;
             v = objvec(sim, &n);
         }
