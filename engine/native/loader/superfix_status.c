@@ -525,10 +525,10 @@ static int st_field(uint8_t *ch, int off, uint8_t *src) {
  * super 90, Nita's and Surge's buddy statuses) shortens T to T * (100 - p) / 100, so r = 100 p / (100 - p); p is capped at
  * 95 (r 1900, a 20x faster reload) so T never reaches 0. */
 static long g_nreload, g_nsteal;
-int gear_reload_pct(int i); int env_char_owner(void *ch);   /* gear.c (bsrl-sim #51): ReloadSpeed's r; env.c: the brawler's player */
+int gear_reload_pct(int i); int starfx_reload_pct(int i, uint8_t *ch); int env_char_owner(void *ch);   /* gear.c (bsrl-sim #51): ReloadSpeed's r; env.c: the brawler's player */
 static int my_reload_pct(uint8_t *ch) {
     if (!g_superfix || !mode() || !is_char(ch)) return 0;
-    int g = gear_reload_pct(env_char_owner(ch));   /* gear round: ReloadSpeed adds its percent to the aggregate */
+    int g = gear_reload_pct(env_char_owner(ch)) + starfx_reload_pct(env_char_owner(ch), ch);   /* gear round: ReloadSpeed adds its percent to the aggregate; star power round (#47): Berserker */
     int p = st_field(ch, SE_RELOAD, NULL), z = zone_get(ch, ZN_RELOAD, now_tick(ch));   /* z: Edgar's area, already r */
     if (p <= 0 && z <= 0) return g;
     if (p > 95) p = 95;

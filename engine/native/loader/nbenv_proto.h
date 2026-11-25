@@ -170,6 +170,14 @@ typedef struct {
     int32_t gear_id[NBE_MAXP][2];     /* gear_boosts.csv data ids in config +0x18 / +0x20 (0 = none) */
     int32_t gear_shield[NBE_MAXP];    /* ConsumableShield hp left (0 without the gear) */
     int32_t gear_stat[NBE_MAXP][4];
+    /* star power round (bsrl-sim issue #47, appended): the star power card in each player's config and the host's effect for it
+     * (starfx.c); all 0 (star_valid 0) with a host without it. star_kind: 0 none (or a card the host does not re-implement),
+     * else the effect (starfx.c K_*); star_stat per player, counts this battle: [0] hits taken reduced, [1] hits dealt boosted,
+     * [2] heals / reload answers, [3] kills that fed the card */
+    int32_t star_valid;
+    int32_t star_card[NBE_MAXP];
+    int32_t star_kind[NBE_MAXP];
+    int32_t star_stat[NBE_MAXP][4];
 } NbeResp;
 /* NbeResp.gad_kind: what an activation does (one re-implementation per kind, from the gadget's own data rows) */
 #define NBE_GAD_NONE 0

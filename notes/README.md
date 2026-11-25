@@ -25,3 +25,4 @@ docstrings and comments are the spec.
 | `issue6-split-extras.md` | #6 R-T's split, the rest: linked death, storm on the legs, water walking, blocked rejoin | this branch |
 | `issue46.md` | #46 gadgets: the next-attack modifiers (arming, consume, hit fields), readiness, skill cooldowns, the self statuses / shields / last stand / sleep / vision, heals, not doable | this branch |
 | `issue49.md` | #49 Brawl TV imitation rows, step 4 (trainer side) | this branch |
+| `issue47.md` | #47 star powers: what the host re-implements (`starfx.c`), the vtable hypothesis, per card what was done or why not, `star_check` results | this branch |

@@ -40,7 +40,8 @@ player's hypercharge card (a brawler without one gets none); Env.hyper(ids) = wh
 the host's hypercharge state (NbeResp hyp_*, native/loader/hyper.c), for obs_v5's self 4 (ObsV5.build(..., hyper=)).
 Star powers (issue #20, off by default, no observation change): make_battle_fn(star_powers=True) / with_star_powers (trainer
 --star-powers 1) give every player one of its brawler's star power cards (div "star", offline.c my_player_ctor), drawn
-from the cards the star power probe found read by this build (star_audit.LIVE); a brawler with none gets none. The
+from the cards the star power probe found read by this build plus the ones the host re-implements and star_check confirmed
+(star_audit.equipped); a brawler with none gets none. The
 policy does not see which card it carries.
 Gears (issue #51, off by default, no observation change): make_battle_fn(gears=True) / with_gears (trainer --gears 1) give
 every player two gears of different kinds (div "gear", offline.c my_player_ctor -> gear.c), drawn from the gears its
@@ -117,12 +118,13 @@ def with_gadgets(cfg, rng):
 @functools.lru_cache(None)
 def star_cards(live_only=True):
     """brawler (characters.csv Name) -> cards.csv data ids of its star power cards (MetaType 4, Target = the brawler);
-    live_only: only the ones star_audit.LIVE lists (the probe saw this build read them)"""
-    import star_audit
+    live_only: only the ones star_audit.equipped() lists (the probe saw this build read them, or star_check confirmed the
+    host's re-implementation)"""
+    import star_audit; eq = star_audit.equipped()
     out, k = {}, 0
     for r in D._rows("cards.csv"):
         if not r[next(iter(r))]: continue
-        if r.get("MetaType") == "4" and r.get("Target") and not _off(r) and (not live_only or r["Name"] in star_audit.LIVE):
+        if r.get("MetaType") == "4" and r.get("Target") and not _off(r) and (not live_only or r["Name"] in eq):
             out.setdefault(r["Target"], []).append(T_CARD * 1000000 + k)
         k += 1
     return out
@@ -1105,7 +1107,7 @@ def _check_star_powers():
     import star_audit
     sa, sl, hs = star_cards(False), star_cards(), heroes()
     assert sum(map(len, sa.values())) >= 200 and all(c // 1000000 == T_CARD for v in sa.values() for c in v)
-    assert all(set(v) <= set(sa[b]) for b, v in sl.items()) and sum(map(len, sl.values())) <= len(star_audit.LIVE)
+    assert all(set(v) <= set(sa[b]) for b, v in sl.items()) and sum(map(len, sl.values())) <= len(star_audit.equipped())
     for live in (False, True):
         sc = star_cards(live); cfg = with_star_powers({"div": {"chr": [0] * 16}, "tag": {"chr": hs[:10]}}, np.random.default_rng(0), live)
         assert all((c in sc.get(b, [])) or (c == 0 and not sc.get(b)) for c, b in zip(cfg["div"]["star"], hs[:10]))

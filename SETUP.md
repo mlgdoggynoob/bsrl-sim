@@ -237,6 +237,14 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   their aim / walking direction in rendered frames (`env.c` `facing_sync` copies the simulation's facing +0x324 and walking
   direction +0x320 into the client's characters, which the offline snapshot never sends). Rendering only; off unless
   `NBHOST_FACING=1`, which `policy_video.py` sets (docs/RECORDING.md).
+- `star_powers2.patch` (issue #47, a diff on top of `facing_sync.patch`; first recorded on top of `gears.patch`, re-recorded on main): `native/loader/starfx.c` re-implements star power cards
+  whose reader is compiled out of libg, from the card's own Value columns (`cards.csv`, read from the card at +0x110):
+  damage taken (-V1 %, below an hp line, at full hp) and damage dealt (to a target at low hp, after a kill) in the damage
+  root `env.c` my_root (before the gear shield), a kill hook in `record_event` (every damage path ends there), double
+  reload below an hp line (`superfix_status.c` my_reload_pct), a heal every V2 ticks and a move speed below an hp line
+  (`env.c` rec_move; an hp-line change re-sends the move). `NB_STAR_FX=0` turns them off; `NB_STAR_VT=1` logs the calls of
+  libg's lazy init 0xb2fe44 (notes/issue47.md). `NbeResp` star_* fields (card, effect, counts). `python -m star_check`.
+  Notes: `notes/issue47.md`.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
