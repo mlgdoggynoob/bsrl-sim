@@ -284,8 +284,12 @@ static int my_card_value(uint8_t *ch, int type, int idx) {
  *   CocoonerPet) x Value;
  * - overcharge_pet_buff_stats: each character the spawn added gets max HP and HP x (100 + Value) / 100, and is kept here
  *   (pet_slot): its damage dealt x (100 + Value2) / 100 (hyper_pet_damage, env.c my_root), its move speed x (100 + Value3)
- *   / 100 (hyper_pet_speed, env.c rec_move), and isOvercharged answers true for it (char +0x68 = 1), so the game's own
- *   code takes its OverchargedAutoAttackProjectile (Juju's "bigger needles", VoodooOverchargedPetSlowProjectile). */
+ *   / 100 (hyper_pet_speed, env.c rec_move), isOvercharged answers true for it (char +0x68 = 1), and its overcharged-pet
+ *   byte +0xaac (what the spawn 0xb56e00 stores from a stack argument at 0xb5771c) is set, so the game's own code takes its
+ *   OverchargedAutoAttackProjectile (CharacterData +0x68, read at 0xb3e848 / 0xb3f4ac only when +0xaac is set: Juju's
+ *   "bigger needles", Jessie's and Penny's turrets) and its DeathOverchargedAreaEffect (Tick's head). A pet with a
+ *   DeathOverchargedAreaEffect (CharacterData +0xd0, count +0xdc) takes no damage buff: Tick's Value2 5 is the minimines
+ *   his text names ("leaving behind 5 of his minimines"), not a damage percent. */
 #define PET_MAX 32
 static struct { uint8_t *ch; int id, dmg_pct, speed_pct; } g_pet[PET_MAX];
 static long g_npet_buff, g_npet_spawn;
@@ -336,8 +340,12 @@ static void hyper_proj_spawn(uint8_t *pr) {
         int hp = card_value(card, 1), dm = card_value(card, 2), sp = card_value(card, 3);
         if (hp > 0) { I32(c, 0x3c8) = I32(c, 0x3c8) * (100 + hp) / 100; I32(c, 0x3c4) = I32(c, 0x3c4) * (100 + hp) / 100; }
         int s = (int)(g_npet_buff % PET_MAX);   /* round robin: a battle has far fewer living hypercharged pets than PET_MAX */
-        g_pet[s].ch = c; g_pet[s].id = I32(c, 8); g_pet[s].dmg_pct = dm > 0 ? dm : 0; g_pet[s].speed_pct = sp > 0 ? sp : 0;
-        U8(c, 0x68) = 1; g_npet_buff++;
+        uint8_t *pd = ((void *(*)(void *))B(0xb6a384))(c);
+        int death_oc = pd && I32(pd, 0xdc) > 0;   /* DeathOverchargedAreaEffect (Tick's head): Value2 is its minimines, no damage */
+        g_pet[s].ch = c; g_pet[s].id = I32(c, 8); g_pet[s].dmg_pct = dm > 0 && !death_oc ? dm : 0; g_pet[s].speed_pct = sp > 0 ? sp : 0;
+        U8(c, 0x68) = 1; U8(c, 0xaac) = 1; g_npet_buff++;
+        static int nlog2; if (nlog2++ < 20) LOG("[hyper] pet %d (data %d): hp %d/%d, damage +%d%%, speed +%d%%%s\n", I32(c, 8), I32(pd, 0x20),
+                                                I32(c, 0x3c4), I32(c, 0x3c8), g_pet[s].dmg_pct, g_pet[s].speed_pct, death_oc ? ", overcharged death area" : "");
     }
     static int nlog; if (nlog++ < 20) LOG("[hyper] hypercharged spawn: projectile data %d, card type %d: %d new characters%s\n",
                                           I32(d, 0x20), type, nnew, type == CT_PET_BUFF ? " (pet buff)" : " (+ owner's pet)");
