@@ -68,7 +68,7 @@ GADGETS4 = {"KickerDude": 23000464, "Meeple": 23000878, "Gladiator": 23001248}  
 DRINK_MIN = 900           # super charge from Max's drink (ChargeSuper CustomValue 1000 of 4000)
 GIVE_MIN = 250            # super charge from one GiveUlti area (Damage 300)
 EDGAR_RELOAD = 1.3        # ammo refill after / before his hypercharged super (CustomValue 50 %: 1.5x)
-EDGAR_CHARGE = 1.8        # super charge per hit after / before (CustomValue2 150 %: 2.5x, more with the hypercharge's damage)
+EDGAR_CHARGE = 1.8        # super charge per damage dealt after / before (CustomValue2 150 %: 2.5x)
 TURRET_HEAL = 300         # HP in 30 ticks from the turret's Hot (10 % of the turret's max HP a second [?] the scale; >= 420)
 GLAD_WALL = 27000000 + 69 # tiles.csv row of GladiatorWallDefault (DynamicCode 26) as a tile data id (checked in _check)
 TARGET = SA.FILLER
@@ -160,6 +160,7 @@ def judge_kinds(k0, k1, what):
 
 
 def judge_los(open_moved, wall_moved):
+    """also Meeple's RageQuit: the stunned enemy, then the same enemy once the stun is over"""
     bad = []
     if open_moved > STUN_MOVE: bad.append("the enemy in the open moved %.0f u after Fang's kick" % open_moved)
     if wall_moved < 2 * STUN_MOVE: bad.append("the enemy behind the wall moved only %.0f u (stunned through the wall?)" % wall_moved)
@@ -437,33 +438,37 @@ def battles(inst, a, spots, info, fails, B):
         print("status_check: Max's hypercharged super: teammate's super charge %d -> %d" % (c0, c1), flush=True)
         fails["Max drink ChargeSuper"] = judge_gain(c1 - c0, DRINK_MIN, "teammate after Max's drink")
         # 13. still hypercharged: two main attacks at enemy 6
+        mk = set()
         for _ in range(2):
             R.step({0: (-1, 1, aim + 180, 0.0)}, 1)
-            for _ in range(6): r = R.step()
+            for _ in range(6): r = R.step(); mk |= {SA.data_name(k) for k in R.proj_kinds(0)}
+        if a.verbose: print("  max projectiles", sorted(mk), "hyper left", int(r.hyp_left[0]), flush=True)
         c2 = sc(r, 5)
         print("status_check: Max's hypercharged attacks: teammate's super charge %d -> %d (enemy hp %d)" % (c1, c2, r.pl[6].hp), flush=True)
-        fails["Max attack GiveUlti"] = judge_gain(c2 - c1, GIVE_MIN, "teammate after Max's hypercharged hits")
+        if "SpeedyOverchargedBuddyProjectile" in mk:   # GiveUlti comes with the buddy weapon only (notes/issue19-final.md)
+            fails["Max attack GiveUlti"] = judge_gain(c2 - c1, GIVE_MIN, "teammate after Max's hypercharged hits")
 
-        # 14. Edgar (spot 1): target 6 at 250 u; reload and charge per hit before and after his hypercharged super
+        # 14. Edgar (spot 1): target 7 (another team) at 250 u; reload and charge per hit before and after his hypercharged super
         def edgar_round(tag):
-            s, g = [], []
+            s = []; c0 = sc(R.step(), 1); h0 = int(R.step().pl[7].hp)
             for _ in range(3):
-                r0 = R.step({1: (-1, 1, aim1, 0.0)}, 1); r = R.step(ticks=3); s.append(int(r.pl[1].ammo)); g.append(sc(r, 1) - sc(r0, 1))
+                R.step({1: (-1, 1, aim1, 0.0)}, 1); r = R.step(ticks=3); s.append(int(r.pl[1].ammo))
+            for _ in range(3): r = R.step()
             refill = max((y - x for x, y in zip(s, s[1:]) if x < 3000), default=0)
-            if a.verbose: print("  edgar", tag, "ammo", s, "charge", g, flush=True)
-            return refill, max(g)
+            if a.verbose: print("  edgar", tag, "ammo", s, "charge", c0, sc(r, 1), "target hp", h0, int(r.pl[7].hp), flush=True)
+            return refill, (sc(r, 1) - c0) / max(1, h0 - int(r.pl[7].hp))   # super charge per damage dealt
         p, (dx, dy), d = at(1, 1); aim1 = float(np.degrees(np.arctan2(dy, dx)))
-        R.place({1: p, 6: (p[0] + dx * 250, p[1] + dy * 250)})
+        R.place({1: p, 7: (p[0] + dx * 250, p[1] + dy * 250)})
         for _ in range(20): R.step()
         g0, h0 = edgar_round("before")
-        R.place({1: p, 6: (p[0] + dx * 250, p[1] + dy * 250)})
+        R.place({1: p, 7: (p[0] + dx * 250, p[1] + dy * 250)})
         hyper_super(1, aim1 + 180, 0.3)   # the jump away from the target, back after the landing
         for _ in range(10): R.step()
-        R.place({1: p, 6: (p[0] + dx * 250, p[1] + dy * 250)})
+        R.place({1: p, 7: (p[0] + dx * 250, p[1] + dy * 250)})
         for _ in range(20): R.step()   # ammo full again (the area lives 7 s)
         g1, h1 = edgar_round("after")
-        print("status_check: Edgar: ammo refill %d -> %d, super charge per hit %d -> %d after his hypercharged super" % (g0, g1, h0, h1), flush=True)
-        fails["Edgar hyper reload / charge"] = judge_ratio(g1, g0, EDGAR_RELOAD, "Edgar's ammo refill") + judge_ratio(h1, h0, EDGAR_CHARGE, "Edgar's super charge per hit")
+        print("status_check: Edgar: ammo refill %d -> %d, super charge per damage %.3f -> %.3f after his hypercharged super" % (g0, g1, h0, h1), flush=True)
+        fails["Edgar hyper reload / charge"] = judge_ratio(g1, g0, EDGAR_RELOAD, "Edgar's ammo refill") + judge_ratio(h1, h0, EDGAR_CHARGE, "Edgar's super charge per damage")
 
         # 15. Darryl (spot 2): his hypercharged roll along the corridor
         p, (dx, dy), d = at(2, 2); aim = float(np.degrees(np.arctan2(dy, dx))); R.place({2: p})
@@ -481,6 +486,10 @@ def battles(inst, a, spots, info, fails, B):
             R.step({9: (-1, 1, aim + 180, 0.0)}, 1)
             for _ in range(3): r = R.step()
         hp0 = int(r.pl[8].hp)
+        if a.verbose:
+            st = SA.parse_state(inst.state_bytes())
+            print("  pam objects", sorted(SA.data_name(c[1]) for c in st["ch"] if int(c[2]) == 3),
+                  sorted(SA.data_name(t[1]) for t in st["it"] if int(t[2]) == 3), flush=True)
         for _ in range(15): r = R.step()
         hp1 = int(r.pl[8].hp)
         print("status_check: Pam's hypercharged turret: teammate hp %d -> %d in 30 ticks (max %d)" % (hp0, hp1, r.pl[8].max_hp), flush=True)
@@ -511,23 +520,24 @@ def battles(inst, a, spots, info, fails, B):
         else:
             f, eo, ew = ws; R.place({0: f, 5: eo, 6: ew})
             R.step({0: (-1, 3, 0.0, 0.0)}, 1)
-            r0 = R.step()
-            for _ in range(3): r = R.step({5: (8, 0, 0.0, 0.0), 6: (0, 0, 0.0, 0.0)})   # 5 walks -x, 6 walks +x
-            mo = float(np.hypot(r.pl[5].x - r0.pl[5].x, r.pl[5].y - r0.pl[5].y)); mw = float(np.hypot(r.pl[6].x - r0.pl[6].x, r.pl[6].y - r0.pl[6].y))
+            _, mo, _ = R.walk(5, 8, steps=3)   # 5 walks -x while stunned (10 ticks), then 6 walks +x
+            _, mw, _ = R.walk(6, 0, steps=3)
             print("status_check: Fang's kick at %s: enemy in the open moved %.0f u, behind the wall %.0f u" % (f, mo, mw), flush=True)
             fails["Fang LoS stun"] = judge_los(mo, mw)
 
-        # 19. Meeple (spot 1): enemy 7 (400 u) shoots her twice, then her RageQuit; 7 walks away
+        # 19. Meeple (spot 1): enemy 7 (250 u) shoots her once, then her RageQuit; 7 walks away, and again later
         p, (dx, dy), d = at(1, 1); aim = float(np.degrees(np.arctan2(dy, dx)))
-        R.place({1: p, 7: (p[0] + dx * 400, p[1] + dy * 400)})
-        for _ in range(2):
+        R.place({1: p, 7: (p[0] + dx * 250, p[1] + dy * 250)})
+        for _ in range(1):
             R.step({7: (-1, 1, aim + 180, 0.0)}, 1)
-            for _ in range(6): r = R.step()
-        hp = int(r.pl[1].hp); R.step({1: (-1, 3, aim, 0.0)}, 1); r0 = R.step()
-        for _ in range(3): r = R.step({7: (d, 0, 0.0, 0.0)})
-        mv = float(np.hypot(r.pl[7].x - r0.pl[7].x, r.pl[7].y - r0.pl[7].y))
-        print("status_check: Meeple's RageQuit at hp %d / %d: the enemy moved %.0f u" % (hp, r.pl[1].max_hp, mv), flush=True)
-        fails["Meeple RageQuit stun"] = [] if mv <= STUN_MOVE else ["the enemy moved %.0f u after Meeple's RageQuit" % mv]
+            for _ in range(8): r = R.step()
+            if a.verbose: print("  meeple hp", r.pl[1].hp, flush=True)
+        hp = int(r.pl[1].hp); R.step({1: (-1, 3, aim, 0.0)}, 1)
+        _, mv, _ = R.walk(7, d, steps=3)
+        for _ in range(20): R.step()
+        _, mv2, _ = R.walk(7, (d + 8) % 16, steps=3)
+        print("status_check: Meeple's RageQuit at hp %d / %d: the enemy moved %.0f u, later %.0f u" % (hp, r.pl[1].max_hp, mv, mv2), flush=True)
+        fails["Meeple RageQuit stun"] = judge_los(mv, mv2)
 
         # 20. Damian (spot 2): his wall gadget thrown 900 u along the corridor
         p, (dx, dy), d = at(2, 2); aim = float(np.degrees(np.arctan2(dy, dx))); R.place({2: p})

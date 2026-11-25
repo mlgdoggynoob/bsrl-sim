@@ -247,6 +247,7 @@ static void on_char_update(uint64_t *ctx) {
         U8(ch, CH_CCIMM) = cc; U8(ch, CH_LOSECTL) = lose; U8(ch, CH_STASIS) = stasis; U8(ch, CH_SILENCE) = silence;
         U8(ch, CH_FULLSTUN) = full; U8(ch, CH_TAUNT) = taunt; U8(ch, CH_FEAR) = fear;
         extern void superfix_cc_tick(uint8_t *) __attribute__((weak)); if (superfix_cc_tick) superfix_cc_tick(ch);
+        extern void superfix_summon_area(uint8_t *) __attribute__((weak)); if (superfix_summon_area) superfix_summon_area(ch);   /* issue #19 final */
         extern void superfix_cc_switch(uint8_t *, int) __attribute__((weak));   /* issue #19 final: Angelo's SwitchSkill area */
         if (superfix_cc_switch) superfix_cc_switch(ch, zone_get(ch, ZN_SWITCH, t));
     }

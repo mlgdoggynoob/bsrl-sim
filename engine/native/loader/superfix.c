@@ -24,7 +24,8 @@
  * through 0xb41554 when it is >= 1) is never set. The `bl` is redirected: +0x10c = projectile damage (+0xd4) x percent
  * / 100, and the owner is healed the same amount once per attack (DamageOnlyWithOneProj, getter 0xafaa08), only for the
  * owner's super (attack slot [sp+256] == 2 at that point).
- * Max's hypercharged super throws its drinks from here (max_drinks, issue #19 final).
+ * Max's hypercharged super throws its drinks from here (max_drinks, issue #19 final), and a summon gets its own
+ * CharacterData AreaEffect (superfix_summon_area: Pam's turrets' heal, 8-Bit's booster, ...).
  * NB_SUPERFIX=0 turns every part off. */
 #include "nbhost.h"
 #include <stdlib.h>
@@ -84,6 +85,50 @@ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind,
     return a;
 }
 
+/* ---- issue #19 final: a summon's own area (CharacterData +0xb8 AreaEffect, the loader's column read at 0xaafbf4: Pam's
+ * HealingStationHeal and MinigunOverchargedHealingStationHeal, 8-Bit's DamageBoost, Bo's totem, Nita's ..., 28 rows). No
+ * client code creates it: the summons exist (state rows) but no area ever follows them (a host run with Pam's turret: no area
+ * object, no area tick). From the character update (superfix_status.c), once per summon (not a brawler, 0xb34de4), when no
+ * area of that data already follows it, the area is spawned at it through the chain above with follow and start, kind 2, no
+ * extra damage (gadget.c's area spawn). It ends when its summon is gone (end tick +0xd8 set to now at its next tick). A Hot
+ * area's apply heals the allies inside once (the spawn apply), so a summon's Hot area (the turrets) is applied again every
+ * HOT_EVERY ticks while it lives, with +0xd0 / +0xd4 / +0xd8 restored as for DelayedDamage. */
+typedef struct { int ch_id, area_id; uint8_t *a; } SumArea;
+#define SA_MAX 32
+static SumArea g_sa[SA_MAX]; static int g_nsa; static long g_nsum_area, g_nsum_end;
+void superfix_summon_area(uint8_t *ch) {
+    if (!g_superfix || !mode() || !ch || !PTR(ch, 0x20) || I32(ch, 0x3c4) <= 0) return;
+    uint8_t *cd = ((void *(*)(void *))B(0xb6a384))(ch), *ad = cd ? PTR(cd, 0xb8) : NULL;
+    if (!ad || (((geti_t)B(0xb34de4))(ch) & 1)) return;
+    int id = I32(ch, 8);
+    for (int i = 0; i < g_nsa; i++) if (g_sa[i].ch_id == id) return;
+    uint8_t *mgr = PTR(ch, 0x20); int n = I32(mgr, 0x34); void **v = PTR(mgr, 0x28);
+    for (int i = 0; v && i < n && i < 4096; i++) {   /* one already there (a path this host does not know of): leave it */
+        uint8_t *o = v[i], *od = o ? PTR(o, 0x10) : NULL;
+        if (od == ad && PTR(o, 0x108) == ch) { if (g_nsa < SA_MAX) g_sa[g_nsa++] = (SumArea){id, I32(o, 8), o}; return; }
+    }
+    uint8_t *a = my_spawn_area(ch, 0, 0, ad, 2, 0, 0, 1, NULL, NULL, NULL, 1);
+    if (g_nsa >= SA_MAX) g_nsa = 0;
+    g_sa[g_nsa++] = (SumArea){id, a ? I32(a, 8) : -1, a};
+    if (a) g_nsum_area++;
+    LOG("[superfix] summon area: ch %d (data %d) gets area %d type %d -> %p\n", id, I32(cd, 0x20), I32(ad, 0x20), I32(ad, 0x118), a);
+}
+#define HOT_EVERY 20   /* ticks between a summon's Hot area applies [?]: the client has no rate; the turret heals per second */
+static long g_nsum_hot;
+static void summon_area_end(uint8_t *a, uint8_t *sim) {   /* from the area tick: the summon gone -> the area ends now */
+    for (int i = 0; i < g_nsa; i++) if (g_sa[i].a == a && g_sa[i].area_id == I32(a, 8)) {
+        uint8_t *d = PTR(a, 0x10); int now = I32(sim, 0x10), d0 = I32(a, 0xd0), d4 = I32(a, 0xd4), d8 = I32(a, 0xd8);
+        if (d && I32(d, 0x118) == 4 && now > d0 && (now - d0) % HOT_EVERY == 0 && now < d8) {   /* Hot: libg's apply heals once */
+            ((void (*)(void *))B(0xb29494))(a); I32(a, 0xd0) = d0; I32(a, 0xd4) = d4; I32(a, 0xd8) = d8; g_nsum_hot++;
+        }
+        uint8_t *owner = NULL;
+        void *h = PTR(sim, 0); int n = h ? I32(h, 0xc) : 0; void **v = h ? PTR(h, 0) : NULL;
+        for (int k = 0; v && k < n && k < 4096 && !owner; k++) if (v[k] && I32(v[k], 8) == g_sa[i].ch_id) owner = v[k];
+        if (!owner || I32(owner, 0x3c4) <= 0) { I32(a, 0xd8) = I32(sim, 0x10); g_sa[i] = g_sa[--g_nsa]; g_nsum_end++; }
+        return;
+    }
+}
+
 /* ---- DelayedDamage (type 8) */
 typedef void *(*getp_t)(void *);
 static long g_ndelayed, g_nslip;
@@ -108,6 +153,7 @@ static void on_area_tick(uint64_t *ctx) {   /* enter hook on 0xb28c0c, ctx[0] = 
     extern void superfix_status_area(uint8_t *) __attribute__((weak)); if (superfix_status_area) superfix_status_area(a);   /* type 36 */
     extern void superfix_moves_area(uint8_t *) __attribute__((weak)); if (superfix_moves_area) superfix_moves_area(a);     /* type 38 */
     uint8_t *d = ((getp_t)B(0xb6a384))(a), *sim = ((getp_t)B(0xb6a378))(a);
+    if (sim && g_nsa) summon_area_end(a, sim);
     if (d && sim && I32(d, 0x118) == 20) { slippery_tick(a, d, sim); return; }
     if (!d || !sim || I32(d, 0x118) != 8 || a[0xfc]) return;
     int el = I32(sim, 0x10) - I32(a, 0xd0);                 /* ticks since the spawn apply (0xc26bd8 = sim +0x10) */
@@ -161,7 +207,8 @@ void superfix_install(void) {
     extern void superfix_cc_install(void) __attribute__((weak)); if (superfix_cc_install) superfix_cc_install();   /* issue #19 */
 }
 void superfix_status(void) { LOG("[superfix] areas spawned %ld, skipped %ld; delayed damage %ld; slippery hits %ld; heal own %ld projectiles, %ld owners; "
-                                 "Max's drinks %ld\n", g_narea, g_narea_skip, g_ndelayed, g_nslip, g_nheal, g_nheal_self, g_ndrink);
+                                 "Max's drinks %ld; summon areas %ld (ended %ld, Hot re-applies %ld)\n", g_narea, g_narea_skip, g_ndelayed, g_nslip, g_nheal,
+                                 g_nheal_self, g_ndrink, g_nsum_area, g_nsum_end, g_nsum_hot);
     extern void superfix_items_status(void) __attribute__((weak)); if (superfix_items_status) superfix_items_status();
     extern void superfix_moves_status(void) __attribute__((weak)); if (superfix_moves_status) superfix_moves_status();
     extern void superfix_status_status(void) __attribute__((weak)); if (superfix_status_status) superfix_status_status();
