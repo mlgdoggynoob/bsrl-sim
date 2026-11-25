@@ -46,6 +46,7 @@ EFFECT_WORDS = {
     "push": r"push|knock",                       # "pushing them back", "knocks back"
     "invisible": r"invisib|\bhide|\bhidden",
 }
+NEGATED = r"\b(?:stops?|stopping|prevents?|blocks?|reduc\w*|cuts?|no|cannot|can't)\s+(?:\w+\s+){0,2}?(?:heal\w*|regenerat\w*)"   # "stops them healing": the text takes healing away
 DAMAGE_RE = r"deal\w*\W+(?:\S+\W+){0,3}?damage"  # "dealing <VALUE2> damage"; not "damage taken"
 AIM_WORDS = r"closest enemy|nearest|closest target|automatic|auto-?aim"   # the game picks the target
 ONE_WORDS = r"\b(?:a|one|single|an)\s+(?:\w+\s+)?(?:shot|projectile|bullet|missile)\b"   # "a defensive shot"
@@ -67,7 +68,7 @@ def _num(x):
 
 
 def text_effects(text):
-    t = (text or "").lower()
+    t = re.sub(NEGATED, " ", (text or "").lower())
     out = {k for k, rx in EFFECT_WORDS.items() if re.search(rx, t)}
     if re.search(DAMAGE_RE, t): out.add("damage")
     return out
@@ -249,6 +250,7 @@ def _check():
     assert "effect" not in ok("shot", "Fires a shot dealing <VALUE1> damage", hfx=host_effects("shot"))
     assert "effect" in ok("heal_now", "Deals <VALUE1> damage to enemies", hfx=host_effects("heal_now"))
     assert "effect" not in ok("heal_now", "Heals 60% of the damage taken", hfx=host_effects("heal_now"))
+    assert "heal" not in text_effects("slows all enemies hit and stops them healing momentarily")   # Wendy's grenade
     assert "effect" not in ok("area", "Slows enemies", hfx=host_effects("area", {"Type": "StatusEffect"}))
     assert "effect" in ok("area", "Stuns enemies", hfx=host_effects("area", {"Type": "Damage", "Damage": "100"}))
     # aim

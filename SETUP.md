@@ -170,7 +170,8 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
 - `desc_audit.patch` (issue #55, a diff on top of `gears.patch`): gadgets made to match the game's own description
   (`python -m desc_audit`). AREA gives the row's ShieldPercent for ShieldTicks (Tick's shield before the burst) through a
   new `superfix_status.c` zone, `superfix_status_shield`; SHOT fires extra waves for the cards in `g_waves` (Colt's
-  Gunslinger_Reload: two shots); Barley's healing potion (REPEAT fires it as main-attack damage) joins `g_masked`.
+  Gunslinger_Reload: two shots); Barley's healing potion (REPEAT fires it as main-attack damage) joins `g_masked`;
+  `superfix_cc.c` gives Meeple's RageQuit its knockback (PushbackStrength, scaled like the stun) and lets it run under the stun.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

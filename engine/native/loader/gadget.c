@@ -24,7 +24,7 @@
  *   AREA  empty Type (+0x24 == 0) with an AreaEffect (AccessoryData +0x70, resolved by createReferences at 0xa92568): the
  *         gadgets that only drop their area at the brawler (Barley's Slow, Poco's Regen and Cleanse, Tick's Explosion,
  *         Shade's Spooky, Trunk's Area). Left out: Rosa's GrowBush (a WallSpawn area: spawnfix.c's wall ring would put
- *         walls where she grows bushes). Meeple's RageQuit (HpBasedStun) stuns through superfix_cc.c (issue #19 final);
+ *         walls where she grows bushes). Meeple's RageQuit (HpBasedStun) stuns and knocks back through superfix_cc.c (issues #19, #55);
  *         the spin_shoot rows without a projectile (Fang's KickerDude_Sweep, a LineOfSight stun area, and Painter_Push) are
  *         AREA too (their spin animation is the client's). Published
  *         as kind SPAWN; `python -m super_audit --gadget` checks each one's effects. The area is spawned
@@ -89,8 +89,8 @@ static int ad_get(void *ad, uint64_t getter) { return ((AdGet)B(getter))(ad); }
 #define AD_CV2 0xa933e0
 #define AD_ACT_DELAY 0xa932b8   /* ActivationDelay (column index at 0x123f000+1952, the getters' pattern) */
 #define AD_AREA 0x70            /* AccessoryData +0x70: AreaEffect -> AreaEffectData (0xa92568 stores it) */
-#define AD_SHIELD_PCT 0xa93370  /* ShieldPercent (column index at 0x123f000+0x7fc, the getters' pattern; issue #55) */
-#define AD_SHIELD_TICKS 0xa93380 /* ShieldTicks (+0x800) */
+#define AD_SHIELD_PCT 0xa93368  /* ShieldPercent (column index at 0x123f000+0x7fc, the getters' pattern; issue #55) */
+#define AD_SHIELD_TICKS 0xa93378 /* ShieldTicks (+0x800) */
 void superfix_status_shield(uint8_t *ch, int pct, int ticks) __attribute__((weak));
 
 typedef struct Gad Gad;
