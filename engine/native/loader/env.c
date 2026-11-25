@@ -207,6 +207,7 @@ static int taunt_target(uint8_t *ch, int *tx, int *ty) {
     return 2;
 }
 void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) __attribute__((weak));   /* superfix_cc.c: projectile stuns */
+void spawnfix_proj_hit(void *src, void *victim) __attribute__((weak));   /* spawnfix.c: chain of a reason-3 hit */
 void hyper_install(void); void *hyper_super_data(int i, uint8_t *ch, void *sd); void hyper_unswap(int i, uint8_t *ch);
 void hyper_char_changed(uint8_t *old, uint8_t *nc);
 static void *owner_player(void *sim, void *c, int *idx) {   /* the player whose current brawler c is (NULL: none) */
@@ -416,6 +417,7 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
     int mode3 = I32(g_libg->base, 0x12eefb4) == 3;
     E.root_calls++;
     if (superfix_cc_hit) superfix_cc_hit(victim, attacker, src, (uint64_t)__builtin_return_address(0));
+    if (spawnfix_proj_hit && dmg > 0) spawnfix_proj_hit(src, victim);
     int saved_level = E.charge_level; E.charge_level = 0;
     if (mode3 && !E.in_own_call && attacker) {   /* agent: entryScale (attackerArg 5) + dmgModelApply */
         int raw = dmg, d = raw, aid = I32(attacker, 8), cubes = cubes_of(aid), lvl = 0;
