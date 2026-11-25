@@ -25,7 +25,8 @@
  * OverchargedSpawnedItem and the Overcharged*Effect visuals; two reads of a normal list that ignore it (AttackPattern 11's
  * per-attack projectile, the Attack handler's summon) take the overcharged list here (hyper_proj_site, hyper_summon_bl),
  * a hypercharged brawler's Heal area heals here (oc_heal_areas), and the card-value stub 0xb5281c answers the hypercharge
- * card's overcharge_attack_pattern_override (Frank's and Glowy's full-circle supers, my_card_value). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
+ * card's values for the types in CARD_TYPES (Frank's and Glowy's full circle, Gene's 3 hands, Gale's 2 wider waves, Barley's
+ * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
  * MechaDudeBig) have a separate super instead (characters.csv OverchargedUltimateSkill): the game builds it as the brawler's
  * third skill instance (char+0x458[2], 0xb34560) but what picks it for a super cast is compiled out; here instances 1
  * (the super) and 2 are swapped while hypercharged, so the game's own super code casts it, and swapped back once the
@@ -259,8 +260,10 @@ static void oc_heal_areas(uint8_t *ch) {
  * function is a bare `mov w0, #-1; ret` (~55 call sites, ~20 card types). The Attack handler's summon reads it for
  * overcharge_more_pets (Ash, 0xb7eeac..0xb7eee8, only for a skill instance whose +0x31 latch is set): NumSpawns + Value,
  * MaxSpawns + Value2 (Knight_overcharge 5 / 10: "Little Helper spawns 5 more rats"). my_card_value answers it from the card of
- * a brawler whose hypercharge is on (Type enum card +0x100, Value<i> 0xaa9568), for the types in CARD_TYPES only: the other
- * types' call sites (overcharge_brock, _barkeep, _sniper, ...) are not checked here and keep the -1 they had.
+ * the brawler that holds it (Type enum card +0x100, Value<i> 0xaa9568), for the types in CARD_TYPES only, also after its
+ * hypercharge ended: every call site of these types checks isOvercharged (or the skill's +0x31 / +0x49 latch) itself, except
+ * Rosa's, which ends her hypercharged area when her super ends, also when that is after the hypercharge (as the game's card
+ * holder would answer). The other types' call sites are not checked here and keep the -1 they had.
  * overcharge_attack_pattern_override (202): the super's Attack handler (0xb7e1a8..0xb7f2ec) takes the AttackPattern from Value
  * and NumBulletsInOneAttack from Value2 in place of the skill's. HammerDude_overcharge 19 / 10 (Frank: "hits an entire circle
  * around him"; pattern 19 is the full circle of MegaBossFrankAttackHyper) and Mender_overcharge 19 / 14 (Glowy). */
@@ -268,14 +271,42 @@ static void oc_heal_areas(uint8_t *ch) {
 #define CT_PET_BUFF 179      /* overcharge_pet_buff_stats */
 #define CT_PATTERN_OVERRIDE 202   /* overcharge_attack_pattern_override (the parse at 0xaa66e4) */
 #define CT_MORE_PETS 274     /* overcharge_more_pets */
-static const int CARD_TYPES[] = {CT_PATTERN_OVERRIDE, CT_MORE_PETS};
+/* The other types whose call sites apply the value themselves (the Type enum from the card loader's string table; Value<n>
+ * from cards.csv; the "Attack handler" is the super's attack setup 0xb7d108..0xb7f2ec, where the overrides chain 192 -> 201
+ * -> 194 -> 200 -> 202 for the super, w27 == 2): */
+static const int CARD_TYPES[] = {
+    CT_PATTERN_OVERRIDE, CT_MORE_PETS,
+    166,   /* overcharge_weapon_spread, Shelly (ShotgunGirl_overcharge 33): Spread + Value (100 -> 133, 0xb7deec): "Super
+            * Shell is 33% larger" */
+    178,   /* overcharge_slowing_area, Rosa (3): when Rosa's super ends (0xb7cc78, Value >= 0 only), the RosaOverchargedUltiArea
+            * (TimeMs 600000) ends with it: "slows down all nearby enemies while her Super is active" */
+    192,   /* overcharge_brock, Brock (750 / 18 / 7 / 400 / 500 / 420): MsBetweenAttacks Value (ActiveTime 1850 / 750 = 2
+            * volleys), Spread 0, AttackPattern Value2, NumBulletsInOneAttack Value3, damage Value4 (0xb7d8fc, 0xb7e1c4..);
+            * Value5 / Value6 only with Brock's star power type 48 (0xb7dd78..): "Rockets fired during the Super are cluster bombs" */
+    193,   /* overcharge_speedy, Max (6, only >= 0 asked): Max's AreaBuff super (+0x31 latch) throws SpeedyOverchargedProjectile
+            * at each teammate, homing on it (0xb7d590): "throws an energy drink to each team member" */
+    194,   /* overcharge_hookdude, Gene (150 / 3): Spread Value, NumBulletsInOneAttack Value2 (0xb7d944, 0xb7ecc8): "splits into
+            * 3 different hands ... the other 2 go diagonally" */
+    197,   /* overcharge_transport_shadowrealm, Lily (100): her hypercharged super's hit sends the target and Lily to the Shadow
+            * Realm for Value (0xb7472c, 0xb58214's duration): "transports the enemy and Lily to the Shadow Realm" */
+    200,   /* overcharge_blower, Gale (7 / 400 / 200): NumBulletsInOneAttack Value (4 -> 7), ActiveTime Value2 (also the skill
+            * instance's +8 at its start, 0xb81f3c), MsBetweenAttacks Value3: 400 / 200 = 2 waves (0xb7d9cc.., 0xb7f29c):
+            * "slightly wider and fires twice" */
+    201,   /* overcharge_barkeep, Barley (450 / 21 / 100): MsBetweenAttacks Value (ActiveTime 1050), AttackPattern Value2,
+            * Spread Value3 (0xb7d9a8, 0xb7ec2c): "hurls 3 big brews" */
+    203,   /* overcharge_insectMan, Angelo (1, only >= 1 asked): the super's area follows Angelo (0xb29350 at 0xb7f078 /
+            * 0xb7fefc): "the Super will follow Angelo" */
+    209,   /* overcharge_sniper, Piper (1 / 2500): ChargeSpeed Value2 (1500 -> 2500, 0xb7bbfc): "departs at an increased speed";
+            * Value is not asked (no call site): the terrain breaking is not here */
+};
 static void *g_card[NBE_MAXP];   /* player i's hypercharge card (cfg +0x28), set at hyper_use */
+static uint8_t *g_card_ch[NBE_MAXP]; static int g_card_id[NBE_MAXP];   /* the brawler holding it (object, id), kept after the end */
 static int card_value(void *card, int idx) { return ((int (*)(void *, int))B(0xaa9568))(card, idx); }
 static int my_card_value(uint8_t *ch, int type, int idx) {
     unsigned k = 0; while (k < sizeof CARD_TYPES / sizeof *CARD_TYPES && CARD_TYPES[k] != type) k++;
     if (!ch || k == sizeof CARD_TYPES / sizeof *CARD_TYPES) return -1;
     for (int i = 0; i < NBE_MAXP; i++)
-        if (g_oc[i] == ch && U8(ch, 0x68) && g_card[i] && I32(g_card[i], 0x100) == type) {
+        if (g_card_ch[i] == ch && I32(ch, 8) == g_card_id[i] && g_card[i] && I32(g_card[i], 0x100) == type) {
             int v = card_value(g_card[i], idx);
             static int nlog; if (nlog++ < 20) LOG("[hyper] card value: player %d type %d value%d = %d\n", i, type, idx, v);
             return v;
@@ -316,7 +347,7 @@ int hyper_pet_speed(uint8_t *ch) {   /* 0 = unchanged */
     void *cd = ((void *(*)(void *))B(0xb6a384))(ch); int base = cd ? ((int (*)(void *))B(0xab31e0))(cd) : 0;
     return base > 0 ? base * (100 + g_pet[k].speed_pct) / 100 : 0;
 }
-static void hyper_pets_clear(void) { memset(g_pet, 0, sizeof g_pet); memset(g_card, 0, sizeof g_card); }
+static void hyper_pets_clear(void) { memset(g_pet, 0, sizeof g_pet); memset(g_card, 0, sizeof g_card); memset(g_card_ch, 0, sizeof g_card_ch); }
 #define SNAP_MAX 1024
 static int snap_chars(uint8_t *pr, void **out) {   /* the sim's character objects now */
     void *sim = ((void *(*)(void *))B(0xb6a378))(pr), *h = sim ? PTR(sim, 0) : NULL;
@@ -403,6 +434,7 @@ static int has_oc_ulti(uint8_t *ch) {
 void hyper_char_changed(uint8_t *old, uint8_t *nc) {
     for (int i = 0; i < NBE_MAXP; i++) {
         if (g_sw[i] == old) g_sw[i] = NULL;
+        if (old && g_card_ch[i] == old) { g_card_ch[i] = nc; g_card_id[i] = nc ? I32(nc, 8) : 0; }
         if (!old || g_oc[i] != old) continue;
         g_oc[i] = nc; U8(nc, 0x68) = U8(old, 0x68);
         if (has_oc_ulti(nc)) { swap_ulti(nc); g_sw[i] = nc; }
@@ -444,7 +476,7 @@ int hyper_use(int i, void *p, uint8_t *ch) {
     if (i < 0 || i >= NBE_MAXP || !p || !ch || !g_hyp[i].card || U8(p, 0xa0) || I32(p, 0x98) < I32(p, 0x9c)) return 0;
     ((void (*)(void *, void *))B(0xc42584))(p, ch);
     if (!U8(p, 0xa0)) return 0;   /* refused by the game's own checks (e.g. a state that forbids it) */
-    g_hyp[i].used++; g_oc[i] = ch; { void *cfg = player_cfg(p); g_card[i] = cfg ? PTR(cfg, 0x28) : NULL; }
+    g_hyp[i].used++; g_oc[i] = ch; { void *cfg = player_cfg(p); g_card[i] = cfg ? PTR(cfg, 0x28) : NULL; g_card_ch[i] = ch; g_card_id[i] = I32(ch, 8); }
     if (has_oc_ulti(ch) && g_sw[i] != ch) { swap_ulti(ch); g_sw[i] = ch; }
     static int nlog; if (nlog++ < 40) LOG("[hyper] player %d activated (charge %d, drain %d/tick)\n", i, I32(p, 0x98), I32(p, 0xa4));
     return 1;
