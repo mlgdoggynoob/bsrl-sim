@@ -19,6 +19,8 @@
 #define CUBE_ITEM 18000009
 #define BOMB_BOX_ITEM 18000011
 #define BOMB_ITEM 18000035
+#define OC_BOMB_BOX_ITEM 18000145   /* OverchargedBoxOfBombs / OverchargedBomb: Piper's hypercharged super */
+#define OC_BOMB_ITEM 18000146
 #define K_ENEMY 9
 #define K_PROJ 16
 #define K_BOX 6
@@ -196,7 +198,7 @@ int enc_encode(const EncMap *m, const EncState *s, int pidx, float *vec, float *
          * area round: [5] of those rows = data id - 16999999 (area skin row + 1, items row + 1000001: radius / kind tables
          * in Python), of the other items z / 1500 as before */
         int area = r[1] / 1000000 == 17, mine = area && r[2] >= 0 && team_of(s, r[2]) == myteam;
-        int ae = area || r[1] == BOMB_ITEM || r[1] == BOMB_BOX_ITEM;
+        int ae = area || r[1] == BOMB_ITEM || r[1] == BOMB_BOX_ITEM || r[1] == OC_BOMB_ITEM || r[1] == OC_BOMB_BOX_ITEM;
         double v[6] = {1.0, dx, dy, (double)(r[1] == CUBE_ITEM), mine ? -1.0 : (double)ae, ae ? (double)(r[1] - 16999999) : (r[5] > 0 ? r[5] : 0) / 1500.0};
         rows[n].key = dx * dx + dy * dy; rows[n].seq = n; for (int j = 0; j < 6; j++) rows[n].v[j] = (float)v[j]; n++;
     }

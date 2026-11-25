@@ -1,4 +1,4 @@
-"""Live check of hypercharge (issue #4): one boot, one scripted battle (10 Shelly, no gas, native AI off), players 1 and 3
+"""Live check of hypercharge (issue #4): one boot, one scripted battle (10 of --brawler, default Shelly, no gas, native AI off), players 1 and 3
 with their hypercharge card (div "hyper"), 2 and 4 without; 1 / 2 shoot at 5 / 6, which shoot back. In order:
   1. the host publishes hypercharge state (NbeResp hyp_valid), the card reached players 1 and 3 and no one else, with the
      brawler's characters.csv buff percents;
@@ -9,8 +9,13 @@ with their hypercharge card (div "hyper"), 2 and 4 without; 1 / 2 shoot at 5 / 6
      does not; env_v5.Env.hyper (obs_v5 self 4) agrees with the response at every step;
   5. while active: 1 walks SPEED_TOL-close to (1 + speed%) x the distance it walked in the same ticks before, shot damage
      is (1 + damage%) x 2's, and damage taken (5 shoots 1, 6 shoots 2) is (1 - shield%) x 2's;
-  6. the hypercharge ends after max / 40 ticks (+-2), the charge is 0, and 1 walks at its normal speed again.
-python -m hyper_check            python -m hyper_check --check   (no game: the judging rules)"""
+  6. the hypercharge ends after max / 40 ticks (+-2), the charge is 0, and 1 walks at its normal speed again;
+  7. supers (both filled, healed targets 1 tile away): 1 hypercharges (fire 4) then fires its super at 5, 2 fires its
+     normal super at 6 in the same ticks; the target HP lost (or the shooter's damage_dealt, summed) over super_audit.WATCH
+     ticks must be > 0 for 2 and at least as much for 1 (`super_ok`, no tolerance below: the hypercharge adds damage).
+     A dud hypercharged super (Piper's bombs that never explode) fails here: python -m hyper_check --brawler Piper.
+     Aim and super_dist as super_audit's (`super_dist`); a super steered while it runs (FlyJump, Ww) is not walked here.
+python -m hyper_check [--brawler Piper]            python -m hyper_check --check   (no game: the judging rules)"""
 import argparse, sys, time, numpy as np
 P = None   # nbpc.proto, imported in main / _check (the self-check needs no host)
 
@@ -45,6 +50,13 @@ def end_ok(active_ticks, mx, drain=40):
     return abs(active_ticks - want) <= END_TOL, "active %d ticks (want %.0f)" % (active_ticks, want)
 
 
+def super_ok(hyper, normal):
+    """the hypercharged super's damage to its target is at least the normal super's -> (ok, text); a normal super that
+    dealt nothing (not fired, out of range) fails too, since then the comparison says nothing"""
+    txt = "hypercharged %d vs normal %d" % (hyper, normal) + ("" if normal > 0 else " (the normal super dealt none)")
+    return bool(normal > 0 and hyper >= normal), txt
+
+
 def _check():
     base = dict(valid=1, card=23000777, left=0, used=0, dmg=5, speed=20, shield=5, charge=4000, max=4000, x=0.0, y=0.0,
                 hp=7800, tick=100, alive=1, out=0)
@@ -55,6 +67,8 @@ def _check():
     assert not ratio_ok(5.0, 0.0, 1.0, SPEED_TOL)[0]
     assert ratio_ok(3150.0, 3000.0, 1.05, DMG_TOL)[0] and not ratio_ok(3000.0, 3000.0, 1.05, DMG_TOL)[0]
     assert end_ok(100, 4000)[0] and end_ok(102, 4000)[0] and not end_ok(110, 4000)[0] and not end_ok(10**6, 4000)[0]
+    assert super_ok(3780, 3600)[0] and super_ok(3600, 3600)[0] and not super_ok(3599, 3600)[0] and not super_ok(0, 3600)[0]
+    assert not super_ok(0, 0)[0] and not super_ok(500, 0)[0]
     print("hyper_check self-check ok")
 
 
@@ -144,6 +158,26 @@ def main():
         need(s["charge"] == 0, "charge 0 after the end (%d)" % s["charge"])
         inst.setup(positions={HC: (9000, 17400)}); stp(k=1)
         after = walk(HC, 8); ok, txt = ratio_ok(after, base, 1.0, SPEED_TOL); need(ok, "speed after the end: " + txt)
+        # 7. hypercharged super vs normal super, same distance, same ticks
+        import super_audit as SA
+        d_sup = 300.0   # the targets' offset below: 1 tile
+        sd = {HC: SA.super_dist(SA.expected(a.brawler, hyper=True), d_sup), NC: SA.super_dist(SA.expected(a.brawler), d_sup)}
+        inst.setup(positions={HC: (9000, 17400), NC: (9000, 600), T1: (9300, 17400), T2: (9300, 600)}, super_fill=[HC, NC],
+                   hyper_fill=[HC]); stp(k=1)
+        r = stp({HC: (-1, 4, 0.0, 0.0)}, k=1); s = snap(r, HC)
+        need(s["left"] > 0, "hypercharge active for the super (%d ticks left)" % s["left"])
+        pair = ((HC, T1), (NC, T2)); hp0 = {t: snap(r, t)["hp"] for _, t in pair}; low = dict(hp0); dd = {p: 0 for p, _ in pair}
+        sc = {p: [int(r.pl[p].super_charge), int(r.pl[p].super_max), int(r.pl[p].super_charge)] for p, _ in pair}
+        r = stp({p: (-1, 2, 0.0, sd[p]) for p, _ in pair}, k=1)   # aim 0 degrees: at the target
+        for n in range(SA.WATCH // TICKS + 1):
+            for p, t in pair:
+                low[t] = min(low[t], int(r.pl[t].hp) if r.pl[t].alive else 0); dd[p] += int(r.pl[p].damage_dealt)   # cleared per response
+                sc[p][2] = min(sc[p][2], int(r.pl[p].super_charge))
+            if n < SA.WATCH // TICKS: r = stp()
+        dmg = {p: max(hp0[t] - low[t], dd[p]) for p, t in pair}
+        ok, txt = super_ok(dmg[HC], dmg[NC])
+        need(ok, "super damage at %d units: %s; super charge %s, super_dist %s" % (d_sup, txt, {p: "%d/%d -> %d" % tuple(v) for p, v in sc.items()},
+                                                                               {p: round(v, 3) for p, v in sd.items()}))
     finally:
         inst.close()
     for f in fails[:20]: print("FAIL", f)

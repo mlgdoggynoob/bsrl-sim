@@ -8,8 +8,8 @@
  *   - Showdown rules: storm damage (20 %/s of max HP, +5 %/s after 5 s, applied before the snapshot of the tick after
  *     the check, through the damage root 0xb422d0), no regen in gas, elimination tracker / Brawlers left / native
  *     end at <= 1 alive or one team left (duo / trio), power cubes (+400 HP, +10 % damage incl. the popup), damage model (P11 x2 + travel curve; heal areas x2, #22),
- *     super-charge fix, Piper's leap re-implementation + BoxOfBombs + bomb damage, skill block in the air, client
- *     guard, alive guard, bot 'hold'/native control, local_ai.
+ *     super-charge fix, Piper's leap re-implementation + BoxOfBombs + bomb damage (hypercharged: OverchargedBomb too),
+ *     skill block in the air, client guard, alive guard, bot 'hold'/native control, local_ai.
  *   - soft reset: StartLoading clone re-injected through 0x816ff8 with the seed (+ the B3 determinism patch).
  * Every agent mechanism keeps the agent's numbers; differences are listed in work/NOTES.md. */
 #include "nbhost.h"
@@ -47,7 +47,11 @@ enum { VT_CHAR = 0x1209020, VT_CHAR2 = 0x1208d58, VT_ITEM = 0x1209240, VT_ITEM2 
 #define VTOF(o) ((int)((uint8_t *)PTR(o, 0) - g_libg->base))
 #define BOX_ID 16000120
 #define CUBE_ITEM 18000009
-#define BOMB_ITEM 18000035
+#define BOMB_ITEM 18000035      /* PiperdefBomb (items.csv row 35): what BoxOfBombs drops for the default skin */
+#define OC_BOMB_ITEM 18000146   /* OverchargedBomb (row 146): what the hypercharged super's OverchargedBoxOfBombs drops */
+/* a leap bomb: libg's own item code (0xb6c1c8 / 0xb6c498) drops box Value bombs (BoxOfBombs 4, OverchargedBoxOfBombs 6)
+ * of the skin's item (skin_confs Items / OverchargedSpawnedItem) or else "Bomb" / "OverchargedBomb"; env.c explodes each */
+#define LEAP_BOMB(id) ((id) == BOMB_ITEM || (id) == OC_BOMB_ITEM)
 
 int g_env_on;                 /* --env PATH given */
 int g_env_spf = 4;            /* --steps-per-frame (client mode: state-only steps run per client frame) */
@@ -994,13 +998,13 @@ static void sf_explode(void *sim, Bomb *b) {
     if (pl) I32(pl, 0x54) = charge0;
     E.sf_pops++;
 }
-static void sf_bomb_state(void *sim) {   /* afterState: detect popped bombs */
+static void sf_bomb_state(void *sim) {   /* afterState: detect popped bombs (LEAP_BOMB: normal and hypercharged) */
     int tick = I32(sim, 0x10);
     if (tick - E.last_bomb_tick > 200) { E.nbombs = 0; return; }
     Bomb now[64]; int nn = 0, n; void **v = objvec(sim, &n);
     for (int i = 0; i < n && nn < 64; i++) {
         uint8_t *o = v[i]; if (!o) continue; int vo = VTOF(o); if (vo != VT_ITEM) continue;
-        uint8_t *d = PTR(o, 0x10); if (!d || I32(d, 0x20) != BOMB_ITEM) continue;
+        uint8_t *d = PTR(o, 0x10); if (!d || !LEAP_BOMB(I32(d, 0x20))) continue;
         int id = I32(o, 8), x = I32(o, 0x38), y = I32(o, 0x3c), owner = -1, known = 0;
         for (int k = 0; k < E.nbombs; k++) if (E.bombs[k].id == id) { owner = E.bombs[k].owner; known = 1; }
         if (!known) {
