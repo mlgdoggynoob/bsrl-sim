@@ -26,7 +26,9 @@
  * per-attack projectile, the Attack handler's summon) take the overcharged list here (hyper_proj_site, hyper_summon_bl),
  * a hypercharged brawler's Heal area heals here (oc_heal_areas), and the card-value stub 0xb5281c answers the hypercharge
  * card's values for the types in CARD_TYPES (Frank's and Glowy's full circle, Gene's 3 hands, Gale's 2 wider waves, Barley's
- * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
+ * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value). Two hypercharges whose card Type
+ * no libg call site asks for (code compiled out) are re-implemented: Lumi's side blasts (my_spawn) and Griff's extra notes
+ * (hyper_chain_extra, from spawnfix.c). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
  * MechaDudeBig) have a separate super instead (characters.csv OverchargedUltimateSkill): the game builds it as the brawler's
  * third skill instance (char+0x458[2], 0xb34560) but what picks it for a super cast is compiled out; here instances 1
  * (the super) and 2 are swapped while hypercharged, so the game's own super code casts it, and swapped back once the
@@ -392,8 +394,90 @@ static void hyper_proj_spawn(uint8_t *pr) {
                                           I32(d, 0x20), type, nnew, type == CT_PET_BUFF ? " (pet buff)" : " (+ owner's pet)");
 }
 
+/* The hypercharge card's own code. Some hypercharges are a card Type with code of its own (cards.csv MetaType 6 Type, e.g.
+ * overcharge_hookdude, and the card's Value..Value6) rather than Overcharged* columns. Neither card-value reader of this
+ * build (0xc427d8(player, type, idx), 0xb5281c(character, type, idx)) is asked for overcharge_morningstar (303) or
+ * overcharge_griff (295) (no bl / b to them with that w1): their code is compiled out with the server. Re-implemented here at the projectile spawn 0xb78190 (hook_replace; the attack code spawns
+ * every projectile of a super through it): when a hypercharged brawler's super spawns its OverchargedProjectiles entry,
+ * the extra projectiles of its card are spawned with the same arguments (damage, owner, kind), only the target moved:
+ * - overcharge_morningstar (Lumi, "The final explosion ... has an extra blast on both sides"): with the OverchargedProjectiles
+ *   entry number Value1 (3, the final blast) two more land beside its target, perpendicular to the throw, Value2 % (100) of
+ *   the blast's radius (the projectile's SpawnAreaEffectObject Radius, area data +0x12c) away. [?] the side and the unit. */
+#define CT_MORNINGSTAR 303    /* overcharge_morningstar (the card Type enum, the string table 0xaa3000..0xaa8860) */
+typedef uint64_t (*spawn16_t)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+static spawn16_t o_spawn;
+static int g_spawn_rec; static long g_oc_extra;
+static int card_val(uint8_t *card, int k) { return ((int (*)(void *, int))B(0xaa9568))(card, k); }
+static uint8_t *oc_card(uint8_t *ch) {   /* the card of the hypercharged brawler ch, NULL if ch is not hypercharged */
+    for (int i = 0; ch && i < NBE_MAXP; i++) if (g_oc[i] == ch && U8(ch, 0x68) && g_hyp[i].card) return div_data(g_hyp[i].card);
+    return NULL;
+}
+static int oc_proj_index(uint8_t *ch, void *d) {   /* d's place in the brawler's super's OverchargedProjectiles, -1 if none */
+    uint8_t *cd = ((void *(*)(void *))B(0xb6a384))(ch), *sd = cd ? PTR(cd, 0x268) : NULL;   /* UltimateSkill */
+    void **l = sd ? PTR(sd, 0x68) : NULL; int n = sd ? I32(sd, 0x74) : 0;
+    for (int k = 0; l && k < n && k < 8; k++) if (l[k] == d) return k;
+    return -1;
+}
+static int proj_area_radius(uint8_t *d) {   /* the Radius of the projectile data's area (a word of d that is an area row) */
+    static uint8_t *last_d; static int last_r;
+    if (d == last_d) return last_r;
+    int r = 0;
+    for (int idx = 0, miss = 0; !r && idx < 4000 && miss < 64; idx++) {   /* table 17 = area effects */
+        uint8_t *a = div_data(17000000 + idx);
+        if (!a) { miss++; continue; }
+        miss = 0;
+        for (int o = 0x28; o < 0x400; o += 8) if (PTR(d, o) == a) { r = I32(a, 0x12c); break; }
+    }
+    last_d = d; last_r = r; return r;
+}
+static uint64_t my_spawn(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+                         uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14, uint64_t a15) {
+    uint64_t p = o_spawn(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15);
+    uint8_t *ch = (uint8_t *)a2, *card;
+    if (g_spawn_rec || !p || !(card = oc_card(ch))) return p;
+    int type = ((int (*)(void *))B(0xaa9500))(card);
+    if (type != CT_MORNINGSTAR) return p;
+    int k = oc_proj_index(ch, (void *)a4); if (k < 0) return p;
+    int x = (int)a0, y = (int)a1, tx = (int)a5, ty = (int)a6, n = 0, ox[4], oy[4];
+    if (x == -1 && y == -1) { x = I32(ch, 0x38); y = I32(ch, 0x3c); }   /* the attack code's "from the owner" (+0x330 = -1) */
+    int dx = tx - x, dy = ty - y;
+    if (k == card_val(card, 1) - 1) {
+        int len = (int)__builtin_sqrt((double)dx * dx + (double)dy * dy), off = proj_area_radius((uint8_t *)a4) * card_val(card, 2) / 100;
+        if (len > 0 && off > 0)
+            for (int sd = -1; sd <= 1; sd += 2, n++) { ox[n] = tx - sd * dy * off / len; oy[n] = ty + sd * dx * off / len; }
+    }
+    g_spawn_rec = 1;
+    for (int j = 0; j < n; j++)
+        if (o_spawn(a0, a1, a2, a3, a4, (uint64_t)(uint32_t)ox[j], (uint64_t)(uint32_t)oy[j], a7, a8, a9, a10, a11, a12, a13, a14, a15)) g_oc_extra++;
+    g_spawn_rec = 0;
+    static int nlog; if (n && nlog++ < 20) LOG("[hyper] card type %d: %d more of projectile %d (aim %d,%d -> %d,%d)\n", type, n,
+                                               I32((uint8_t *)a4, 0x20), dx, dy, n ? ox[0] - x : 0, n ? oy[0] - y : 0);
+    return p;
+}
+
+/* overcharge_griff (Griff, "banknotes multiply at max range before returning, with the newly created banknotes returning
+ * after a delay"): when spawnfix.c sends a hypercharged Griff's note back at max range (reason 1; its ChainBullet
+ * AssaultShotgunOverchargedUltiProjectile2, TravelType 11, TravelTypeVariable 20), Value1 (1) more go back with it of the
+ * row after that child (AssaultShotgunOverchargedUltiProjectile3: the same with TravelTypeVariable 30; no column names it)
+ * -> that data and *n, NULL if none */
+#define CT_GRIFF 295          /* overcharge_griff */
+void *hyper_chain_extra(void *owner, uint8_t *child, int reason, int *n) {
+    uint8_t *card = oc_card(owner), *nx;
+    *n = 0;
+    if (!card || reason != 1 || !child || ((int (*)(void *))B(0xaa9500))(card) != CT_GRIFF) return NULL;
+    uint8_t *lc = PTR(child, 0x58), *ln;   /* +0x58: the skin row's logic row (projectiles_logic, table 125) */
+    if (!(nx = div_data(I32(child, 0x20) + 1)) || !lc || !(ln = PTR(nx, 0x58)) || I32(ln, 0x20) != I32(lc, 0x20) + 1 || PTR(nx, 0x180))
+        return NULL;   /* the next skin row on the next logic row, with no ChainBullet of its own */
+    *n = card_val(card, 1); g_oc_extra += *n;
+    static int nlog; if (nlog++ < 10) LOG("[hyper] card type %d: %d more of projectile %d at max range\n", CT_GRIFF, *n, I32(nx, 0x20));
+    return nx;
+}
+
 void hyper_install(void) {
     hook_enter(g_libg, 0xb709e4, on_travel);   /* homing projectiles (above) */
+    if (*(uint32_t *)B(0xb78190) == 0xa9ba7bfd) o_spawn = (spawn16_t)hook_replace(g_libg, 0xb78190, (void *)my_spawn);   /* stp x29, x30, [sp, #-96]! */
+    else LOG("[hyper] 0xb78190: unexpected bytes, the hypercharge cards' extra projectiles are off\n");
     uint32_t *f = (uint32_t *)B(0xb35bf0);
     if (f[0] != 0x2a1f03e0 || f[1] != 0xd65f03c0) {   /* mov w0, wzr ; ret */
         LOG("[hyper] isOvercharged 0xb35bf0: unexpected bytes %08x %08x, hypercharged skills off\n", f[0], f[1]); return;

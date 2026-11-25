@@ -146,13 +146,16 @@ static int angle_of(int dx, int dy) { return (dx | dy) ? ((i2_t)B(0xd00960))(dx,
 static const int g_ret_parents[] = {
 #include "ret_codes.h"
     0};
+/* the list holds skin row ids (6000xxx): the data's own id +0x20; d+0x58 is its logic row in this build (125000xxx, which
+ * the list never matched: Griff's notes were not sent back), kept for a build where it is the skin row */
 static int is_return_parent(uint8_t *d) {
-    if (!d || !PTR(d, 0x58)) return 0;
-    int id = ((int (*)(void *))B(0xac3a80))(PTR(d, 0x58));
-    for (int i = 0; g_ret_parents[i]; i++) if (g_ret_parents[i] == id) return 1;
+    if (!d) return 0;
+    int id = I32(d, 0x20), id2 = PTR(d, 0x58) ? ((int (*)(void *))B(0xac3a80))(PTR(d, 0x58)) : 0;
+    for (int i = 0; g_ret_parents[i]; i++) if (g_ret_parents[i] == id || g_ret_parents[i] == id2) return 1;
     return 0;
 }
 static long g_nchain_enemy, g_nchain_ret;
+void *hyper_chain_extra(void *owner, uint8_t *child, int reason, int *n);   /* hyper.c */
 typedef int (*i1p_t)(void *);
 /* nearest living enemy hero of projectile `pr` within `range` of (x,y), farther than `minr` (the one just hit) */
 static void *nearest_enemy(uint8_t *pr, int x, int y, int range, int minr) {
@@ -175,8 +178,12 @@ static void on_explode(uint64_t *c) {
     uint8_t *pr = (uint8_t *)c[0]; int reason = (int)c[1];
     g_cur_proj = pr; g_cur_tick = g_sim ? I32(g_sim, 0x10) : -1;
     if (g_spawn_dbg && pr && PTR(PTR(pr, 0x10), 0x180)) LOG("[spawnfix] explode call reason %d end90 %d\n", reason, I32(pr, 0x90));
-    if (!g_spawn_fix || !g_spawn_chain || !mode() || !pr || rec || I32(pr, 0x90) != 0 || reason == 3 || reason == 5 || reason == 0) return;
+    if (!g_spawn_fix || !g_spawn_chain || !mode() || !pr || rec || I32(pr, 0x90) != 0 || reason == 5 || reason == 0) return;
     uint8_t *d = PTR(pr, 0x10); if (!d) return;
+    /* reason 3 (the shipped code's `reason != 3`): no chain, except ExecuteChainSpecialCase 2, the rows that chain on every
+     * contact (Bea's hypercharged split "at max distance (and on hit)", whose shots end at the target with reason 3; Mr. P's
+     * suitcase hopping over what it hits) */
+    if (reason == 3 && I32(d, 0x1b4) != 2) return;
     uint8_t *child = PTR(d, 0x180); if (!child) return;
     if (g_spawn_dbg) LOG("[spawnfix] explode with chain child: reason %d n %d spec %d toen %d tick %d\n", reason, I32(d, 0x1a4), I32(d, 0x1b4), d[0x1a0] & 1, g_cur_tick);
     int n = I32(d, 0x1a4), spec = I32(d, 0x1b4), spread = I32(d, 0x1ac), cd = I32(d, 0x1b0), toen = d[0x1a0] & 1;
@@ -194,6 +201,12 @@ static void on_explode(uint64_t *c) {
     } else if (n < 1) {   /* boomerang return to the owner */
         if (!is_return_parent(d)) { g_nchain_skip[2]++; return; }
         tx[0] = I32(owner, 0x38); ty[0] = I32(owner, 0x3c); nspawn = 1; g_nchain_ret++;
+        int more; uint8_t *mc = hyper_chain_extra(owner, child, reason, &more);   /* a hypercharge card's extra notes */
+        for (int k = 0; mc && k < more && k < 4; k++) {
+            rec = 1;
+            if (((spawn_t)B(0xb78190))(x, y, owner, owner, mc, tx[0], ty[0], dmg, dmg2, 0, 0, NULL, sim, 0, kind, NULL)) g_nchain_proj++;
+            rec = 0;
+        }
     } else {
         if (spec > 3) { g_nchain_skip[3]++; return; }
         nspawn = n > 8 ? 8 : n;
