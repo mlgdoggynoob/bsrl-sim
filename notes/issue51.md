@@ -101,7 +101,7 @@ and, for type 4, the value), but nothing in the sim reads them.
 | SuperChargeRate | libg | El Primo's punches: super charge 1884 / 1712 = 1.100 |
 | GadgetCooldown | libg | Maisie's dash: cooldown 270 / 318 = 0.849 |
 
-These seven are `gear_check.LIVE`, what `--gears 1` hands out. Every brawler gets two of them (the six Rare ones are for
+These seven are `gear_check.LIVE`, what `--gears 1` hands out. Every brawler gets two of them (the five Rare ones are for
 everyone; ReloadSpeed and SuperChargeRate only for their listed heroes).
 
 ## Not done
