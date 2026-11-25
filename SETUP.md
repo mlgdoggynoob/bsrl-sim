@@ -158,6 +158,8 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   `python -m status_check` scene 16. Notes: `notes/issue22.md`. Also (#6) Bonnie's hypercharged teeth: `spawnfix.c` starts
   BulletExplosion bullets BulletExplosionBulletOffset units from the centre (a ring; `NB_SPAWNFIX_OFFSET=0` off), and
   `env.c` charge_land gives the DamageScaleType 4 chain its Damage % of the skill's Damage (`notes/issue6-leftovers.md`).
+  And (#19) `superfix.c`: a summon area of DamageScaleType 1 / 3 on a summon without that skill is made with type 0 (8-Bit's
+  booster crashed the host; `notes/issue19-final.md`).
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

@@ -39,9 +39,20 @@ Branch `claude/focused-mayer-2c1pv8`, base d3080dd (main with `split_and_paint.p
 
 Summon areas (found on the way, needed for Pam): a summon's CharacterData AreaEffect never spawned (Pam's turret stood
 with no area). `superfix_summon_area` spawns it once per summon (if no area of that data follows it), it ends with the
-summon; Hot ones heal hurt allies inside every HOT_EVERY = 20 ticks by -Damage % of the summon's max HP (DamageScaleType 2)
-because libg's Hot apply healed nobody (teammate stayed 6600 / 7800 beside the converted area). This also gives 8-Bit's
-DamageBooster, Bo's totem, Pam's normal turret and the other 25 AreaEffect summons their area: not checked one by one.
+summon; Hot ones heal hurt allies inside every HOT_EVERY = 20 ticks (Pam's turrets: 14 % of Pam's max HP since
+`heal_scale.patch`, `notes/issue22.md`) because libg's Hot apply healed nobody (teammate stayed 6600 / 7800 beside the
+converted area). This also gives 8-Bit's DamageBooster, Bo's totem, Pam's normal turret and the other 25 AreaEffect summons
+their area.
+
+Checked afterwards (#22 branch, `heal_scale.patch`): one `super_audit --only` over the 21 brawlers whose super summons
+(Jessie, Nita, Pam, Penny, Tick, 8-Bit, Mr. P, Ash, Meg, Lola, Eve, Bonnie and her small form, Larry & Lawrie, Moe and his
+drill, Juju, Najia, Wendy, the two Super Nova forms) against `work/super_audit.json` of 2026-11-24: 8-Bit crashed the host
+(SIGSEGV at 0xb0dc18: the area create reads the owner's weapon for DamageScaleType 1, and the booster has none); the other
+20 unchanged or better (Meg, Najia partial -> works, the drill no_effect -> works). Fixed: a summon area of DamageScaleType
+1 / 3 whose summon lacks that skill is made with DamageScaleType 0 (DamageBoost reads its percent from the data). Then 8-Bit
+works, normal (DamageBoost r1000) and hypercharged (DamageBoosterOvercharge, 2484 damage); `--hyper` Pam works;
+`--gadget` Rico and Starr Nova work, Bea partial (her slot-0 gadget is not a summon; no earlier gadget audit to compare).
+Summons spawned only by gadgets the host does not implement (Bo's totem, Leon's area, Grom's tower, ...) were not reached.
 
 ## Not done, with evidence
 - GiveUlti 57: comes from SpeedyWeaponOverchargedBuddy (SpeedyWeapon's OverchargedVersion; texts TID_SPEEDY_BUDDY_OVERCHARGE_DESC,

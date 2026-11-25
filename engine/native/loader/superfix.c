@@ -112,7 +112,15 @@ void superfix_summon_area(uint8_t *ch) {
         uint8_t *o = v[i], *od = o ? PTR(o, 0x10) : NULL;
         if (od == ad && PTR(o, 0x108) == ch) { if (g_nsa < SA_MAX) g_sa[g_nsa++] = (SumArea){id, I32(o, 8), o, 0}; return; }
     }
+    /* DamageScaleType 1 / 3 (8-Bit's DamageBoost, JetpackGirl's gadget tower): the create 0xb2aefc reads the owner's weapon / ulti
+     * (0xb34da4(owner) +0x260 / +0x268, at 0xb2b01c / 0xb2b074) and crashes on a summon that has none (8-Bit's super:
+     * SIGSEGV at 0xb0dc18). Then the area is made with DamageScaleType 0 (its Damage as is; DamageBoost reads its percent
+     * from the data, superfix_status.c) and the data's value is put back. */
+    int dst = I32(ad, 0x138); uint8_t *ocd = ((void *(*)(void *))B(0xb34da4))(ch);
+    int noskill = (dst == 1 || dst == 3) && (!ocd || !PTR(ocd, dst == 1 ? 0x260 : 0x268));
+    if (noskill) I32(ad, 0x138) = 0;
     uint8_t *a = my_spawn_area(ch, 0, 0, ad, 2, 0, 0, 1, NULL, NULL, NULL, 1);
+    if (noskill) I32(ad, 0x138) = dst;
     if (g_nsa >= SA_MAX) g_nsa = 0;
     g_sa[g_nsa++] = (SumArea){id, a ? I32(a, 8) : -1, a, 0};
     if (a) g_nsum_area++;
