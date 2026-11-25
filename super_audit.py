@@ -11,7 +11,7 @@ players 0-4 shoot in phase A, players 5-9 in phase B; in each phase every shoote
 wide corridor of open tiles in at least two directions, spots >= SPACING apart; A and B use different spots) with one
 enemy target at distance d along a corridor. Per phase: teleport + heal everyone and end spawn protection; the target fires
 one normal attack at the shooter (so a self-heal is visible); fill the shooters' supers; fire the super (fire 2, aim at the
-target, super_dist = d / CastingRange, a charge aims ~1 tile past the target); watch WATCH ticks. A super the player steers
+target, super_dist = d / CastingRange, a charge aims ~1 tile past the target); watch WATCH ticks (LONG_WATCH for Bo's mines and Mico's jump). A super the player steers
 while it runs (FlyJump, Ww) has its shooter walk towards the target once its CastingTime is over (moves sent while it
 casts are dropped), so its "move" is plain walking.
 A ProjectileShield super (Buster) has its target SHIELD_D away, past the shield line, shooting into it at the first
@@ -73,6 +73,7 @@ TILE = 300
 CORR = 8                                 # corridor length in tiles from the shooter's tile: targets up to 7 tiles (2100 u)
 SPACING = 13                             # tiles between spot centres (3900 u: a long super past its target stays clear)
 WATCH = 50                               # ticks watched after the fire (2.5 s at 20 ticks/s; regen starts 3 s after a hit)
+LONG_WATCH = {"BowDude": 160, "Leaper": 160}   # Bo's mines arm and go off after 2.5 s; Mico's jump lasts 6 s: watched 8 s
 STEP = 2                                 # ticks per env step while watching
 POST_HIT = 0                             # --post-hit: tick after the fire at which the target shoots the shooter again (0 off)
 POST_HIT_SHIELD = 8                      # ProjectileShield (Buster): the target shoots into the shield at the first step >= this tick
@@ -680,7 +681,7 @@ class Auditor:
                     elif own not in (s, t) and cid not in bid.values():   # someone else's summon near this pair
                         if min(np.hypot(row[3] - m["tx0"], row[4] - m["ty0"]), np.hypot(row[3] - m["x0"], row[4] - m["y0"])) < 2000:
                             m["foreign_near"] = True
-            if n >= WATCH: break
+            if n >= max([WATCH] + [LONG_WATCH.get(j.name, 0) for j, _, _ in run]): break
             acts = dict(idle)
             for j, s, t in run:   # steered supers (FlyJump, Ww): once cast, the shooter walks to the target (16 joystick directions)
                 p, q = r.pl[s], r.pl[t]; inf = self.info[j.name]
