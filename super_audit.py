@@ -46,10 +46,13 @@ where there is one) and hyper (a projectile / summon / area / item only the hype
 Output: super_audit_hyper.json / .md.
 --gadget (gadget round, issue #3): the brawlers with a gadget the host implements and this audit can see (`audit_gadgets`,
 `gadget_kind` mirrors nbhost gadget.c's classify functions: area at the brawler, the gadget's own skill shot or area, repeat /
-spin volleys, items, instant heals; R-T's super charge is gadget_check's). Each shooter gets that gadget card and fires it
-(fire 3, aimed at the target) in place of the super; consumed = the host counted a use (NbeResp gad_used). Expected effects
-come from the tables (`expected_gadget`). --gadget-slot 1 audits each brawler's second such gadget. Output:
-super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*)."""
+spin volleys, items, instant heals, skills run by the game's skill path (`skill`), next-attack changes (`next_attack`); R-T's
+super charge is gadget_check's). Each shooter gets that gadget card and fires it (fire 3, aimed at the target) in place of the
+super; a next_attack gadget's shooter then attacks once (fire 1) and must show the gadget's own projectile / area (`own`).
+consumed = the host counted a use (NbeResp gad_used). Expected effects come from the tables (`expected_gadget`; a skill
+gadget that summons or drops an item expects no damage from its projectile). --gadget-slot 1 audits each brawler's second
+such gadget; --gadget-rows A,B audits those accessories.csv rows instead (a row the host does not handle is a probe with no
+expected effect). Output: super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*)."""
 import argparse, collections, functools, json, os, sys, threading, time
 import numpy as np
 
@@ -233,9 +236,10 @@ NO_DAMAGE_AREAS = ("WallSpawn", "StatusEffect", "ChargeSuper", "EnragerOvercharg
 HEAL_TYPES = ("Heal", "Hot", "HealRegen", "HealAndDamage", "HotAndDot")
 
 
-MASKED = {"BowDude_Totem", "Speedy_Rewind", "HammerDude_Pull", "HookDude_Homing", "AssaultShotgun_Bomb", "Ninja_InvisibleArea",
-          "Gladiator_Amp", "MagicalGirl_FlyArea"}   # gadget.c g_masked: classified, but no effect in this audit -> not usable
-GADGET_KINDS = ("area", "shot", "skill_area", "repeat", "spin", "item", "heal_now", "super")
+MASKED = {"HookDude_Homing", "AssaultShotgun_Bomb", "Speedy_Rewind"}   # gadget.c g_masked: classified, but no effect in this audit -> not usable
+NATIVE_SKILL = {"BowDude_Totem", "HammerDude_Pull", "Ninja_InvisibleArea", "Gladiator_Amp",
+                "MagicalGirl_FlyArea"}   # gadget.c g_native_skill: skill rows with a summon / item / handler, run by the game's skill path
+GADGET_KINDS = ("area", "shot", "skill_area", "repeat", "spin", "item", "heal_now", "super", "skill")
 
 
 def gadget_kind(a):
@@ -245,13 +249,16 @@ def gadget_kind(a):
     if a.get("Name") in MASKED: return None
     obj = (a.get("CustomObject") or "").split(";")[0]
     is_proj = obj in T["pskin"] or obj in T["plog"]
-    if (not t or (t == "spin_shoot" and not is_proj)) and a.get("AreaEffect"):   # AREA: the area at the brawler (Fang's sweep too), Rosa's WallSpawn left out
+    if ((not t or (t == "spin_shoot" and not is_proj) or (t == "spawn" and not obj) or (t == "heal" and a.get("SubType") != "2"))
+            and a.get("AreaEffect")):   # AREA: the area at the brawler (Fang's sweep, Morningstar's areas, Shield Tank's heal ...), Rosa's WallSpawn left out
         return "area" if T["alog"].get(a["AreaEffect"], {}).get("Type") != "WallSpawn" else None
     if not t and a.get("Skill"):
         sk = T["skill"].get(a["Skill"], {}); bt = sk.get("BehaviorType") or "Attack"   # an empty BehaviorType parses as Attack
+        if a.get("Name") in NATIVE_SKILL: return "skill"
         if bt == "Attack" and sk.get("Projectiles"): return "shot"
         if bt in ("Attack", "AimableArea") and not sk.get("Projectiles") and sk.get("AreaEffectObject"): return "skill_area"
-        return None
+        return "skill"   # the other skills (Charge ...): the game's skill path (gadget.c SKILL)
+    if t == "next_attack_change" and ((a.get("SubType") == "2" and is_proj) or (a.get("SubType") == "21" and obj)): return "next_attack"   # gadget.c next_classify
     if t == "repeat_shot" and is_proj and num("CustomValue1") > 0: return "repeat"
     if t == "spin_shoot" and is_proj and num("CustomValue1") > 0 and num("ActiveTicks") > 0: return "spin"
     if t == "spawn" and obj in T["item"]: return "item"
@@ -276,7 +283,8 @@ def all_gadgets():
     return out
 
 
-AUDIT_KINDS = ("area", "shot", "skill_area", "repeat", "spin", "item", "heal_now")   # "super" (R-T): gadget_check checks it
+AUDIT_KINDS = ("area", "shot", "skill_area", "repeat", "spin", "item", "heal_now", "skill", "next_attack")   # "super" (R-T): gadget_check checks it
+ROWS = ()   # --gadget-rows: audit these accessories.csv rows (any kind, even one the host does not handle yet) instead of slots
 
 
 @functools.lru_cache(None)
@@ -285,6 +293,10 @@ def audit_gadgets(slot=0):
     with an effect this audit can see (AUDIT_KINDS)"""
     out = {}
     for b, gs in all_gadgets().items():
+        if ROWS:
+            ok = [g for g in gs if g[1] in ROWS]
+            if ok: out[b] = ok[0]
+            continue
         ok = [g for g in gs if g[2] in AUDIT_KINDS]
         if slot < len(ok): out[b] = ok[slot]
     return out
@@ -314,9 +326,11 @@ def expected_gadget(name, slot=0):
         if al.get("Type") in HEAL_TYPES: ex.append("heal")
         if al.get("Type") in ("StatusEffect", "Cleanse", "HpBasedStun"): base["notes"].append(f"{al['Type']}: its main effect is not visible here")
         return {**base, "kind": "Gadget: area " + (al.get("Type") or "?"), "range": _num(al, "Radius") or 1000.0, "expect": ex, "areas": [area]}
-    if kind in ("shot", "skill_area"):
+    if kind in ("shot", "skill_area", "skill") or (kind is None and a.get("Skill") and not a.get("Type")):
         e = expected_skill(a["Skill"], T["skill"].get(a["Skill"], {}))
-        return {**e, "skill": acc, "type": "Gadget", "kind": "Gadget: " + kind, "card": card, "delay": 0.0, "gadget_kind": kind}
+        if kind == "skill" and (e["summons"] or e["items"]) and "damage" in e["expect"]:
+            e["expect"].remove("damage")   # a summon's / item's skill carries its Damage for the summon, the projectile itself hits no one
+        return {**e, "skill": acc, "type": "Gadget", "kind": "Gadget: " + str(kind), "card": card, "delay": 0.0, "gadget_kind": kind}
     att = T["skill"].get(T["char"].get(name, {}).get("WeaponSkill", ""), {})
     if kind in ("repeat", "spin"):
         obj = a["CustomObject"].split(";")[0]
@@ -324,7 +338,13 @@ def expected_gadget(name, slot=0):
         return {**base, "kind": "Gadget: " + kind, "range": rng, "expect": ["projectile", "damage"], "projectiles": [obj]}
     if kind == "item":
         return {**base, "kind": "Gadget: item", "range": 600.0, "expect": ["item"], "items": [a["CustomObject"].split(";")[0]]}
-    return {**base, "kind": "Gadget: heal_now", "range": 600.0, "expect": ["heal"]}
+    if kind == "next_attack" or a.get("Type") == "next_attack_change":
+        obj = [x for x in (a.get("CustomObject") or "").split(";")[:1] if x]
+        rng = _num(att, "CastingRange") * 100 or 2000.0
+        return {**base, "kind": "Gadget: next_attack (%s)" % a["Name"], "range": rng, "expect": ["own"] if obj else ["projectile"],
+                "then_attack": True, "own_names": obj}
+    if kind == "heal_now": return {**base, "kind": "Gadget: heal_now", "range": 600.0, "expect": ["heal"]}
+    return {**base, "kind": "Gadget: probe (%s)" % acc, "range": 1000.0, "expect": [], "notes": ["--gadget-rows probe of a row the host does not handle"]}
 
 
 # ------------------------------------------------------------------ classification
@@ -338,6 +358,7 @@ def observed(m):
     for k, e in (("projectiles", "projectile"), ("summons", "summon"), ("areas", "area"), ("items", "item")):
         if m.get(k): o.add(e)
     if m.get("changed"): o.add("change")
+    if m.get("own_seen"): o.add("own")   # next_attack: the gadget's own projectile / area took the attack's place
     if m.get("hyper_cast"): o.add("hyper_cast")
     if m.get("hyper_seen"): o.add("hyper")
     return o
@@ -636,6 +657,9 @@ class Auditor:
                 p, q = r.pl[s], r.pl[t]; inf = self.info[j.name]
                 if inf.get("steer") and n * 50 > inf.get("cast", 0) + 100 and q.alive and np.hypot(q.x - p.x, q.y - p.y) > 150:
                     acts[s] = (int(round(np.degrees(np.arctan2(q.y - p.y, q.x - p.x)) / 22.5)) % 16, 0, 0.0, 0.0)
+            for j, s, t in run:   # next_attack gadgets: the shooter attacks once the gadget is armed (3 ticks after the fire)
+                if self.gadget and self.info[j.name].get("then_attack") and n >= 3 and not M[j].get("attacked"):
+                    acts[s] = (-1, 1, geo[j]["aim"], 0.0); M[j]["attacked"] = True
             # shield / status supers: the target shoots the shooter again (--post-hit for all; a ProjectileShield always)
             due = [(j, s, t) for j, s, t in run if "ph_hp0" not in M[j] and (POST_HIT or self.info[j.name].get("post_hit"))
                    and n >= (POST_HIT or self.info[j.name]["post_hit"])]
@@ -659,6 +683,8 @@ class Auditor:
             if "ph_hp0" in m: m["post_hit"] = m["ph_hp0"] - m["ph_hp_min"]   # its shot POST_HIT ticks after the fire
             for k in ("projectiles", "summons", "items"): m[k] = sorted(m[k].values())
             m["areas"] = sorted(m["areas"].values(), key=lambda a: a["name"])
+            on = self.info[j.name].get("own_names")
+            if on: m["own_seen"] = bool(set(on) & (set(m["projectiles"]) | set(m["summons"]) | set(m["items"]) | {a["name"] for a in m["areas"]}))
             if self.hyper:   # the fire reaches the game one step later (env.c g_fire_delay): counted after the watch
                 m.update(hyper_supers=int(r.hyp_supers[s]) - hy0[s][1], hyper_id=int(r.hyp_super_id[s]))
                 inf = self.info[j.name]; seen = set(m["projectiles"]) | set(m["summons"]) | set(m["items"]) | {a["name"] for a in m["areas"]}
@@ -805,9 +831,15 @@ def _check():
         kinds = collections.Counter(k for gs in all_gadgets().values() for _, _, k in gs)   # gadget.c's coverage of the enabled cards
         assert sum(kinds.values()) == 213 and kinds["shot"] == 25 and kinds["repeat"] + kinds["spin"] == 8, kinds
         assert kinds["item"] == 2 and kinds["heal_now"] == 2 and kinds["super"] == 1 and kinds["skill_area"] == 2, kinds
+        assert kinds["area"] == 15 and kinds["skill"] == 11 and kinds["next_attack"] == 8, kinds   # issue #46
         assert audit_gadgets(0)["Gunslinger"][1] == "Gunslinger_Reload" and audit_gadgets(1)["Gunslinger"][1] == "Gunslinger_BigBullet"
         assert expected_gadget("Gunslinger")["expect"][:1] == ["projectile"] and expected_gadget("Gunslinger", 1)["gadget_kind"] == "shot"
-        assert not {"BowDude", "HookDude"} & set(audit_gadgets(0))
+        assert audit_gadgets(0)["BowDude"][2] == "skill" and audit_gadgets(0)["HookDude"][1] == "HookDude_Push"   # Bo's totem: the game's skill path
+        assert ("HookDude_Homing", None) in [(n, k) for _, n, k in all_gadgets()["HookDude"]]   # masked: homing shots that never hit
+        assert expected_gadget("Sniper", 1)["gadget_kind"] == "next_attack" and expected_gadget("Sniper", 1)["expect"] == ["own"]
+        assert expected_gadget("Sniper", 1)["own_names"] == ["SniperHomingProjectile"] and expected_gadget("Sniper", 1)["then_attack"]
+        assert expected_gadget("ShieldTank")["expect"] == ["area", "heal"] and expected_gadget("HookDude")["expect"][:2] == ["area", "push"]
+        assert expected_gadget("BowDude")["expect"] == ["projectile", "summon"] and "move" in expected_gadget("Rock")["expect"]
         assert expected_gadget("Barkeep", 1)["expect"] == ["projectile", "damage"] and expected_gadget("ElectroSniper")["expect"] == ["item"]
         assert expected_gadget("BullDude", 1)["gadget_kind"] == "skill_area" and "area" in expected_gadget("BullDude", 1)["expect"]
         assert expected_gadget("Samurai")["expect"] == ["heal"] and "Splitter" not in audit_gadgets(0)
@@ -833,11 +865,13 @@ def main():
                     "the hypercharged super's effects; writes super_audit_hyper.json / .md")
     ap.add_argument("--gadget", action="store_true", help="the gadgets the host implements (gadget.c, audit_gadgets): fire each brawler's "
                     "gadget (fire 3) in place of the super; writes super_audit_gadget.json / .md")
+    ap.add_argument("--gadget-rows", default="", help="--gadget: audit these accessories.csv rows (comma-separated, e.g. Rock_Jump) instead "
+                    "of slots; rows the host does not handle yet are probed (no expected effect)")
     ap.add_argument("--gadget-slot", type=int, default=0, help="--gadget: which of a brawler's implemented gadgets (0 = first, 1 = "
                     "second: Gene, Colt, ...); slot 1 writes super_audit_gadget_2.json / .md")
     a = ap.parse_args()
     if a.check: return _check()
-    globals()["WATCH"] = a.watch; globals()["POST_HIT"] = a.post_hit
+    globals()["WATCH"] = a.watch; globals()["POST_HIT"] = a.post_hit; globals()["ROWS"] = tuple(x for x in a.gadget_rows.split(",") if x)
     import env_v5
     roster, forms = env_v5.heroes(), env_v5.forms()     # forms (Meg's mech, event transforms): never a pick, audited after
     if a.gadget: roster, forms = sorted(b for b in audit_gadgets(a.gadget_slot) if b in roster), []

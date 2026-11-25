@@ -1506,6 +1506,17 @@ static void hyper_input(void *sim, int pidx, uint8_t *ch) {
     int np; void **ps = players(sim, &np);
     if (pidx < np && hyper_use(pidx, ps[pidx], ch)) E.sent_valid[pidx] = 0;
 }
+/* gadget.c (issue #46): fire a SkillData through the game's own skill path (0xc2cef4 -> 0xb487c4), which finds the skill
+ * instance of the character whose data is `sd` (gadget.c puts the gadget's instance in the character's skill array first),
+ * as skill_idx_input does for an instance of the array. The aim point is at the skill's CastingRange (absolute for
+ * SKILL_ABS skills) -> the input kind (0 = the skill's type has none) */
+int env_skill_fire(void *sim, int pidx, uint8_t *ch, void *sd, double deg) {
+    int type = I32(sd, 0x1ac), kind = (type - 2u < 4u) ? KIND_BY_TYPE[(type - 2) * 4] : 0;
+    int cr = ((int (*)(void *))B(0xb0d948))(sd), X = I32(ch, 0x38), Y = I32(ch, 0x3c); double r = deg * M_PI / 180, L = cr > 0 ? cr * 100.0 : 1000;
+    int tx = jround(X + L * cos(r)), ty = jround(Y + L * sin(r)), ab = SKILL_ABS(sd);
+    if (kind) apply_input(sim, pidx, kind, ab ? tx : tx - X, ab ? ty : ty - Y, sd);
+    return kind;
+}
 /* rl round (tests): fire the character's skill instance idx (char +0x458 array, +0x464 count; instance +0 = SkillData) like an attack */
 static void skill_idx_input(void *sim, int pidx, uint8_t *ch, int idx, double deg) {
     uint8_t **arr = PTR(ch, 0x458); int n = I32(ch, 0x464);
@@ -2626,6 +2637,7 @@ void env_install(void) {
     o_dispatch = hook_replace(g_libg, 0xb47084, my_dispatch);
     hyper_install();   /* hypercharge round: Character::isOvercharged (hyper.c) */
     gear_install();    /* gear round (issue #51): NB_GEARS */
+    { extern void gadget_install(void); gadget_install(); }   /* gadget round (issue #46): Character::getAccessory */
     if (!g_env_simonly) {
         /* client-mode crash fix (T4/T5): 0xdc1ec0 walks a slot table of weak pointers (x19+0xd0); when lock() 0x11a51c0 fails
          * for an entry that was not yet marked expired (freed concurrently, seen during a reset's loading screen: SIGSEGV

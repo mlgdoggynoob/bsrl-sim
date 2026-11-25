@@ -48,8 +48,18 @@
  *         brawler through the item factory 0xb55684.
  *   SUPER charge_ulti (R-T; published SUPER): the super charge to CustomValue1 % of its maximum.
  *   HEAL_NOW  heal_attached_and_self (Kit) and heal_damage_taken (Kenji) (HEAL): an instant heal through libg's heal 0xb41554.
- * Every other gadget publishes kind NONE (not usable): next_attack_change, summons / turrets, status buffs, shields,
- * Nori's fish heal (needs his fish count), the Charge skills (Brock's jump, Max's dash, ...), ... Each player gets GAD_USES
+ *   SKILL (issue #46; published SPAWN)  empty Type with a Skill that SHOT / SKILL AREA do not cover (the Charge skills:
+ *         Brock's jump, Max's dash, Shelly's dash, Bolt's jump, Glowy's dash heal, Wendy's leap) and the skill rows in
+ *         g_native_skill (BowDude_Totem, Ninja_InvisibleArea, Gladiator_Amp, MagicalGirl_FlyArea, HammerDude_Pull): the game's own
+ *         skill path runs them. The hero setup 0xb59de0 would put the gadget skill's instance in slot 3 of the character's
+ *         skill array (0xb5a288; the host's roster gives no gadget skill, slot 3 stays empty): skill_inst builds it there
+ *         with libg's constructor, and the use sends the input kind of a SkillData type 5 skill (18) as any skill input.
+ *   NEXT (issue #46; published PROJECTILE)  next_attack_change (type 23) SubType 2 with a CustomObject projectile (rows
+ *         Sniper_Seeker, ElectroSniper_Bounce, Silencer_BigProjectiles, Duelist_Silence, Skater_ProjectileTaunt,
+ *         Chronomancer_ProjectileStasis) and SubType 21 (Reviver_OnlyDoubleHeal / _OnlyDoubleDamage: the attack's area swapped): the shipped skill code changes the next attack itself once the accessory is armed; see next_tick.
+ *   AREA also takes spawn rows with an AreaEffect and no CustomObject and the heal rows with an area (issue #46).
+ * Every other gadget publishes kind NONE (not usable): the other next_attack_change SubTypes, summons / turrets, status
+ * buffs, shields, Nori's fish heal (needs his fish count), ... (notes/issue46.md lists each with the reason). Each player gets GAD_USES
  * uses per battle (unlimited by default, as in the live game since February 2025) and the accessory's cooldown between
  * uses. The accessory's Type parses to the int at +0x24 (0xb2731c:
  * spin_shoot 3, spawn 9, repeat_shot 13, heal_attached_and_self 50, charge_ulti 56, heal_damage_taken 58).
@@ -70,7 +80,10 @@ extern Module *g_libg;
 extern int32_t g_div_gadget[NBE_MAXP];   /* env.c: the RESET's requested gadget cards (offline.c puts them in the configs) */
 void *env_obj_by_id(void *sim, int id);  /* env.c */
 int env_dash_start(uint8_t *ch, int tx, int ty, int speed);   /* env.c: -> path length, 0 = no dash */
+int env_skill_fire(void *sim, int pidx, uint8_t *ch, void *sd, double deg);   /* env.c: the game's skill input for a SkillData */
 
+void *hook_replace(Module *m, uint64_t off, void *repl);
+static int g_next_ok;   /* gadget_install hooked Character::getAccessory */
 #define GAD_USES 9999     /* no per-battle limit: gadgets "no longer have charges but are now based on cooldowns" and can be
                            * used "an unlimited amount of times in a match" (Supercell release notes, Feb 2025); the
                            * cooldown is the accessory's (accessories.csv Cooldown, e.g. Bibi 400 ticks = the 20 s of the
@@ -95,12 +108,13 @@ typedef struct {
     int (*fire)(void *sim, Gad *g, uint8_t *ch, double deg, int tick);           /* 1 = activated (a use is spent) */
 } GadImpl;
 struct Gad {
-    int pid, type, card, uses, cd, cd_until, used; void *ad; const GadImpl *im;
+    int pid, type, card, uses, cd, cd_until, used; void *ad, *acc; const GadImpl *im;
     int hot_id, hot_start, hot_end, hot_total, hot_done;   /* heal over time: char id, ticks, hp to give, hp given */
     int area_id, area_at;                                  /* area: char id, tick to spawn at (0 = none pending) */
     void *area_data; int area_x, area_y, area_here;        /* the area to spawn (NULL = the accessory's AreaEffect) and where
                                                             * (area_here 1 = at the brawler when it spawns, 0 = area_x / y) */
     int spin_id, spin_next, spin_end, spin_ang;            /* spin_shoot: char id, next volley tick, end tick, volley angle */
+    int armed, applied;                                    /* NEXT: tick armed, tick the client code marked it applied */
     int hp_prev, hp_lost[100];                        /* damage taken per tick (ring by tick % 100), for HEAL_TAKEN */
 };
 static Gad g_gad[NBE_MAXP];
@@ -142,8 +156,16 @@ static void heal_tick(void *sim, Gad *g, int tick) {
 #define AREA_WALLSPAWN 15   /* AreaEffectData +0x118 type: spawnfix.c's wall ring would build walls (Sprout / Wally tiles),
                              * not Rosa's bushes: left out until a bush ring exists */
 static void *custom_proj(void *ad);
-static int area_classify(void *ad, int type) {   /* issue #19 final: also spin_shoot rows with an area and no projectile */
-    void *a = type == ACC_PLAIN || (type == ACC_SPIN && !custom_proj(ad)) ? PTR(ad, AD_AREA) : NULL;
+static int no_object(void *ad) {   /* CustomObject empty (getter 0xa933a8 -> String*, length at +4) */
+    void *str = ((void *(*)(void *))B(0xa933a8))(ad); return !str || I32(str, 4) <= 0;
+}
+/* issue #19 final: also spin_shoot rows with an area and no projectile. issue #46: spawn rows with an AreaEffect and no
+ * CustomObject (Morningstar's fire / ice, Dancer's projectile block, Daredevil's smoke) and the heal rows with an area
+ * (Hook Dude's pushback, Shield Tank's heal: SubType 5 / 6; SubType 2 is the heal over time) */
+static int area_classify(void *ad, int type) {
+    int ok = type == ACC_PLAIN || (type == ACC_SPIN && !custom_proj(ad)) || (type == ACC_SPAWN && no_object(ad)) ||
+             (type == ACC_HEAL && ad_get(ad, AD_SUBTYPE) != 2);
+    void *a = ok ? PTR(ad, AD_AREA) : NULL;
     return a && I32(a, 0x118) != AREA_WALLSPAWN;
 }
 static void area_spawn(void *sim, Gad *g) {
@@ -308,6 +330,87 @@ static int item_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
     return it != NULL;
 }
 
+/* ---- SKILL: a gadget whose Skill the game's own skill code runs (issue #46): the Charge skills (Rocket Girl's jump, Speedy's
+ * dash, ...) and the Attack skills with summons or special handlers (Bow Dude's totem, ...). The skill activation 0xb7b268
+ * (superfix_moves.c) switches on the BehaviorType and the earlier rounds' handlers run, so the gadget only has to put a skill
+ * instance of its SkillData into the character's skill array (libg's constructor 0xb7aa98 on a 0x58 B object, as
+ * superfix_cc.c's weapon swap builds one) and fire it with the same input a skill of the array gets (env_skill_fire). */
+static int g_skill_log;
+static void *skill_inst(uint8_t *ch, void *sd) {   /* the character's instance of sd, built on the first use */
+    uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464);
+    if (!sk || n < 4 || n > 15) return NULL;
+    for (int i = 0; i < n; i++) if (sk[i] && PTR(sk[i], 0) == sd) return sk[i];
+    if (sk[3]) return NULL;   /* slot 3 is the gadget skill's (the hero setup 0xb59de0 fills it at 0xb5a288 from the hero entry, which the
+                               * host's roster does not give a gadget skill: the array has 4 slots, 2 and 3 empty) */
+    void *inst = ((void *(*)(size_t))B(0x11a4d90))(0x58);   /* libg's operator new */
+    if (!inst) return NULL;
+    ((void (*)(void *, void *))B(0xb7aa98))(inst, sd);
+    sk[3] = inst;
+    ((void (*)(void *, int))B(0xb8159c))(inst, I32(ch, 1144));   /* the hero setup's call after the store: skill level = power level - 1 (char +0x478) */
+    return inst;
+}
+static int skill_classify(void *ad, int type) {
+    void *sd = type == ACC_PLAIN ? PTR(ad, AD_SKILL) : NULL;
+    return sd && !PTR(ad, AD_AREA);
+}
+static int skill_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+    (void)tick;
+    void *sd = PTR(g->ad, AD_SKILL); if (I32(ch, 0x3c4) <= 0 || !sd) return 0;
+    uint8_t *in = skill_inst(ch, sd); if (!in) return 0;
+    /* the gadget state the game's skill fire 0xb487c4 checks on the player (0xc42d88 "can use": flag +0x19c, no cooldown +0x198,
+     * uses left +0x1a0 > 0; max +0x1a4): this host keeps the uses and the cooldown itself (Gad), so the game's are opened first */
+    { uint8_t *p = player_of(sim, g->pid); if (p) { I32(p, 0x198) = 0; I32(p, 0x1a0) = I32(p, 0x1a4) = 99; p[0x19c] = 1; } }
+    int kind = env_skill_fire(sim, g->pid, ch, sd, deg);
+    if (g_skill_log++ < 12) LOG("[gadget] skill %d (type %d, behavior %d) input kind %d, inst +8 %d +0x10 %d +0x18 %d +0x30 %d\n", I32(sd, 0x20), I32(sd, 0x1ac),
+                                I32(sd, SD_BEHAVIOR), kind, I32(in, 8), I32(in, 0x10), I32(in, 0x18), I32(in, 0x30));
+    return kind != 0;
+}
+
+
+/* ---- NEXT: next_attack_change (accessory type 23, issue #46)
+ * The skill code of the shipped libg is accessory-aware: the skill tick 0xb7b268 (call 0xb7b540), the use-skill 0xb81f9c and
+ * the Attack handler read the character's accessory (Character::getAccessory 0xb422c8, a `mov x0, xzr; ret` stub in this
+ * build), and for a type 23 accessory with +0x3c set ("armed") they mark it applied (+0x54 = 1) when the weapon skill starts
+ * (SubType 2: skill active time CustomValue2) and the Attack handler (0xb7ea6c..0xb7eab4) then fires the accessory's
+ * CustomObject projectile in place of the weapon's (SubType 2, a projectile name) - client code, only the arming (+0x3c) and
+ * the end are the server's. gadget_install makes 0xb422c8 return the character's player accessory (player +0x190, as the
+ * Attack handler reads it); a use arms the accessory, and once the weapon skill that applied it has run (+0x54 set, its
+ * instance idle again) the host disarms it (+0x3c, +0x54 = 0), so exactly one attack is changed. Only the SubTypes whose
+ * change the client code carries out are classified (SubType 2 with a projectile, 21: Reviver's replaced area). */
+#define ACC_NEXT 23
+static long g_next;
+static int next_classify(void *ad, int type) {
+    if (type != ACC_NEXT || !g_next_ok) return 0;
+    int st = ad_get(ad, AD_SUBTYPE);
+    return (st == 2 && custom_proj(ad)) || st == 21;   // the SubTypes whose change the client code carries out
+}
+static int next_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+    (void)sim; (void)deg;
+    if (I32(ch, 0x3c4) <= 0 || !g->acc || ((uint8_t *)g->acc)[0x3c]) return 0;   /* already armed: the use is not spent */
+    ((uint8_t *)g->acc)[0x3c] = 1; ((uint8_t *)g->acc)[0x54] = 0;
+    g->armed = tick; g_next++;
+    return 1;
+}
+static void next_tick(void *sim, Gad *g, int tick) {   /* disarm once the attack that applied the change is over */
+    uint8_t *acc = g->acc, *ch = char_of(sim, g->pid);
+    if (!acc || !acc[0x3c]) { g->armed = 0; return; }
+    uint8_t **sk = ch ? PTR(ch, 0x458) : NULL;
+    int dead = !ch || I32(ch, 0x3c4) <= 0;
+    if (dead) { acc[0x3c] = acc[0x54] = 0; g->armed = 0; return; }   /* a death ends it */
+    if (acc[0x54]) { if (!g->applied) g->applied = tick; }
+    if (g->applied && tick > g->applied + 2 && sk && sk[0] && !I32(sk[0], 0x30)) { acc[0x3c] = acc[0x54] = 0; g->armed = g->applied = 0; }
+}
+static void *my_get_accessory(void *ch) {   /* Character::getAccessory 0xb422c8 */
+    uint8_t *p = ((uint8_t *(*)(void *))B(0xb6a718))(ch);
+    return p ? PTR(p, 0x190) : NULL;
+}
+void gadget_install(void) {
+    uint32_t *f = (uint32_t *)B(0xb422c8);
+    if (f[0] != 0xaa1f03e0 || f[1] != 0xd65f03c0) { LOG("[gadget] getAccessory 0xb422c8: unexpected bytes %08x %08x, next-attack gadgets off\n", f[0], f[1]); return; }
+    hook_replace(g_libg, 0xb422c8, (void *)my_get_accessory);   /* mov x0, xzr ; ret */
+    g_next_ok = 1;
+}
+
 /* ---- SUPER: charge_ulti (R-T): the super charge (player +0x54) to CustomValue1 % of its maximum (+0x58) */
 static int super_classify(void *ad, int type) { return type == ACC_CHARGE_ULTI && ad_get(ad, AD_CV1) > 0; }
 static int super_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
@@ -355,22 +458,36 @@ static const GadImpl g_impl[] = {
     {NBE_GAD_SPAWN, item_classify, item_fire},
     {NBE_GAD_SUPER, super_classify, super_fire},
     {NBE_GAD_HEAL, heal_now_classify, heal_now_fire},
+    {NBE_GAD_SPAWN, skill_classify, skill_fire},
+    {NBE_GAD_PROJECTILE, next_classify, next_fire},
     {NBE_GAD_NONE, NULL, NULL}};
 
 /* cards whose kind classifies but whose effect did not show in `python -m super_audit --gadget` (cards.csv data ids, fixed
  * by the shipped tables): left unusable (kind NONE) so the policy cannot spend a fire on them. bsrl-sim super_audit.MASKED
  * lists the same rows. */
 static const int g_masked[] = {
-    23000263,   /* BowDude_Totem: the projectile flies, the totem summon never spawns */
-    23000311,   /* Speedy_Rewind: its projectile is a marker; the rewind (teleport back) is not implemented */
-    23000351,   /* HammerDude_Pull: no pull, no damage on the target */
     23000352,   /* HookDude_Homing: 5 projectiles, none hit (no homing here) */
-    23000399,   /* AssaultShotgun_Bomb: no explosion, no damage */
-    23000408,   /* Ninja_InvisibleArea: the invisibility area summon never spawns */
-    23001247,   /* Gladiator_Amp: the healing item never spawns */
-    23001255,   /* MagicalGirl_FlyArea: the area summon never spawns */
+    23000399,   /* AssaultShotgun_Bomb: through the skill path the projectiles fly, no explosion, no damage (as before) */
+    23000311,   /* Speedy_Rewind: the marker projectile and area spawn, the rewind (teleport back) is server code */
 };
 static int masked(int card) { for (unsigned k = 0; k < sizeof g_masked / sizeof *g_masked; k++) if (g_masked[k] == card) return 1; return 0; }
+/* issue #46: skill gadgets that SHOT / SKILL AREA fire without their summon, item or special handler (the shot path only spawns
+ * the skill's projectile): the game's own skill path runs them (SKILL). bsrl-sim super_audit.NATIVE_SKILL lists the same rows. */
+static const int g_native_skill[] = {
+    23000263,   /* BowDude_Totem: projectile + totem summon */
+    23000351,   /* HammerDude_Pull */
+    23000408,   /* Ninja_InvisibleArea: projectile + area summon */
+    23001247,   /* Gladiator_Amp: projectile + healing item */
+    23001255,   /* MagicalGirl_FlyArea: projectile + area summon */
+};
+static int native_skill(int card) { for (unsigned k = 0; k < sizeof g_native_skill / sizeof *g_native_skill; k++) if (g_native_skill[k] == card) return 1; return 0; }
+
+static const GadImpl *find_impl(void *ad, int type, int card) {
+    static const GadImpl skim = {NBE_GAD_SPAWN, skill_classify, skill_fire};
+    if (native_skill(card) && skim.classify(ad, type)) return &skim;
+    for (const GadImpl *im = g_impl; !masked(card) && im->classify; im++) if (im->classify(ad, type)) return im;
+    return NULL;
+}
 
 void gadget_clear(void) { memset(g_gad, 0, sizeof g_gad); }
 
@@ -379,17 +496,18 @@ void gadget_reset_player(int i, void *acc) {
     if (i < 0 || i >= NBE_MAXP) return;
     Gad *g = &g_gad[i]; memset(g, 0, sizeof *g);
     if (!acc || !g_div_gadget[i]) return;
-    g->card = g_div_gadget[i]; g->ad = PTR(acc, 0x10); g->pid = i;
+    g->card = g_div_gadget[i]; g->ad = PTR(acc, 0x10); g->pid = i; g->acc = acc;
     int type = g->type = I32(acc, 0x24);
-    for (const GadImpl *im = g_impl; g->ad && !masked(g->card) && im->classify; im++)
-        if (im->classify(g->ad, type)) {
-            static int uses = -1; if (uses < 0) { const char *e = getenv("NB_GAD_USES"); uses = e && atoi(e) > 0 ? atoi(e) : GAD_USES; }
-            g->im = im; g->uses = uses; g->cd = I32(acc, 0xc4) > 0 ? I32(acc, 0xc4) : 0;
-            /* the skill gadgets' rows leave Cooldown empty: their skill's Cooldown (skills.csv, ticks as the accessory's:
-             * Shelly's Clay Pigeons 250, getter 0xb0d868) */
-            if (!g->cd && PTR(g->ad, AD_SKILL)) { int c = sd_get(PTR(g->ad, AD_SKILL), SD_COOLDOWN); g->cd = c > 0 ? c : 0; }
-            break;
-        }
+    const GadImpl *im = find_impl(g->ad, type, g->card);
+    if (im) {
+        static int uses = -1; if (uses < 0) { const char *e = getenv("NB_GAD_USES"); uses = e && atoi(e) > 0 ? atoi(e) : GAD_USES; }
+        g->im = im; g->uses = uses; g->cd = I32(acc, 0xc4) > 0 ? I32(acc, 0xc4) : 0;
+        /* the skill gadgets' rows leave Cooldown empty: their skill's Cooldown (skills.csv, ticks as the accessory's:
+         * Shelly's Clay Pigeons 250, getter 0xb0d868) */
+        if (!g->cd && PTR(g->ad, AD_SKILL)) { int c = sd_get(PTR(g->ad, AD_SKILL), SD_COOLDOWN); g->cd = c > 0 ? c : 0; }
+        /* the Charge gadgets (Speedy, Shotgun Girl, Wendy ...) have Cooldown 0 and a RechargeTime (getter 0xb0dc44, ms: 2400 = 48 ticks) */
+        if (!g->cd && PTR(g->ad, AD_SKILL)) { int c = sd_get(PTR(g->ad, AD_SKILL), 0xb0dc44); g->cd = c > 0 ? c / 50 : 0; }
+    }
     static int nlog; if (nlog++ < 20) LOG("[gadget] player %d card %d type %d: %s, %d uses, cooldown %d ticks\n", i, g->card, type,
                                           g->im ? "implemented" : "kind not implemented (not usable)", g->uses, g->cd);
 }
@@ -412,6 +530,7 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
         if (g_gad[i].hot_end) heal_tick(sim, &g_gad[i], tick);
         if (g_gad[i].area_at && tick >= g_gad[i].area_at) area_spawn(sim, &g_gad[i]);
         if (g_gad[i].spin_end) spin_tick(sim, &g_gad[i], tick);
+        if (g_gad[i].armed) next_tick(sim, &g_gad[i], tick);
         if (g_gad[i].im && g_gad[i].type == ACC_HEAL_TAKEN) taken_tick(sim, &g_gad[i], tick);
     }
 }
