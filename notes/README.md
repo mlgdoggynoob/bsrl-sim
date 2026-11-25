@@ -17,3 +17,4 @@ docstrings and comments are the spec.
 | `broken_supers.md` | #32 item 5: Moe, Bonnie, Kenji, Lou, Meg (host); Damian, Buster (audit) | this branch |
 | `issue22.md` | #22 / #32 item 7: guessed numbers checked against data and wiki; what still needs a clip | this branch |
 | `issue19-leftovers.md` | #19 leftovers: reload speed, lifesteal, taunt / fear, dropped area types | this branch |
+| `issue6-leftovers.md` | #6 R-T's split, Bonnie's hypercharged launch (checked); #5 Berry's paint numbers, dash heal | this branch |

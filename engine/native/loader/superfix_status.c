@@ -307,12 +307,17 @@ int superfix_status_mods(uint8_t *ch, StMods *m) {
     int *o = (int *)m; for (int k = 0; k < 8; k++) o[k] = sum[k] > mx[k] ? sum[k] : mx[k];
     return 1;
 }
-/* the move speed (units/s) a character with base speed `base` moves at under its statuses, -1 = no speed modifier.
+/* the move speed (units/s) a character with base speed `base` moves at under its statuses (and R-T's split speed,
+ * superfix_split_speed), -1 = no speed modifier.
  * Boosts first (base * (100 + percent) / 100 + absolute), then slows ((...) * (100 - percent) / 100 - absolute), floored at
  * 0 (SpeedReducePercent 100 = a root: Kenji's hide, Morningstar's root). The order and the floor are this host's choice:
  * the server code that does it is not in the client build. */
+int superfix_split_speed(uint8_t *ch) __attribute__((weak));   /* superfix_moves.c: R-T's split speed (absolute) */
 int superfix_status_speed(uint8_t *ch, int base) {
-    StMods m; if (base <= 0 || !superfix_status_mods(ch, &m)) return -1;
+    StMods m; if (base <= 0) return -1;
+    int extra = superfix_split_speed ? superfix_split_speed(ch) : 0;
+    if (!superfix_status_mods(ch, &m)) { if (extra <= 0) return -1; memset(&m, 0, sizeof m); }
+    m.spd_ba += extra > 0 ? extra : 0;   /* added like a status's SpeedBoostAbsolute */
     if (!m.spd_bp && !m.spd_ba && !m.spd_rp && !m.spd_ra) return -1;
     long v = (long)base * (100 + m.spd_bp) / 100 + m.spd_ba;
     int rp = m.spd_rp > 100 ? 100 : m.spd_rp;

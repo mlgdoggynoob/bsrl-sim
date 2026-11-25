@@ -562,7 +562,8 @@ int g_native_charge = 1; static long g_native_charges;
 /* env charge contact (RE-IMPLEMENTED, not the game's code): the native start state for the charge's own hit processing is not
  * known, so env applies the charge skill's Damage once to every living enemy character (brawlers, summons, boxes) the charger
  * passes within CHARGE_HIT_R, through the damage root like the leap bombs (x2 power level, +10 % per cube), then the skill's
- * ChargePushback with the game's knockback. The charge's areas and Bull's wall breaking are env's too (charge_end, below).
+ * ChargePushback with the game's knockback; Berry (type 21) heals a teammate he passes by the same amount instead. The
+ * charge's areas and Bull's wall breaking are env's too (charge_end, below).
  * --native-charge 2 = movement only (no env contact damage, pushback, areas or wall breaking). */
 #define CHARGE_HIT_R 250
 #define CHARGE_WALL_R 200    /* Bull: tiles within 200 u of his centre break (1 tile wide lane; [?] the server's radius is unknown:
@@ -571,7 +572,7 @@ int g_native_charge = 1; static long g_native_charges;
                                   * wiki only says "in a radius around him"; one tile ring) */
 #define CHARGE_LAND_R 200        /* Bonnie (type 16): her landing hit, CannonGirlExplosion's Radius ([?] the server's rule is compiled out) */
 typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; } ChargeJob;
-static ChargeJob g_cj[NBE_MAXP]; static int g_ncj; static long g_charge_hits, g_charge_pushes, g_charge_areas, g_charge_walls;
+static ChargeJob g_cj[NBE_MAXP]; static int g_ncj; static long g_charge_hits, g_charge_pushes, g_charge_areas, g_charge_walls, g_charge_heals;
 /* knockback 0xb49834(victim, srcX, srcY, strength, a4..a7, 10 stack slots, the last = pusher's owner index): pushes the victim
  * 6 * strength u away from (srcX, srcY) over 10 ticks (half for CollisionRadius >= 150), the call the game's own charge sweep
  * makes after each hit (0xb5afd4, strength char+0x504) */
@@ -595,8 +596,9 @@ static int charge_ground_ok(void *sim, int x, int y) {   /* Bull's lane: open, o
  * per such area of a charge, with the values of the area data (+0x118 Type, +0x124 TimeMs, +0x12c Radius, +0x134 Damage,
  * +0x13c CustomValue, +0x154 PushbackStrength, +0x1b8 InnerRadius; live dump):
  *   HotAndDot: once a second (SameAreaEffectCanNotDamageMs 1000, DelayFirstTick), Damage x2 (the power-level scale of the
- *     charge contact) to every enemy inside, and CustomValue % of that as a heal to every ally inside (the charger too), at
- *     most once a second per character over all of one owner's zones. [?] the server's heal formula is not in the client.
+ *     charge contact; DamageScaleType 4, Berry's paint: Damage % of the owner's main attack Damage first, see zone_add) to
+ *     every enemy inside, and CustomValue % of that as a heal to every ally inside (the charger too), at most once a second
+ *     per character over all of one owner's zones. [?] the server's heal formula is not in the client.
  *   EdgeCrossing: an enemy inside at spawn that reaches the edge is knocked back toward the centre, one outside is knocked
  *     away from it (PushbackStrength 70 -> 420 u), at most every 10 ticks (the knockback's length); nobody crosses.
  * --native-charge 2 = no zones. */
@@ -610,7 +612,17 @@ static void zone_add(void *sim, uint8_t *ch, void *data, int x, int y) {
     if (!data || !ch || g_native_charge != 1) return;
     int t = I32(data, 0x118); if (t != 35 && t != 56) return;
     if (g_nzone >= ZONE_MAX) memmove(g_zone, g_zone + 1, --g_nzone * sizeof *g_zone);   /* the oldest goes */
-    int now = I32(sim, 0x10), d = jround(I32(data, 0x134) * 2.0 * (1 + 0.10 * cubes_of(I32(ch, 8))));
+    int now = I32(sim, 0x10), base = I32(data, 0x134);
+    if (I32(data, 0x138) == 4) {   /* DamageScaleType 4 (Berry's paint): the client's area create 0xb2aefc takes Damage as a
+                                    * percent of its extra damage (0xb2b184), for the trail char +0x558, which only the
+                                    * compiled-out charge start sets. [?] that extra = the owner's main attack Damage
+                                    * (WeaponSkill, CharacterData +0x260): 100 % of 660, 50 % heal = the wiki's 660 / 330 per
+                                    * second at power 1 (#22) */
+        void *cd = ((void *(*)(void *))B(0xb6a384))(ch), *wd = cd ? PTR(cd, 0x260) : NULL;
+        int wdmg = wd ? ((int (*)(void *))B(0xb0dc14))(wd) : 0;
+        if (wdmg > 0) base = jround(base * wdmg / 100.0);
+    }
+    int d = jround(base * 2.0 * (1 + 0.10 * cubes_of(I32(ch, 8))));
     g_zone[g_nzone++] = (Zone){t, I32(ch, 0x80), I32(ch, 0x84), x, y, I32(data, 0x12c), now, now + I32(data, 0x124) / 50,
                                d, jround(d * I32(data, 0x13c) / 100.0), I32(data, 0x154), 0, {0}, {0}, {0}};
 }
@@ -747,8 +759,8 @@ static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge f
     if (j->area1 && j->type == 2) charge_area(sim, ch, j->area1, x, y);
     if (j->area_end) charge_area(sim, ch, j->area_end, x, y);   /* AreaEffect2AtEndOfCharge: Bull's slow, Nori, Ollie, Damian */
     if (j->type == 16) charge_land(sim, j, ch, x, y);
-    static int nlog; if (nlog++ < 20) LOG("[env] charge end type %d at %d,%d: hits %ld, pushes %ld, areas %ld, wall calls %ld, zones %d (zone hits %ld, heals %ld, pushes %ld) (totals)\n",
-        j->type, x, y, g_charge_hits, g_charge_pushes, g_charge_areas, g_charge_walls, g_nzone, g_zone_hits, g_zone_heals, g_zone_pushes);
+    static int nlog; if (nlog++ < 20) LOG("[env] charge end type %d at %d,%d: hits %ld, ally heals %ld, pushes %ld, areas %ld, wall calls %ld, zones %d (zone hits %ld, heals %ld, pushes %ld) (totals)\n",
+        j->type, x, y, g_charge_hits, g_charge_heals, g_charge_pushes, g_charge_areas, g_charge_walls, g_nzone, g_zone_hits, g_zone_heals, g_zone_pushes);
 }
 static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
     for (int k = 0; k < g_ncj; k++) {
@@ -769,6 +781,13 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
             int cid = I32(c, 8), seen = 0; for (int h = 0; h < j->nhit; h++) if (j->hit[h] == cid) seen = 1;
             if (seen || j->nhit >= 32) continue;
             j->hit[j->nhit++] = cid;
+            if (j->type == 21 && I32(c, 0x84) == I32(ch, 0x84)) {   /* Berry heals a teammate he dashes through by the skill's
+                                                                      * Damage (#22: the same flat 1520 at power 1), x2 like the
+                                                                      * damage and his paint's heal; [?] the server's heal path */
+                int mx = I32(c, 0x3c8), hp = I32(c, 0x3c4), hv = jround(j->dmg * 2.0);
+                if (hv > 0 && hp < mx) { I32(c, 0x3c4) = hp + hv < mx ? hp + hv : mx; g_charge_heals++; }
+                continue;
+            }
             int d = jround(j->dmg * 2.0 * (1 + 0.10 * cubes_of(j->id)));
             if (just_popped(c)) continue;
             int hp0 = I32(c, 0x3c4); E.in_own_call = 3;

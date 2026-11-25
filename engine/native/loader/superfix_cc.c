@@ -21,8 +21,11 @@
  *     component's mount (call at 0xba02e0) passes his dragon weapon (weapon SkillData +0x158 = DragonRiderDragonWeapon), its
  *     dismount (0xba0178) CharacterData +0x260 (DragonRiderWeapon). Only those two call sites (by return address) swap the
  *     skill instance in slot 0 (char +0x458[0]) for one built with libg's own constructor 0xb7aa98 (new 0x58 at 0x11a4d90),
- *     kept per character and swapped back at the dismount; a swap waits while the old instance is running (+0x30). The other
- *     22 callers stay a no-op as before.
+ *     kept per character and swapped back at the dismount; a swap waits while the old instance is running (+0x30).
+ *   - R-T (Splitter): his component tick 0xb9c42c (call at 0xb9c4bc) swaps slot 0 to his legs' weapon (SplitterLegsWeapon, Eat
+ *     Static) while the partner getter 0xb392d4 finds the legs (superfix_moves.c split_partner), and back to CharacterData
+ *     +0x260 (SplitterWeapon) once they are gone: the same swap, a mount unless the data is his own weapon. The other 21
+ *     callers stay a no-op as before.
  * NB_SUPERFIX=0 turns this off with the rest, NB_SUPERFIX_CC=0 this part alone; NB_SUPERFIX_DBG=1 logs every stun / silence / swap. */
 #include "nbhost.h"
 #include <stdlib.h>
@@ -135,7 +138,9 @@ typedef struct { uint8_t *ch; int id; void *spare; void *want; int mount; } Swap
 static Swap g_sw[SW_MAX]; static int g_nsw;
 static Swap *swap_rec(uint8_t *ch) {
     for (int i = 0; i < g_nsw; i++) if (g_sw[i].ch == ch) { if (g_sw[i].id != I32(ch, 8)) g_sw[i] = (Swap){ch, I32(ch, 8)}; return &g_sw[i]; }
-    if (g_nsw >= SW_MAX) return NULL;
+    if (g_nsw >= SW_MAX) {   /* full (records are never dropped): reuse one round robin; a lost spare is rebuilt from the data */
+        static int next; Swap *w = &g_sw[next++ % SW_MAX]; *w = (Swap){ch, I32(ch, 8)}; return w;
+    }
     g_sw[g_nsw] = (Swap){ch, I32(ch, 8)}; return &g_sw[g_nsw++];
 }
 static void do_swap(uint8_t *ch, Swap *w) {
@@ -158,8 +163,10 @@ static void do_swap(uint8_t *ch, Swap *w) {
 static void my_change_skill(uint8_t *ch, int slot, void *data) {
     void *ret = __builtin_return_address(0);
     if (!on() || slot != 0 || !data || !is_char(ch)) return;
-    int mount = ret == (void *)B(0xba02e4);
-    if (!mount && ret != (void *)B(0xba017c)) return;   /* MountUp mount / dismount only */
+    int rt = ret == (void *)B(0xb9c4c0);                 /* R-T's split (see the header) */
+    uint8_t *cd = rt ? ((uint8_t *(*)(void *))B(0xb6a384))(ch) : NULL;
+    int mount = ret == (void *)B(0xba02e4) || (rt && cd && data != PTR(cd, 0x260));
+    if (!mount && ret != (void *)B(0xba017c) && !rt) return;   /* MountUp mount / dismount, R-T's split / rejoin only */
     Swap *w = swap_rec(ch); if (!w) return;
     if (mount) w->spare = NULL;
     w->want = data; w->mount = mount; do_swap(ch, w);
@@ -194,7 +201,7 @@ void superfix_cc_install(void) {
     hook_replace(g_libg, 0xb35c3c, (void *)my_change_skill);
     hook_enter(g_libg, 0xb73eb8, on_proj_hit);
     g_cc_on = 1;
-    LOG("[superfix] stuns, silences and Draco's weapon swap installed\n");
+    LOG("[superfix] stuns, silences and the weapon swaps (Draco, R-T) installed\n");
 }
 void env_status_counts(long o[7]) __attribute__((weak));
 void superfix_cc_status(void) {

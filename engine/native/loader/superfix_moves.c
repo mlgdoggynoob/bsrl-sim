@@ -55,6 +55,18 @@
  * centre) is hit once for the ulti skill's Damage, and Kenji's own hide status from the cast (SamuraiHide: root,
  * invisibility, shield; CancelOnCharge) ends there (superfix_status_cancel). The X shape and its size are host guesses.
  *
+ * Split (R-T, SplitterUlti, type 18): the use-skill code 0xb819fc calls the split 0xb5c7b0(char) (call at 0xb82328), which
+ * spawns his Pet SplitterLegs (0xb56e00) at his feet; the rejoin branch after its UniqueProperty 13 test (0xb5c810) is
+ * compiled out, and so is the partner getter 0xb392d4 (it tests UniqueProperty 13 and the hero kind, then returns NULL). The
+ * client code that uses the partner is shipped: the use-skill code fires the legs' weapon whenever R-T fires his (0xb82ed8),
+ * and his component tick 0xb9c42c swaps his weapon to the legs' one (0xb35c3c, superfix_cc.c) and gives him +Value2 speed
+ * of his ulti card for 2 ticks (0xb5901c(char, 100, 2, 0), a stub). Here: the getter returns the partner (the head's living
+ * legs, or the legs' living head: same player, UniqueProperty 13, the other kind), the speed stub is taken at that call site
+ * only (return 0xb9c4fc; superfix_split_speed feeds superfix_status_speed), and the split with legs alive is the rejoin
+ * (Radar Waves): R-T moves to his legs, the legs are retired the way 0xb4ffec retires a character (HP 0, +3273), and he heals
+ * by Value3 of the legs' ulti card (SplitterLegs_ulti 1000). Legs whose head is gone (knocked out) are retired too. Once
+ * the getter finds no legs, the component swaps the weapon back and the speed lapses.
+ *
  * The per-tick work runs from the character tick 0xb3ae74 (enter hook, per character; only characters with a job do
  * anything). NB_SUPERFIX=0 turns every part off (superfix_install does not call this file's install). */
 #include "nbhost.h"
@@ -62,6 +74,7 @@
 #include <stdlib.h>
 extern Module *g_libg;
 extern int g_superfix, g_superfix_dbg;
+void *hook_replace(Module *m, uint64_t off, void *repl);
 void hook_enter(Module *m, uint64_t off, void (*fn)(uint64_t *ctx));
 void hook_bl(Module *m, uint64_t off, void *fn);
 #define B(off) ((uint8_t *)g_libg->base + (off))
@@ -356,10 +369,76 @@ void superfix_moves_area(uint8_t *a) {
     if (g_superfix_dbg) LOG("[superfix] cross slash char %d at %.0f,%.0f dir %.2f,%.2f dmg %d hits %d\n", I32(ch, 8), cx, cy, fx, fy, dmg, hits);
 }
 
+/* ======================= Split (R-T) */
+#define SPLIT_HEAL 1000    /* fallback heal at the rejoin: Value3 of SplitterLegs_ulti (cards.csv, the heal icon), read from
+                            * the card when it is there; not scaled by the power level (the env's heals are not) */
+static long g_split_rejoin, g_split_spd, g_split_orphan; static int g_split_on;
+static int up_of(void *c) { void *d = c ? ((getp_t)B(0xb6a384))(c) : NULL; return d ? ((geti_t)B(0xab3d04))(d) : -1; }
+static int hero_kind(void *c) { return ((geti_t)B(0xb34de4))(c) & 1; }   /* +1064 or the data's type in {0, 26} (0xab2fd0) */
+static uint8_t *split_partner(uint8_t *ch) {   /* in place of 0xb392d4: the head's legs or the legs' head, NULL = none */
+    if (!mode() || !ch || VTOF(ch) != VT_CHAR || up_of(ch) != 13 || I32(ch, 0x80) < 0) return NULL;
+    int hk = hero_kind(ch), own = I32(ch, 0x80), n; void **v = objs(sim_of(ch), &n);
+    for (int i = 0; v && i < n; i++) {
+        uint8_t *c = v[i];
+        if (c && c != ch && VTOF(c) == VT_CHAR && I32(c, 0x3c4) > 0 && I32(c, 0x80) == own && up_of(c) == 13 && hero_kind(c) != hk) return c;
+    }
+    return NULL;
+}
+static int card_value(void *cd, int meta, int k) {   /* the character's card of MetaType `meta`, its Value k (0xace760 / 0xaa9568) */
+    void *card = cd ? ((void *(*)(void *, int))B(0xace760))(cd, meta) : NULL;
+    return card ? ((int (*)(void *, int))B(0xaa9568))(card, k) : -1;
+}
+static void retire(uint8_t *c) { I32(c, 0x3c4) = 0; U8(c, 3273) = 1; }   /* 0xb4ffec's end: HP 0, the retired flag */
+typedef struct { uint8_t *ch; int id, amount, until; } SplitSpd;
+static SplitSpd g_ss[16]; static int g_nss;
+static void my_speed_buff(uint8_t *ch, int amount, int ticks, int flag) {   /* 0xb5901c(char, speed, ticks, flag): a stub */
+    (void)flag;
+    if (!mode() || !ch || __builtin_return_address(0) != (void *)B(0xb9c4fc) || amount <= 0 || ticks <= 0) return;   /* R-T only */
+    int k; for (k = 0; k < g_nss && g_ss[k].ch != ch; k++) {}
+    if (k == g_nss) { if (g_nss >= 16) k = (int)(g_split_spd % 16); else g_nss++; }
+    g_ss[k] = (SplitSpd){ch, I32(ch, 8), amount, now_of(ch) + ticks}; g_split_spd++;
+}
+int superfix_split_speed(uint8_t *ch) {
+    if (!g_nss || !ch || !mode()) return 0;
+    for (int k = 0; k < g_nss; k++) if (g_ss[k].ch == ch) return g_ss[k].id == I32(ch, 8) && now_of(ch) < g_ss[k].until ? g_ss[k].amount : 0;
+    return 0;
+}
+static void (*o_split)(uint8_t *);
+static void my_split(uint8_t *ch) {   /* 0xb5c7b0(char) */
+    uint8_t *legs = mode() && ch && hero_kind(ch) ? split_partner(ch) : NULL;
+    if (!legs) { o_split(ch); return; }
+    int x = I32(legs, 0x38), y = I32(legs, 0x3c), hp0 = I32(ch, 0x3c4), mhp = I32(ch, 0x3c8);
+    int heal = card_value(((getp_t)B(0xb6a384))(legs), 3, 3); if (heal <= 0) heal = SPLIT_HEAL;
+    retire(legs);
+    stop_mover(ch);
+    ((void (*)(void *, int, int, int))B(0xb6a61c))(ch, x, y, 0);
+    if (hp0 > 0) I32(ch, 0x3c4) = hp0 + heal < mhp ? hp0 + heal : mhp;
+    g_split_rejoin++;
+    if (g_superfix_dbg) LOG("[superfix] split: rejoin char %d at legs %d (%d,%d), hp %d -> %d / %d\n", I32(ch, 8), I32(legs, 8), x, y,
+                            hp0, I32(ch, 0x3c4), mhp);
+}
+static long g_split_comp;
+static void split_tick(uint8_t *ch) {
+    if (I32(ch, 0x3c4) <= 0 || up_of(ch) != 13) return;
+    if (hero_kind(ch)) {   /* the head: run his Brawler_Splitter component's tick (vtable +0x40 = 0xb9c42c), which libg never
+                            * calls (as Draco's MountUp tick, superfix_status.c): the weapon swap, the speed, the hypercharged
+                            * circling projectiles and their removal */
+        int nc = I32(ch, 0xa6c); void **c = PTR(ch, 0xa60);
+        for (int i = 0; c && i < nc && i < 64; i++)
+            if (c[i] && PTR(c[i], 8) == ch && (*(void ***)c[i])[0x40 / 8] == (void *)B(0xb9c42c)) { ((void (*)(void *))B(0xb9c42c))(c[i]); g_split_comp++; }
+        return;
+    }
+    if (split_partner(ch)) return;   /* legs whose head is gone go too */
+    retire(ch); g_split_orphan++;
+    if (g_superfix_dbg) LOG("[superfix] split: legs %d retired (no head)\n", I32(ch, 8));
+}
+
 /* ======================= per character tick (enter 0xb3ae74) */
 static void on_char_tick(uint64_t *ctx) {
     uint8_t *ch = (uint8_t *)ctx[0];
-    if (!ch || !mode() || (!g_nfj && !g_nww)) return;
+    if (!ch || !mode()) return;
+    if (g_split_on && VTOF(ch) == VT_CHAR && I32(ch, 0x80) >= 0) split_tick(ch);
+    if (!g_nfj && !g_nww) return;
     for (int i = 0; i < g_nfj; i++) if (g_fj[i].ch == ch) {
         if (I32(ch, 8) != g_fj[i].id) { g_fj[i--] = g_fj[--g_nfj]; continue; }   /* object reused */
         flyjump_tick(&g_fj[i]);
@@ -383,12 +462,18 @@ void superfix_moves_install(void) {
     else LOG("[superfix] moves: 0xb4ffe0 is not the teleport stub: left out\n");
     if (*(uint32_t *)B(0xb7d010) == 0x97ff4bf7) { hook_bl(g_libg, 0xb7d010, (void *)change_site); n |= 8; }   /* bl 0xb4ffec */
     else LOG("[superfix] moves: 0xb7d010 is not the ChangeCharacter call: left out\n");
-    LOG("[superfix] moves installed:%s%s%s%s%s cross-slash\n", n & 1 ? " flyjump" : "", n & 2 ? " ww" : "", n & 4 ? " blink" : "", " change",
-        n & 8 ? " change-area" : "");
+    if (*(uint32_t *)B(0xb392d4) == 0xa9be7bfd && *(uint32_t *)B(0xb3930c) == 0xaa1f03e0 &&   /* stp x29, x30, [sp, #-32]!; ...; mov x0, xzr */
+        *(uint32_t *)B(0xb5901c) == RET_INSN && *(uint32_t *)B(0xb5c7b0) == 0xd10483ff && *(uint32_t *)B(0xb9c4f8) == 0x97fef2c9) {   /* sub sp, sp, #0x120; bl 0xb5901c */
+        hook_replace(g_libg, 0xb392d4, (void *)split_partner); hook_replace(g_libg, 0xb5901c, (void *)my_speed_buff);
+        o_split = hook_replace(g_libg, 0xb5c7b0, (void *)my_split); g_split_on = 1; n |= 16;
+    } else LOG("[superfix] moves: R-T's split sites differ: left out\n");
+    LOG("[superfix] moves installed:%s%s%s%s%s%s cross-slash\n", n & 1 ? " flyjump" : "", n & 2 ? " ww" : "", n & 4 ? " blink" : "", " change",
+        n & 8 ? " change-area" : "", n & 16 ? " split" : "");
 }
 void superfix_moves_status(void) {
     LOG("[superfix] moves: flyjump %ld starts, %ld landings (%ld fallback); ww %ld starts, %ld hits; blink %ld (%ld back), %ld hits; "
-        "change character %ld (%ld left to battle_fix), with area %ld (%ld hits); cross slash %ld (%ld hits)\n", g_fj_start, g_fj_land,
+        "change character %ld (%ld left to battle_fix), with area %ld (%ld hits); cross slash %ld (%ld hits); split: rejoins %ld, "
+        "component ticks %ld, speed ticks %ld, legs retired without a head %ld\n", g_fj_start, g_fj_land,
         g_fj_fallback, g_ww_start, g_ww_hits, g_blink, g_blink_back, g_blink_hits, g_change, g_change_skip, g_change_area, g_change_hits,
-        g_slash_n, g_slash_hits);
+        g_slash_n, g_slash_hits, g_split_rejoin, g_split_comp, g_split_spd, g_split_orphan);
 }

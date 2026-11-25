@@ -24,7 +24,8 @@ Expected effects come from the game's tables (skills.csv UltimateSkill row, its 
 rows, area_effects_logic): damage, move, push, heal, projectile, summon, area, item, change (`expected()`).
 An EdgeCrossing area's PushbackStrength (Damian's arena) is not expected as a push: it pushes only at the arena's edge.
 Meg's row is her mech's super (START_FORM: the client spawns her as MechaDudeBig); the eject and small Meg's change back
-are charge_check's.
+are charge_check's. R-T's split (Split) shows only its SplitterLegs summon here (unverified); his faster walk, the attack
+from head and legs and the rejoin are charge_check's.
 Classes (`classify()`): works = consumed and every expected effect seen; partial = consumed, some effect seen but not all
 expected (listed as missing); unverified = consumed, but the super's effect is of a kind not visible here (shield,
 invisibility, status buff, a heal when the pre-damage missed); no_effect = consumed, nothing seen; not_fired = charge not

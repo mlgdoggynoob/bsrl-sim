@@ -132,6 +132,15 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   makes her small Meg (no kill, no duo / trio knock-out, super reset, no other hit that tick); knocked out as small Meg
   she respawns in her mech (`respawn_tick`). `hyper.c` `hyper_char_changed`: a running hypercharge follows any character
   change. `python -m charge_check` scene 5.
+- `split_and_paint.patch` (issues #6 / #5, a diff on top of `meg_mech.patch`): R-T's split and Berry's paint.
+  `superfix_moves.c`: the partner getter 0xb392d4 (compiled out) finds R-T's legs and the legs' head, and the host runs his
+  Brawler_Splitter component tick 0xb9c42c, which libg never calls: while split his weapon is the legs' Eat Static (both
+  blast when he attacks, client code) and he walks +100 faster (the stub 0xb5901c at that call site only, through
+  `superfix_status_speed`); his second super puts him where his legs stand, removes them and heals him by 1000
+  (SplitterLegs_ulti Value3); legs whose head is knocked out go too. `superfix_cc.c`: the weapon swap takes R-T's call
+  site. `env.c`: Berry's paint (DamageScaleType 4) is a percent of his main attack Damage (660 damage / 330 heal per second
+  at power 1, x2 at power 11) and his dash heals the teammates he passes by the skill's Damage. `python -m charge_check`
+  scenes 4 and 6.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
