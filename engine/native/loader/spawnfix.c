@@ -7,8 +7,12 @@
  * server's part; here it is re-implemented with libg's own spawn function.
  *
  * BulletExplosion (area data +0x118 == 5): N = CustomValue (+0x13c) copies of BulletExplosionBullet (+0x78) leave the area's
- * position evenly spread over 360 degrees, starting at the angle of the parent's flight (area +0x140) plus BulletExplosionBulletOffset
- * (+0x148 is not an angle in the data: unused here), each flying BulletExplosionBulletDistance (+0x144) * 100 world units. */
+ * position evenly spread over 360 degrees, starting at the angle of the parent's flight (area +0x140), each flying
+ * BulletExplosionBulletDistance (+0x144) * 100 world units. BulletExplosionBulletOffset (+0x148, units, 31 rows: Bonnie's
+ * hypercharged teeth 500, Byron's 600, Chester's 300, 8-Bit's bonus shot 600, bosses) is the start distance from the centre
+ * on each bullet's own line, so the bullets leave a ring instead of all hitting whoever stands at the centre (issue #6:
+ * Bonnie's 6 teeth all hit an enemy on her landing spot). [?] the server's spawn is compiled out; the column's name and
+ * that it is never an angle (no row above 600) are the evidence. NB_SPAWNFIX_OFFSET=0: all from the centre again. */
 #include "nbhost.h"
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +22,7 @@ void hook_enter(Module *m, uint64_t off, void (*fn)(uint64_t *ctx));
 #define I32(p, o) (*(int32_t *)((uint8_t *)(p) + (o)))
 #define PTR(p, o) (*(void **)((uint8_t *)(p) + (o)))
 static int mode(void) { return I32(g_libg->base, 0x12eefb4) == 3; }
-int g_spawn_fix = 1, g_spawn_dbg = 0;
+int g_spawn_fix = 1, g_spawn_dbg = 0, g_spawn_offset = 1;
 static long g_nbe, g_nbe_proj;
 
 typedef long (*spawn_t)(int, int, void *, void *, void *, int, int, int, int, int, int, void *, void *, int, int, void *);
@@ -89,11 +93,16 @@ static int bush_area(uint8_t *d) {
     return id == 17000314 || id == 17000692 || id == 17001024 || id == 17001025;
 }
 static int in_shape(int dx, int dy, int r) { return 300L * 300 * (dx * dx + dy * dy) < (long)r * r; }
+/* Issue #19 final: MeepleWallSpawn (42, Meeple's wall gadget / EndOfLineProjectile) and GladiatorWallSpawn (55, Damian's
+ * wall gadget) areas build the same shape from their CustomValue (+0x13c), a DynamicCode (MeepleWallDefault 18,
+ * OutOfLineWall 23 / 24, GladiatorWallDefault 26: Lifetime 80..140 ticks), for every tile of it (no Filler variant). [?]
+ * MeepleWallArea's CustomValue2 20 (the last of three MeepleWallDefault codes 18-20) is not used. */
 static void wall_ring(uint8_t *a, uint8_t *d) {
     uint8_t *pr = (g_cur_proj && g_cur_tick == (g_sim ? I32(g_sim, 0x10) : -1)) ? (uint8_t *)g_cur_proj : NULL;
-    int bush = bush_area(d), code = bush ? AREA_BUSH_CODE : wall_code_for(pr), r = I32(d, 0x12c);
+    int typed = I32(d, 0x118) == 42 || I32(d, 0x118) == 55;
+    int bush = bush_area(d), code = typed ? I32(d, 0x13c) : bush ? AREA_BUSH_CODE : wall_code_for(pr), r = I32(d, 0x12c);
     if (r <= 0 || r > 3000) r = 400;    /* WallyUltiArea's Radius */
-    void *wall = tile_by_code(code), *fill = bush ? wall : tile_by_code(code + 1);
+    void *wall = tile_by_code(code), *fill = bush || typed ? wall : tile_by_code(code + 1);
     int cx = I32(a, 0x38) / 300, cy = I32(a, 0x3c) / 300, n = 0, k = r / 300 + 1;
     uint8_t *tm_sim = g_sim ? PTR(g_sim, 0x68) : NULL, *tm_cl = g_client_obj ? PTR(g_client_obj, 0xf8) : NULL;
     g_nwall_areas++;
@@ -206,7 +215,11 @@ static void on_explode(uint64_t *c) {
 static void on_area(uint64_t *c) {
     if (!g_spawn_fix || !mode() || rec) return;
     uint8_t *a = (uint8_t *)c[0]; uint8_t *d = PTR(a, 0x10);
-    if (a && d && I32(d, 0x118) == 15 && g_spawn_fix && g_spawn_walls && mode() && !rec) wall_ring(a, d);
+    if (a && d && (I32(d, 0x118) == 15 || I32(d, 0x118) == 42 || I32(d, 0x118) == 55) && g_spawn_walls && I32(d, 0x13c) >= 0) {
+        static void *last_a; static int last_t = -1; int t = g_sim ? I32(g_sim, 0x10) : -1;
+        if (I32(d, 0x118) == 15 || a != last_a || t != last_t) wall_ring(a, d);   /* 42 / 55: once per spawn apply */
+        last_a = a; last_t = t;
+    }
     if (a && d && I32(d, 0x118) == 15 && g_spawn_dbg && getenv("NB_SPAWNFIX_TILEDIAG")) {
         uint8_t *cl = (uint8_t *)g_client_obj, *dec = cl ? PTR(cl, 0x38) : NULL, *L = dec ? PTR(dec, 0x10) : NULL;
         void **vt = L ? *(void ***)L : NULL;
@@ -241,16 +254,17 @@ static void on_area(uint64_t *c) {
     if (!bullet || !owner || n < 1 || n > 32) return;
     void *sim = ((void *(*)(void *))B(0xb6a378))(owner);
     int x = I32(a, 0x38), y = I32(a, 0x3c), kind = I32(a, 0xf8);
-    int base = 0, dmg = I32(a, 0xe8);
+    int base = 0, dmg = I32(a, 0xe8), off = g_spawn_offset && I32(d, 0x148) > 0 && I32(d, 0x148) <= 3000 ? I32(d, 0x148) : 0;
     if (g_cur_proj && g_cur_tick == (g_sim ? I32(g_sim, 0x10) : -1)) {
         uint8_t *pr = (uint8_t *)g_cur_proj; base = angle_of(I32(pr, 0x38) - I32(pr, 0xfc), I32(pr, 0x3c) - I32(pr, 0x100));
     }
     for (int i = 0; i < n; i++) {
         int ang = base + (360 * i) / n;
         int vx = ((i1_t)B(0xd005e0))(ang + 0x5a), vy = ((i1_t)B(0xd005e0))(ang);
-        int tx = x + ((vx * dist * 100) >> 10), ty = y + ((vy * dist * 100) >> 10);
+        int sx = x + ((vx * off) >> 10), sy = y + ((vy * off) >> 10);   /* BulletExplosionBulletOffset: the ring it starts on */
+        int tx = sx + ((vx * dist * 100) >> 10), ty = sy + ((vy * dist * 100) >> 10);
         rec = 1;
-        void *p = (void *)((spawn_t)B(0xb78190))(x, y, owner, owner, bullet, tx, ty, dmg, dmg, 0, 0, NULL, sim, 0, kind, NULL);
+        void *p = (void *)((spawn_t)B(0xb78190))(sx, sy, owner, owner, bullet, tx, ty, dmg, dmg, 0, 0, NULL, sim, 0, kind, NULL);
         rec = 0;
         if (p) g_nbe_proj++;
         if (g_spawn_dbg && i < 2) LOG("[spawnfix]   child %d ang %d -> %d,%d proj %p\n", i, ang, tx, ty, p);
@@ -259,6 +273,7 @@ static void on_area(uint64_t *c) {
 void spawnfix_install(void) {
     const char *e = getenv("NB_SPAWNFIX"); if (e) g_spawn_fix = atoi(e);
     if (getenv("NB_SPAWNFIX_DBG")) g_spawn_dbg = 1;
+    if ((e = getenv("NB_SPAWNFIX_OFFSET"))) g_spawn_offset = atoi(e);
     if ((e = getenv("NB_SPAWNFIX_CHAIN"))) g_spawn_chain = atoi(e);
     if ((e = getenv("NB_SPAWNFIX_WALLS"))) g_spawn_walls = atoi(e);
     if (!g_spawn_fix) { LOG("[spawnfix] disabled\n"); return; }

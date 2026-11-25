@@ -1,5 +1,5 @@
 """Live check of the supers' extras (issues #5 / #6) that super_audit cannot see: wall breaking, Damian's arena edge,
-Berry's paint and Meg's eject. One boot, one battle on super_audit.MAP (storm off, every native AI off), five scenes in a row:
+Berry's paint, Meg's eject and R-T's split. One boot, one battle on super_audit.MAP (storm off, every native AI off), six scenes in a row:
   1. Bull charges along a lane whose fourth tile is a destructible wall: the wall tile opens (live map, F_MAP) and Bull
      ends past it;
   2. El Primo lands on an open tile next to a destructible wall: that wall tile opens;
@@ -9,7 +9,10 @@ Berry's paint and Meg's eject. One boot, one battle on super_audit.MAP (storm of
      damage) and Berry, hurt by Crow's super just before and walking back into his paint, gains HP (HotAndDot heal)
      within the 3 s before regen starts;
   5. Meg (who spawns in her mech) is hit by three Shellys' supers until the mech breaks: she goes on as small Meg at full
-     HP with an empty super, not out, and her own super then builds the mech again.
+     HP with an empty super, not out, and her own super then builds the mech again;
+  6. R-T splits: his head walks faster than whole, one attack hits an enemy next to the head and one next to the legs
+     (Eat Static from both), and his second super, after a Shelly super hurt him, puts him where his legs stood, removes
+     them and heals him by the legs' card Value3 (1000).
 Wall lanes come from the map reference (tiles.csv BlocksMovement / IsDestructible; spawn digits count as blocked).
 python -m charge_check            python -m charge_check --check   (no host: the lane finder and the judging rules)"""
 import argparse, sys, time
@@ -24,7 +27,10 @@ PUSH_IN_MIN = 200                          # ... and must end at least this much
 WATCH = 40                                 # ticks after a fire (2 s)
 EJECT_ROUNDS = 6                           # Meg: volleys of three Shelly supers at most (the mech has 7400 HP; one volley breaks it)
 REMECH_TRIES = 10                          # Meg: super fills and fires at most, after the eject's protection
-NAMES = ["BullDude", "Luchador", "Gladiator", "Painter", "Crow", "MechaDude"]   # shooters 0-5; Crow hurts Berry
+SPLIT_FAST = 1.08                          # R-T: split walk / whole walk at least this (+100 of 720 speed = 1.14)
+SPLIT_HEAL_MIN = 900                       # ... and the rejoin heals at least this (SplitterLegs_ulti Value3 1000)
+SPLIT_AT = 100                             # ... and puts him within this of where his legs stood
+NAMES = ["BullDude", "Luchador", "Gladiator", "Painter", "Crow", "MechaDude", "Splitter"]   # shooters 0-6; Crow hurts Berry
 TARGET = SA.FILLER
 
 
@@ -110,6 +116,21 @@ def judge_eject(cid0, after, remech):
     return bad
 
 
+def judge_split(split, d_whole, d_split, hits, rejoin):
+    """R-T: split = legs spawned; walks in units over the same ticks; hits = (HP lost by the enemy next to the head, next to the
+    legs); rejoin = (distance from where the legs stood, legs still there, HP gained, was hurt) -> [problems]"""
+    if not split: return ["no SplitterLegs after the super"]
+    bad = []
+    if d_split < d_whole * SPLIT_FAST: bad.append(f"split walk {d_split:.0f} u, whole {d_whole:.0f} u (want x{SPLIT_FAST})")
+    if hits[0] <= 0: bad.append("no Eat Static hit next to the head")
+    if hits[1] <= 0: bad.append("no Eat Static hit next to the legs")
+    at, left, heal, hurt = rejoin
+    if at > SPLIT_AT: bad.append(f"the rejoin left him {at:.0f} u from his legs")
+    if left: bad.append("the legs are still there after the rejoin")
+    if hurt and heal < SPLIT_HEAL_MIN: bad.append(f"the rejoin healed {heal} (want >= {SPLIT_HEAL_MIN})")
+    return bad
+
+
 def judge_paint(target_loss, heal, pre_damaged):
     bad = []
     if target_loss <= 0: bad.append("the target lost no HP standing in the paint after the charge")
@@ -150,6 +171,12 @@ def _form(inst, i):
     return SA.data_name(int(rows[0][1])) if rows else None
 
 
+def _parts(inst, i):
+    """{data name: (x, y, hp)} of player i's living characters (R-T's head and legs)"""
+    st = SA.parse_state(inst.state_bytes())
+    return {SA.data_name(int(x[1])): (int(x[3]), int(x[4]), int(x[6])) for x in st["ch"] if int(x[2]) == i and int(x[6]) > 0}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--check", action="store_true", help="self-check of the lane finder and the judging (no host)")
@@ -168,7 +195,7 @@ def main():
     print("charge_check: host ready in %.0f s" % (time.time() - t0), flush=True)
     fails = {}
     try:
-        names = NAMES + [TARGET] * (10 - len(NAMES))   # shooters 0-5, targets 6-9
+        names = NAMES + [TARGET] * (10 - len(NAMES))   # shooters 0-6, targets 7-9
         inst.reset(93500000 + a.seed, gas=0, flags=0, native_mask=0, obs_mask=0, div=D.make_div(location=SA.MAP, chr=names))
         R = Run(inst); R.step(ticks=10)
         ref = np.asarray(D.map_reference(SA.MAP)[0]).reshape(g.shape); live = R.tiles()
@@ -204,16 +231,17 @@ def main():
         # 4. Berry's paint (spot 1)
         (sx, sy, dirs) = spots[1]; dx, dy = dirs[0]; tx, ty = sx + dx * 900, sy + dy * 900; aim = float(np.degrees(np.arctan2(dy, dx)))
         # pre-damage: Crow's super lands on Berry from 900 u behind him (a normal attack does not land in this harness)
-        R.place({3: (sx, sy), 6: (tx, ty), 4: (sx - dx * 900, sy - dy * 900)})
+        R.place({3: (sx, sy), 9: (tx, ty), 4: (sx - dx * 900, sy - dy * 900)})   # target 9: 7 still carries Damian's arena side
         R.fire(4, aim, min(1.0, 1000 / info["Crow"]["range"]), watch=24)
         r = R.place({4: spots[4][:2]}); pre = r.pl[3].alive and r.pl[3].hp < r.pl[3].max_hp
         r = R.fire(3, aim, 1.0, watch=18)   # the charge is over (2500 u at 3000 u/s ~ 17 ticks)
-        thp = r.pl[6].hp; hp_low = r.pl[3].hp
+        thp = r.pl[9].hp; hp_low = r.pl[3].hp
         back = int(round(((aim + 180) % 360) / 22.5)) % 16
         for _ in range(5): r = R.step({3: (back, 0, 0.0, 0.0)})   # Berry walks back into his paint
         for _ in range(10): r = R.step(); hp_low = min(hp_low, r.pl[3].hp)
-        print("charge_check: Berry hp %d -> %d after his paint, target lost %d after the charge" % (hp_low, r.pl[3].hp, thp - r.pl[6].hp), flush=True)
-        fails["Berry paint"] = judge_paint(thp - r.pl[6].hp if r.pl[6].alive else thp, r.pl[3].hp - hp_low, pre)
+        print("charge_check: Berry hp %d -> %d after his paint, target lost %d after the charge" % (hp_low, r.pl[3].hp, thp - r.pl[9].hp), flush=True)
+        fails["Berry paint"] = judge_paint(thp - r.pl[9].hp if r.pl[9].alive else thp, r.pl[3].hp - hp_low, pre)
+        R.place({9: spots[9][:2]})
         if not pre: print("charge_check: Berry's pre-damage missed: heal not checked", flush=True)
 
         # 5. Meg's eject (her own spot): Shellys 7-9 stand 350 u in front of her, side by side, and super her until the mech breaks
@@ -237,6 +265,36 @@ def main():
                 R.fire(meg, back, 0.5, watch=30); remech = _form(inst, meg)
                 if remech != "MechaDude": break
         fails["Meg eject"] = judge_eject(cid0, after, remech)
+
+        # 6. R-T's split (his own spot): whole walk, split, split walk, Eat Static from head and legs, hurt, rejoin
+        rt = 6; (sx, sy, dirs) = spots[rt]; dx, dy = dirs[0]; aim = float(np.degrees(np.arctan2(dy, dx)))
+        fwd = int(round((aim % 360) / 22.5)) % 16
+        def walk():
+            x0 = _parts(inst, rt)["Splitter"][:2]
+            for _ in range(10): R.step({rt: (fwd, 0, 0.0, 0.0)})
+            x1 = _parts(inst, rt)["Splitter"][:2]; return float(np.hypot(x1[0] - x0[0], x1[1] - x0[1]))
+        R.place({rt: (sx, sy)}); d_whole = walk()
+        R.place({rt: (sx, sy)}); R.fire(rt, (aim + 180) % 360, 0.5, watch=10)
+        legs0 = _parts(inst, rt).get("SplitterLegs"); d_split = walk() if legs0 else 0.0
+        hits = (0, 0)
+        if legs0:
+            h, L = _parts(inst, rt)["Splitter"], _parts(inst, rt)["SplitterLegs"]
+            r = R.place({8: (h[0] + dx * 400, h[1] + dy * 400), 9: (L[0] - dx * 400, L[1] - dy * 400)}); hp8, hp9 = r.pl[8].hp, r.pl[9].hp
+            R.step({rt: (-1, 1, aim, 0.5)}, 1)
+            for _ in range(15): r = R.step()
+            hits = (hp8 - r.pl[8].hp, hp9 - r.pl[9].hp)
+            h = _parts(inst, rt)["Splitter"]
+            R.place({8: (h[0] + dx * 300, h[1] + dy * 300), 9: spots[9][:2]})
+            R.fire(8, (aim + 180) % 360, 0.3, watch=10)
+            r = R.place({8: spots[8][:2]}); hp_hurt = r.pl[rt].hp; L = _parts(inst, rt).get("SplitterLegs")
+            R.fire(rt, aim, 0.5, watch=6)
+            r = R.step(); p = _parts(inst, rt); h = p["Splitter"]
+            at = float(np.hypot(h[0] - L[0], h[1] - L[1])) if L else 1e9
+            rejoin = (at, "SplitterLegs" in p, r.pl[rt].hp - hp_hurt, hp_hurt < r.pl[rt].max_hp)
+        else: rejoin = (1e9, True, 0, True)
+        print("charge_check: R-T walk %.0f whole, %.0f split; Eat Static head %d legs %d; rejoin %.0f u from the legs, legs left %d, "
+              "heal %d" % (d_whole, d_split, hits[0], hits[1], rejoin[0], rejoin[1], rejoin[2]), flush=True)
+        fails["R-T split"] = judge_split(legs0 is not None, d_whole, d_split, hits, rejoin)
     finally:
         inst.close()
     bad = 0
@@ -265,7 +323,11 @@ def _check():
     assert judge_eject(1, ok, "MechaDudeBig") == [] and len(judge_eject(1, ok, "MechaDude")) == 1
     assert len(judge_eject(1, (False, True, 1, None, 0, 0, 0), None)) == 1 and len(judge_eject(7, ok, "MechaDudeBig")) == 1
     assert len(judge_eject(1, ok[:4] + (100, 4800, 0), "MechaDudeBig")) == 1
-    print("charge_check ok: lane finder, landing finder, judging")
+    good = (True, 756, 867, (2480, 2480), (0.0, False, 1000, True))
+    assert judge_split(*good) == [] and judge_split(False, 0, 0, (0, 0), good[4]) == ["no SplitterLegs after the super"]
+    assert len(judge_split(True, 756, 756, (2480, 0), (500.0, True, 0, True))) == 5
+    assert judge_split(True, 756, 867, (1, 1), (0.0, False, 0, False)) == []   # not hurt: the heal is not judged
+    print("charge_check ok: lane finder, landing finder, judging (walls, edge, paint, eject, split)")
 
 
 if __name__ == "__main__":

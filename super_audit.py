@@ -24,7 +24,8 @@ Expected effects come from the game's tables (skills.csv UltimateSkill row, its 
 rows, area_effects_logic): damage, move, push, heal, projectile, summon, area, item, change (`expected()`).
 An EdgeCrossing area's PushbackStrength (Damian's arena) is not expected as a push: it pushes only at the arena's edge.
 Meg's row is her mech's super (START_FORM: the client spawns her as MechaDudeBig); the eject and small Meg's change back
-are charge_check's.
+are charge_check's. R-T's split (Split) shows only its SplitterLegs summon here (unverified); his faster walk, the attack
+from head and legs and the rejoin are charge_check's.
 Classes (`classify()`): works = consumed and every expected effect seen; partial = consumed, some effect seen but not all
 expected (listed as missing); unverified = consumed, but the super's effect is of a kind not visible here (shield,
 invisibility, status buff, a heal when the pre-damage missed); no_effect = consumed, nothing seen; not_fired = charge not
@@ -242,15 +243,15 @@ def gadget_kind(a):
     Mirrors gadget.c's classify functions (accessory Type, AreaEffect, the Skill's BehaviorType, CustomObject's table)."""
     T = _tables(); t = a.get("Type") or ""; num = lambda k: _num(a, k)
     if a.get("Name") in MASKED: return None
-    if not t and a.get("AreaEffect"):   # AREA: the area at the brawler, Rosa's WallSpawn and Meeple's HpBasedStun left out
-        return "area" if T["alog"].get(a["AreaEffect"], {}).get("Type") not in ("WallSpawn", "HpBasedStun") else None
+    obj = (a.get("CustomObject") or "").split(";")[0]
+    is_proj = obj in T["pskin"] or obj in T["plog"]
+    if (not t or (t == "spin_shoot" and not is_proj)) and a.get("AreaEffect"):   # AREA: the area at the brawler (Fang's sweep too), Rosa's WallSpawn left out
+        return "area" if T["alog"].get(a["AreaEffect"], {}).get("Type") != "WallSpawn" else None
     if not t and a.get("Skill"):
         sk = T["skill"].get(a["Skill"], {}); bt = sk.get("BehaviorType") or "Attack"   # an empty BehaviorType parses as Attack
         if bt == "Attack" and sk.get("Projectiles"): return "shot"
         if bt in ("Attack", "AimableArea") and not sk.get("Projectiles") and sk.get("AreaEffectObject"): return "skill_area"
         return None
-    obj = (a.get("CustomObject") or "").split(";")[0]
-    is_proj = obj in T["pskin"] or obj in T["plog"]
     if t == "repeat_shot" and is_proj and num("CustomValue1") > 0: return "repeat"
     if t == "spin_shoot" and is_proj and num("CustomValue1") > 0 and num("ActiveTicks") > 0: return "spin"
     if t == "spawn" and obj in T["item"]: return "item"
@@ -796,7 +797,7 @@ def _check():
         assert hy["ShotgunGirl"]["skill"] == "ShotgunGirlUlti" and "hyper_cast" in hy["ShotgunGirl"]["expect"]
         assert "hyper_cast" not in inf["Jester"]["expect"]
         ag = area_gadgets()   # --gadget: the host's AREA gadgets, Rosa's WallSpawn left out
-        assert {"Barkeep", "DeadMariachi", "ClusterBombDude", "Ghost", "Domain"} <= set(ag) and not {"Rosa", "Meeple"} & set(ag), sorted(ag)
+        assert {"Barkeep", "DeadMariachi", "ClusterBombDude", "Ghost", "Domain", "Meeple", "KickerDude"} <= set(ag) and "Rosa" not in ag, sorted(ag)
         assert all(c // 1000000 == 23 for c, _ in ag.values())
         tk = expected_gadget("ClusterBombDude")
         assert tk["skill"] == "ClusterBombDude_Explosion" and tk["expect"] == ["area", "damage", "push"] and tk["delay"] == 20, tk

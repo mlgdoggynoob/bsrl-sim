@@ -13,7 +13,9 @@
  *   - projectile SilenceDurationMS: the hit calls 0xb59038(target, ticks) (a bare `ret`): replaced, it silences;
  *   - Stun (16) and Silence (24) areas (Maisie's dash, Frank-style slams, Sandy's hypercharged silence ...): their StunTicks
  *     column is empty in the tables and the client reads it only for the UI; the duration is CustomValue +0x13c (ticks).
- *     At the area's first tick (superfix_status_area), every enemy character in libg's range test 0xb2b298 gets it;
+ *     At the area's first tick (superfix_status_area), every enemy character that libg's own target test reaches gets it
+ *     (superfix_area_reach: circle, InnerRadius ring, RequireLineOfSight: Fang's sweep); HpBasedStun (43, Meeple's
+ *     RageQuit) too, for longer the less HP its owner has;
  *   - a new stun or loss of control stops the character's current path (stop 0xb4103c), because the mover only refuses new
  *     moves (superfix_cc_tick from the character update hook);
  *   - CcImmunity statuses (superfix_status.c aggregate +0x982) keep stuns and silences off.
@@ -21,8 +23,13 @@
  *     component's mount (call at 0xba02e0) passes his dragon weapon (weapon SkillData +0x158 = DragonRiderDragonWeapon), its
  *     dismount (0xba0178) CharacterData +0x260 (DragonRiderWeapon). Only those two call sites (by return address) swap the
  *     skill instance in slot 0 (char +0x458[0]) for one built with libg's own constructor 0xb7aa98 (new 0x58 at 0x11a4d90),
- *     kept per character and swapped back at the dismount; a swap waits while the old instance is running (+0x30). The other
- *     22 callers stay a no-op as before.
+ *     kept per character and swapped back at the dismount; a swap waits while the old instance is running (+0x30).
+ *   - R-T (Splitter): his component tick 0xb9c42c (call at 0xb9c4bc) swaps slot 0 to his legs' weapon (SplitterLegsWeapon, Eat
+ *     Static) while the partner getter 0xb392d4 finds the legs (superfix_moves.c split_partner), and back to CharacterData
+ *     +0x260 (SplitterWeapon) once they are gone: the same swap, a mount unless the data is his own weapon. The other 21
+ *     callers stay a no-op as before.
+ *   - Angelo (InsectMan, issue #19 final): his SwitchSkill area swaps slot 0 to his weapon's SecondarySkill while he stands
+ *     in it (superfix_cc_switch), the same swap.
  * NB_SUPERFIX=0 turns this off with the rest, NB_SUPERFIX_CC=0 this part alone; NB_SUPERFIX_DBG=1 logs every stun / silence / swap. */
 #include "nbhost.h"
 #include <stdlib.h>
@@ -42,7 +49,7 @@ static int mode(void) { return I32(g_libg->base, 0x12eefb4) == 3; }
 static int now_tick(void *obj) { uint8_t *sim = ((void *(*)(void *))B(0xb6a378))(obj); return sim ? I32(sim, 0x10) : -1; }
 static int is_char(void *o) { return o && (int)((uint8_t *)PTR(o, 0) - g_libg->base) == VT_CHAR; }
 static int on(void) { return g_cc_on && g_superfix && mode(); }
-static long g_nstun_trap, g_nstun_proj, g_nstun_area, g_nsil, g_nsil_area, g_nimm, g_nstop, g_nswap, g_nswap_wait;
+static long g_nstun_trap, g_nstun_proj, g_nstun_area, g_nsil, g_nsil_area, g_nimm, g_nstop, g_nswap, g_nswap_wait, g_nlos_block;
 
 /* ------------------------------------------------------------------ stun / silence */
 static void stun(uint8_t *ch, int ticks, const char *why) {
@@ -102,26 +109,55 @@ void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) {
     int ticks = I32(pd, 0x1d0);
     if (ticks > 0) { stun(victim, ticks, "projectile hit"); g_nstun_proj++; }
 }
-/* Stun (16) / Silence (24) areas, from superfix_status_area at every tick of an area: once per area, at its first tick */
+/* libg's own target test of the area apply 0xb29494 (0xb29e8c..0xb29fcc), for the areas the host applies itself (issue #19
+ * final): the character must be within r = 0xb2b298(data, ch) (Radius + the character's radius - 50) of the area, both
+ * axes first, then the circle; with InnerRadius +0x1b8 > 0 and InnerRadiusDamagePercent +0x1bc == 0 a character closer
+ * than InnerRadius is out (a ring); with RequireLineOfSight +0x17d the tile map (sim +0x68, 0xc2a588) must have a line
+ * from the area to the character: 0xa56dc0(map, ax, ay, cx, cy), or 0xa56398 for the data byte +0x201 (BooleanAttributes
+ * StrictLineOfSight, the byte the apply tests at 0xb29f38), both 1 = clear. -> distance squared, or -1 = not reached. */
+long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) {
+    long dx = I32(o, 0x38) - I32(a, 0x38), dy = I32(o, 0x3c) - I32(a, 0x3c), r = ((int (*)(void *, void *))B(0xb2b298))(d, o);
+    if (dx > r || dx < -r || dy > r || dy < -r || dx * dx + dy * dy > r * r) return -1;
+    long inner = I32(d, 0x1b8);
+    if (inner > 0 && I32(d, 0x1bc) == 0 && dx * dx + dy * dy < inner * inner) return -1;
+    if (U8(d, 0x17d)) {
+        uint8_t *sim = ((uint8_t *(*)(void *))B(0xb6a378))(a); void *map = sim ? PTR(sim, 0x68) : NULL;
+        if (!map) return -1;
+        int clear = ((int (*)(void *, int, int, int, int))B(U8(d, 0x201) ? 0xa56398 : 0xa56dc0))(map, I32(a, 0x38), I32(a, 0x3c),
+                                                                                                    I32(o, 0x38), I32(o, 0x3c)) & 1;
+        if (!clear) { g_nlos_block++; return -1; }
+    }
+    return dx * dx + dy * dy;
+}
+/* Stun (16), Silence (24) and HpBasedStun (43) areas, from superfix_status_area at every tick of an area: once per area, at
+ * its first tick, every enemy character libg's target test above reaches. HpBasedStun (Meeple's RageQuit gadget: "the less
+ * hitpoints Meeple has, the stun and knockback effects increase"): CustomValue2 + (CustomValue - CustomValue2) x the
+ * owner's missing HP fraction ticks (5 .. 30) [?] the formula is server code, the two values read as the stun's bounds;
+ * its knockback (PushbackStrength 120) is not applied. */
 typedef struct { void *a; int start; } CcArea;
 #define CA_MAX 64
 static CcArea g_ca[CA_MAX]; static int g_nca;
 void superfix_cc_area(uint8_t *a, uint8_t *d) {
     if (!on() || !a || !d) return;
     int type = I32(d, 0x118), ticks = I32(d, 0x13c); uint8_t *owner = PTR(a, 0x108);
-    if ((type != 16 && type != 24) || ticks <= 0 || !owner) return;
+    if ((type != 16 && type != 24 && type != 43) || ticks <= 0 || !owner) return;
     for (int i = 0; i < g_nca; i++) if (g_ca[i].a == a && g_ca[i].start == I32(a, 0xd0)) return;
     if (g_nca >= CA_MAX) g_nca = 0;
     g_ca[g_nca++] = (CcArea){a, I32(a, 0xd0)};
+    if (type == 43) {
+        int lo = I32(d, 0x140), mx = I32(owner, 0x3c8), hp = I32(owner, 0x3c4);
+        if (lo > ticks) lo = ticks;
+        ticks = mx > 0 ? lo + (int)((long)(ticks - lo) * (mx - (hp < mx ? hp : mx)) / mx) : lo;
+        if (g_superfix_dbg) LOG("[superfix] cc: hp stun area, owner hp %d / %d -> %d ticks\n", hp, mx, ticks);
+    }
     uint8_t *mgr = PTR(owner, 0x20); if (!mgr) return;
     int n = I32(mgr, 0x34); void **v = PTR(mgr, 0x28); if (!v || n < 0 || n > 4096) return;
-    int team = ((int (*)(void *))B(0xb6a820))(a), ax = I32(a, 0x38), ay = I32(a, 0x3c);
+    int team = ((int (*)(void *))B(0xb6a820))(a);
     for (int i = 0; i < n; i++) {
         uint8_t *o = v[i];
         if (!is_char(o) || I32(o, 0x3c4) <= 0 || ((int (*)(void *))B(0xb6a820))(o) == team) continue;
-        long dx = I32(o, 0x38) - ax, dy = I32(o, 0x3c) - ay, r = ((int (*)(void *, void *))B(0xb2b298))(d, o);
-        if (dx * dx + dy * dy > r * r) continue;
-        if (type == 16) { stun(o, ticks, "area"); g_nstun_area++; } else { silence(o, ticks, "area"); g_nsil_area++; }
+        if (superfix_area_reach(a, d, o) < 0) continue;
+        if (type == 24) { silence(o, ticks, "area"); g_nsil_area++; } else { stun(o, ticks, type == 43 ? "hp area" : "area"); g_nstun_area++; }
     }
 }
 
@@ -135,7 +171,9 @@ typedef struct { uint8_t *ch; int id; void *spare; void *want; int mount; } Swap
 static Swap g_sw[SW_MAX]; static int g_nsw;
 static Swap *swap_rec(uint8_t *ch) {
     for (int i = 0; i < g_nsw; i++) if (g_sw[i].ch == ch) { if (g_sw[i].id != I32(ch, 8)) g_sw[i] = (Swap){ch, I32(ch, 8)}; return &g_sw[i]; }
-    if (g_nsw >= SW_MAX) return NULL;
+    if (g_nsw >= SW_MAX) {   /* full (records are never dropped): reuse one round robin; a lost spare is rebuilt from the data */
+        static int next; Swap *w = &g_sw[next++ % SW_MAX]; *w = (Swap){ch, I32(ch, 8)}; return w;
+    }
     g_sw[g_nsw] = (Swap){ch, I32(ch, 8)}; return &g_sw[g_nsw++];
 }
 static void do_swap(uint8_t *ch, Swap *w) {
@@ -158,11 +196,43 @@ static void do_swap(uint8_t *ch, Swap *w) {
 static void my_change_skill(uint8_t *ch, int slot, void *data) {
     void *ret = __builtin_return_address(0);
     if (!on() || slot != 0 || !data || !is_char(ch)) return;
-    int mount = ret == (void *)B(0xba02e4);
-    if (!mount && ret != (void *)B(0xba017c)) return;   /* MountUp mount / dismount only */
+    int rt = ret == (void *)B(0xb9c4c0);                 /* R-T's split (see the header) */
+    uint8_t *cd = rt ? ((uint8_t *(*)(void *))B(0xb6a384))(ch) : NULL;
+    int mount = ret == (void *)B(0xba02e4) || (rt && cd && data != PTR(cd, 0x260));
+    if (!mount && ret != (void *)B(0xba017c) && !rt) return;   /* MountUp mount / dismount, R-T's split / rejoin only */
     Swap *w = swap_rec(ch); if (!w) return;
     if (mount) w->spare = NULL;
     w->want = data; w->mount = mount; do_swap(ch, w);
+}
+
+/* issue #19 final: Angelo's SwitchSkill area (superfix_status.c area_extra marks its owner while he stands in it): inside, slot
+ * 0 becomes his weapon's SecondarySkill (weapon SkillData +0x158: InsectManWeaponPoison), outside his own weapon
+ * (CharacterData +0x260) again, through the swap above (a swap waits while the weapon is running). Only characters whose
+ * own weapon has a SecondarySkill are touched, and only after the area marked them (Draco's and Starr Nova's own swaps of
+ * their secondary skills are left alone). */
+typedef struct { uint8_t *ch; int id; } Sw33;
+static Sw33 g_s33[16]; static int g_ns33;   /* characters this switch put on their SecondarySkill */
+void superfix_cc_switch(uint8_t *ch, int inside) {
+    if (!on() || !is_char(ch)) return;
+    int k; for (k = 0; k < g_ns33 && !(g_s33[k].ch == ch && g_s33[k].id == I32(ch, 8)); k++) {}
+    if (!inside && k == g_ns33) return;   /* never switched here: Draco's / Starr Nova's own secondary skills stay theirs */
+    uint8_t *cd = ((uint8_t *(*)(void *))B(0xb6a384))(ch), *own = cd ? PTR(cd, 0x260) : NULL, *sec = own ? PTR(own, 0x158) : NULL;
+    uint8_t **sk = PTR(ch, 0x458);
+    if (!sec || !sk || I32(ch, 0x464) < 1 || !sk[0]) return;
+    void *cur = PTR(sk[0], 0), *want = inside ? sec : own;
+    if (cur != own && cur != sec) return;   /* another swap (Draco, R-T) owns slot 0 */
+    if (inside && k == g_ns33) { if (g_ns33 >= 16) return; g_s33[g_ns33++] = (Sw33){ch, I32(ch, 8)}; }
+    Swap *w = NULL;
+    for (int i = 0; i < g_nsw; i++) if (g_sw[i].ch == ch && g_sw[i].id == I32(ch, 8)) w = &g_sw[i];
+    if (cur == want) {
+        if (w && w->want && w->want != want) w->want = NULL;
+        if (!inside) g_s33[k] = g_s33[--g_ns33];   /* back on its own weapon: done */
+        return;
+    }
+    if (w && w->want == want) return;   /* pending */
+    if (!w) w = swap_rec(ch);
+    if (inside) w->spare = NULL;
+    w->want = want; w->mount = inside; do_swap(ch, w);
 }
 
 /* ------------------------------------------------------------------ per character tick (superfix_status.c's update hook) */
@@ -194,13 +264,14 @@ void superfix_cc_install(void) {
     hook_replace(g_libg, 0xb35c3c, (void *)my_change_skill);
     hook_enter(g_libg, 0xb73eb8, on_proj_hit);
     g_cc_on = 1;
-    LOG("[superfix] stuns, silences and Draco's weapon swap installed\n");
+    LOG("[superfix] stuns, silences and the weapon swaps (Draco, R-T) installed\n");
 }
 void env_status_counts(long o[7]) __attribute__((weak));
 void superfix_cc_status(void) {
     if (env_status_counts) { long o[7]; env_status_counts(o);
         LOG("[superfix] env (this battle): moves re-timed by statuses %ld, rooted %ld; hits scaled %ld; inputs refused %ld; "
             "moves re-sent %ld; taunted / feared steps %ld, native moves %ld\n", o[0], o[1], o[2], o[3], o[4], o[5], o[6]); }
-    LOG("[superfix] cc: stuns trap %ld, projectile %ld, area %ld; silences projectile %ld, area %ld; immune %ld; paths stopped %ld; "
-        "weapon swaps %ld (waited %ld)\n", g_nstun_trap, g_nstun_proj, g_nstun_area, g_nsil, g_nsil_area, g_nimm, g_nstop, g_nswap, g_nswap_wait);
+    LOG("[superfix] cc: stuns trap %ld, projectile %ld, area %ld; silences projectile %ld, area %ld; immune %ld; out of sight %ld; "
+        "paths stopped %ld; weapon swaps %ld (waited %ld)\n", g_nstun_trap, g_nstun_proj, g_nstun_area, g_nsil, g_nsil_area, g_nimm,
+        g_nlos_block, g_nstop, g_nswap, g_nswap_wait);
 }

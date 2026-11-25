@@ -26,7 +26,28 @@ A second battle on the same boot (issue #19 leftovers; NAMES2 shoot, every playe
      normal super (the super swaps her weapon, so both are measured on the transformed one);
  11. Sandy's super (Sandy_def_ulti, SmokeScreen r2000) dropped at her feet: an enemy 1600 units away sees her before it and
      not inside it, one 600 units away sees her throughout (the level-1 reveal distance 1200 of obs v5.9).
+A third battle (issue #19 final; NAMES3, every player has its hypercharge card, teams of two: 0+5, 1+6, ...):
+ 12. Max's hypercharged super (SpeedyOverchargedProjectile drinks to each teammate; SpeedyOverchargedArea2, ChargeSuper
+     CustomValue 1000): her teammate's super charge grows by >= DRINK_MIN;
+ 13. then her hypercharged main attack (SpeedyWeaponOverchargedBuddy; on an enemy hit SpeedyOverchargedBuddyWeaponArea,
+     GiveUlti Damage 300) hits an enemy: her teammate's super charge grows again by >= GIVE_MIN;
+ 14. Edgar's hypercharged super (EnragerOverchargedUlti, EnragerOverchargeSuper CustomValue 50 / CustomValue2 150): his ammo
+     refills >= EDGAR_RELOAD times as fast and his hits on a target charge his super >= EDGAR_CHARGE times as much as before it;
+ 15. Darryl's hypercharged roll (BarrelBotOverchargeChargeArea, BulletSpin): he fires BarrelBotOverchargedProjectile shots;
+ 16. Pam's turret (HealingStationHeal, issue #22): her teammate, shot first, gains TURRET_PCT % of Pam's max HP per heal,
+     TURRET_EVERY ticks apart (the owner's clip: power 11, 10000 HP, +1400 a second); then her hypercharged turret
+     (MinigunOverchargedHealingStationHeal, HotAndOverheals as Hot): the teammate, shot after the turret landed, gains
+     >= TURRET_HEAL HP within 30 ticks (the turret's heal, before regeneration starts);
+ 17. Angelo's super (InsectManUltiSwitchSkillArea, SwitchSkill) at his feet: his attack inside fires another projectile
+     (InsectManWeaponPoison's) than before.
+A fourth battle (gadgets):
+ 18. Fang's Roundhouse Kick (KickerDudeSweepStun: Stun 10 ticks, RequireLineOfSight) next to a wall: an enemy 600 units
+     away in the open is stunned (moves < STUN_MOVE), one 600 units away behind the wall is not;
+ 19. Meeple's RageQuit (MeepleRageQuitArea, HpBasedStun) after she took damage: an enemy 600 units away is stunned;
+ 20. Damian's wall gadget (GladiatorGadgetSkillWallArea, GladiatorWallSpawn 26): tiles around its landing become
+     GladiatorWallDefault (live map).
 python -m status_check            python -m status_check --check   (no host: the judging rules)
+--battles 3,4 runs only those battles (default all four).
 --host-args '--env-arg ...' passes extra host arguments; NB_SUPERFIX=0 in the environment turns the host parts off
 (scenes 2-5 then fail), NB_SUPERFIX_CC=0 the stuns and Draco's swap (scenes 4, 5)."""
 import argparse, math, sys, time
@@ -43,6 +64,16 @@ NAMES2 = ["Skater", "Mender", "MagicalGirl", "Sandstorm", "ShotgunGirl"]   # bat
 TAUNT_AWAY = 150          # units a taunted target may gain from Ollie while it tries to walk away (6 steps walk ~460 u)
 STEAL_MIN = 0.2           # Starr Nova's heal / her super's damage (LifeSteal 30 %, with room for regen and rounding)
 RELOAD_MIN = 3.0          # refill after her hypercharged / normal super (reload 10x faster while it lasts: ~700 vs ~70 a tick)
+NAMES3 = ["Speedy", "Enrager", "BarrelBot", "MinigunDude", "InsectMan"]   # battle 3 (issue #19 final), teams i / i + 5
+NAMES4 = ["KickerDude", "Meeple", "Gladiator"]                          # battle 4 (gadgets)
+GADGETS4 = {"KickerDude": 23000464, "Meeple": 23000878, "Gladiator": 23001248}   # KickerDude_Sweep, Meeple_RageQuit, Gladiator_Wall
+DRINK_MIN = 900           # super charge from Max's drink (ChargeSuper CustomValue 1000 of 4000)
+GIVE_MIN = 250            # super charge from one GiveUlti area (Damage 300)
+EDGAR_RELOAD = 1.3        # ammo refill after / before his hypercharged super (CustomValue 50 %: 1.5x)
+EDGAR_CHARGE = 1.8        # super charge per damage dealt after / before (CustomValue2 150 %: 2.5x)
+TURRET_HEAL = 300         # HP in 30 ticks from the hypercharged turret's Hot (one heal of 1400 at least, with room)
+TURRET_PCT, TURRET_EVERY = 14, 20   # Pam's turret: % of her max HP per heal, ticks between heals (the owner's clip, #22)
+GLAD_WALL = 27000000 + 69 # tiles.csv row of GladiatorWallDefault (DynamicCode 26) as a tile data id (checked in _check)
 TARGET = SA.FILLER
 SPEED = {"Speedy": 820, "DragonRider": 720, "ShotgunGirl": 770}   # characters.csv Speed (u/s)
 
@@ -117,6 +148,54 @@ def judge_smoke(far0, far1, near1):
     return bad
 
 
+def judge_gain(g, need, what):
+    return [] if g >= need else ["%s: super charge +%d, want >= %d" % (what, g, need)]
+
+
+def judge_ratio(a, b, need, what):
+    if b <= 0: return ["%s: nothing to compare with (before %s, after %s)" % (what, b, a)]
+    return [] if a >= need * b else ["%s: %.0f after vs %.0f before (want x%.1f)" % (what, a, b, need)]
+
+
+def judge_kinds(k0, k1, what):
+    if not k0 or not k1: return ["%s: nothing fired (before %s, after %s)" % (what, sorted(k0), sorted(k1))]
+    return [] if not (k0 & k1) else ["%s: the same projectile before and after (%s / %s)" % (what, sorted(k0), sorted(k1))]
+
+
+def judge_turret(gains, pam_max):
+    """gains: [(tick, hp gained)] of the teammate beside Pam's turret; >= 2 heals of TURRET_PCT % of pam_max (regeneration
+    and the cap give other sizes), consecutive ones TURRET_EVERY ticks apart"""
+    want = pam_max * TURRET_PCT // 100; ts = [t for t, g in gains if abs(g - want) <= 1]
+    if len(ts) < 2: return ["Pam's turret: heals %s, want 2+ of %d (%d %% of %d)" % (gains, want, TURRET_PCT, pam_max)]
+    gaps = sorted({b - a for a, b in zip(ts, ts[1:])})
+    return [] if gaps == [TURRET_EVERY] else ["Pam's turret: heals of %d at ticks %s, want %d apart" % (want, ts, TURRET_EVERY)]
+
+
+def judge_los(open_moved, wall_moved):
+    """also Meeple's RageQuit: the stunned enemy, then the same enemy once the stun is over"""
+    bad = []
+    if open_moved > STUN_MOVE: bad.append("the enemy in the open moved %.0f u after Fang's kick" % open_moved)
+    if wall_moved < 2 * STUN_MOVE: bad.append("the enemy behind the wall moved only %.0f u (stunned through the wall?)" % wall_moved)
+    return bad
+
+
+def wall_spot(location=SA.MAP):
+    """a row with 5 open tiles, a wall tile (walls above and below too), 3 open tiles: -> (fang, open enemy, walled enemy)
+    world positions (Fang next to the wall, the enemies 2 tiles from him on either side)"""
+    from nbpc import diversity as D
+    ids, rows = D.map_reference(location); H, W = len(rows), len(rows[0]); T = D.table("tiles.csv")
+    blk = {i for _, (i, r) in T.items() if r.get("BlocksProjectiles") == "true"}
+    walk = {i for _, (i, r) in T.items() if r.get("BlocksMovement") != "true" and r.get("BlocksProjectiles") != "true"}
+    g = np.array(ids).reshape(H, W); raw = np.array([list(r) for r in rows])
+    op = np.isin(g, list(walk)) & ~np.char.isdigit(raw); wl = np.isin(g, list(blk))
+    for y in range(2, H - 2):
+        for x in range(6, W - 4):
+            if wl[y - 1:y + 2, x].all() and op[y, x - 5:x].all() and op[y, x + 1:x + 4].all() and op[y - 1:y + 2, x - 5:x].all():
+                c = lambda tx: ((tx + 0.5) * TILE, (y + 0.5) * TILE)
+                return c(x - 1), c(x - 3), c(x + 1)
+    return None
+
+
 def judge_mount(v, v0, proj0, proj1):
     bad = judge_faster(v, v0, "Draco mounted", need=0.12 * v0)
     if not proj0 or not proj1: bad.append("Draco's attack fired nothing (before %s, mounted %s)" % (sorted(proj0), sorted(proj1)))
@@ -179,6 +258,7 @@ def main():
     ap.add_argument("--host-args", default="", help="extra game host arguments")
     ap.add_argument("--verbose", action="store_true", help="print raw values of the leftover scenes")
     ap.add_argument("--tag", default="sc", help="instance tag (two checks at once need two tags)")
+    ap.add_argument("--battles", default="1,2,3,4", help="which battles to run (1-4)")
     a = ap.parse_args()
     if a.check: return _check()
     from nbpc import diversity as D
@@ -186,17 +266,31 @@ def main():
     spots = SA.find_spots(SA.MAP); info = {n: SA.expected(n) for n in NAMES}
     inst = Instance(0, tag=a.tag, extra_args=a.host_args.split()); t0 = time.time(); inst.start(); inst.wait_ready()
     print("status_check: host ready in %.0f s" % (time.time() - t0), flush=True)
-    fails = {}
+    fails = {}; B = {int(x) for x in a.battles.split(",") if x}
     try:
+        battles(inst, a, spots, info, fails, B)
+    finally:
+        inst.close()
+    bad = 0
+    for k, f in fails.items():
+        print("%-24s %s" % (k, "ok" if not f else "FAIL: " + "; ".join(f))); bad += bool(f)
+    sys.exit(1 if bad else 0)
+
+
+def battles(inst, a, spots, info, fails, B):
+    from nbpc import diversity as D
+    home = {i: spots[i][:2] for i in range(10)}
+
+    def at(i, k=0):   # player i on spot k, facing its corridor
+        x, y, (dx, dy) = spots[k][0], spots[k][1], spots[k][2][0]
+        return (x, y), (dx, dy), dir_of(dx, dy)
+
+    def dist(r, i, j): return float(np.hypot(r.pl[i].x - r.pl[j].x, r.pl[i].y - r.pl[j].y))
+    if 1 in B:
         names = NAMES + [TARGET] * (10 - len(NAMES))
         inst.reset(93600000 + a.seed, gas=0, flags=0, native_mask=0, obs_mask=0, div=D.make_div(location=SA.MAP, chr=names))
         R = Run(inst); R.step(ticks=10)
-        home = {i: spots[i][:2] for i in range(10)}
         R.place(home)
-
-        def at(i, k=0):   # player i on spot k, facing its corridor
-            x, y, (dx, dy) = spots[k][0], spots[k][1], spots[k][2][0]
-            return (x, y), (dx, dy), dir_of(dx, dy)
 
         # 1. plain walks
         v = {}
@@ -266,13 +360,11 @@ def main():
               (far0, far1, far2, near1), flush=True)
         fails["Leon invisible"] = judge_invis(far0, far1, far2, near1)
 
-        # battle 2 (issue #19 leftovers)
+    if 2 in B:   # battle 2 (issue #19 leftovers)
         names = NAMES2 + [TARGET] * (10 - len(NAMES2)); info2 = {n: SA.expected(n) for n in NAMES2[:4]}
         div = D.make_div(location=SA.MAP, chr=names); div["hyper"] = list(range(10))
         inst.reset(93600001 + a.seed, gas=0, flags=0, native_mask=0, obs_mask=0, div=div)
         R = Run(inst); R.step(ticks=10); R.place(home)
-
-        def dist(r, i, j): return float(np.hypot(r.pl[i].x - r.pl[j].x, r.pl[i].y - r.pl[j].y))
 
         # 7. Ollie's super on target 5 (600 u), then the target walks away from him, shooting at him
         p, (dx, dy), d = at(0, 0); tp = (p[0] + dx * 600, p[1] + dy * 600); aim = float(np.degrees(np.arctan2(dy, dx)))
@@ -337,12 +429,152 @@ def main():
         far1, near1 = R.sees(8, 3), R.sees(9, 3)
         print("status_check: Sandy seen from 1600 u before / in her sandstorm %s %s, from 600 u in it %s" % (far0, far1, near1), flush=True)
         fails["Sandy smoke screen"] = judge_smoke(far0, far1, near1)
-    finally:
-        inst.close()
-    bad = 0
-    for k, f in fails.items():
-        print("%-24s %s" % (k, "ok" if not f else "FAIL: " + "; ".join(f))); bad += bool(f)
-    sys.exit(1 if bad else 0)
+    if 3 in B:   # battle 3 (issue #19 final): hypercharged supers and Angelo; teams i / i + 5
+        names = NAMES3 + [TARGET] * (10 - len(NAMES3))
+        div = D.make_div(location=SA.MAP, chr=names); div["hyper"] = list(range(10)); div["team_groups"] = [1, 2, 3, 4, 5] * 2
+        inst.reset(93600002 + a.seed, gas=0, flags=0, native_mask=0, obs_mask=0, div=div)
+        R = Run(inst); R.step(ticks=10); R.place(home)
+
+        def hyper_super(i, aim, sd):
+            inst.setup(super_fill=[i], hyper_fill=[i]); R.step(ticks=1)
+            R.step({i: (-1, 4, aim, 0.0)}, 1); return R.step({i: (-1, 2, aim, sd)}, 1)
+
+        def sc(r, i): return int(r.pl[i].super_charge)
+
+        # 12. Max (spot 0), teammate 5 at 600 u, enemy 6 at 500 u the other way
+        p, (dx, dy), d = at(0, 0); aim = float(np.degrees(np.arctan2(dy, dx)))
+        r = R.place({0: p, 5: (p[0] + dx * 600, p[1] + dy * 600), 6: (p[0] - dx * 500, p[1] - dy * 500)}); c0 = sc(r, 5)
+        hyper_super(0, aim, 0.5)
+        for _ in range(25): r = R.step()   # the drink flies (ConstantFlyTime) and lands
+        c1 = sc(r, 5)
+        print("status_check: Max's hypercharged super: teammate's super charge %d -> %d" % (c0, c1), flush=True)
+        fails["Max drink ChargeSuper"] = judge_gain(c1 - c0, DRINK_MIN, "teammate after Max's drink")
+        # 13. still hypercharged: two main attacks at enemy 6
+        mk = set()
+        for _ in range(2):
+            R.step({0: (-1, 1, aim + 180, 0.0)}, 1)
+            for _ in range(6): r = R.step(); mk |= {SA.data_name(k) for k in R.proj_kinds(0)}
+        if a.verbose: print("  max projectiles", sorted(mk), "hyper left", int(r.hyp_left[0]), flush=True)
+        c2 = sc(r, 5)
+        print("status_check: Max's hypercharged attacks: teammate's super charge %d -> %d (enemy hp %d)" % (c1, c2, r.pl[6].hp), flush=True)
+        if "SpeedyOverchargedBuddyProjectile" in mk:   # GiveUlti comes with the buddy weapon only (notes/issue19-final.md)
+            fails["Max attack GiveUlti"] = judge_gain(c2 - c1, GIVE_MIN, "teammate after Max's hypercharged hits")
+
+        # 14. Edgar (spot 1): target 7 (another team) at 250 u; reload and charge per hit before and after his hypercharged super
+        def edgar_round(tag):
+            s = []; c0 = sc(R.step(), 1); h0 = int(R.step().pl[7].hp)
+            for _ in range(3):
+                R.step({1: (-1, 1, aim1, 0.0)}, 1); r = R.step(ticks=3); s.append(int(r.pl[1].ammo))
+            for _ in range(3): r = R.step()
+            refill = max((y - x for x, y in zip(s, s[1:]) if x < 3000), default=0)
+            if a.verbose: print("  edgar", tag, "ammo", s, "charge", c0, sc(r, 1), "target hp", h0, int(r.pl[7].hp), flush=True)
+            return refill, (sc(r, 1) - c0) / max(1, h0 - int(r.pl[7].hp))   # super charge per damage dealt
+        p, (dx, dy), d = at(1, 1); aim1 = float(np.degrees(np.arctan2(dy, dx)))
+        R.place({1: p, 7: (p[0] + dx * 250, p[1] + dy * 250)})
+        for _ in range(20): R.step()
+        g0, h0 = edgar_round("before")
+        R.place({1: p, 7: (p[0] + dx * 250, p[1] + dy * 250)})
+        hyper_super(1, aim1 + 180, 0.3)   # the jump away from the target, back after the landing
+        for _ in range(10): R.step()
+        R.place({1: p, 7: (p[0] + dx * 250, p[1] + dy * 250)})
+        for _ in range(20): R.step()   # ammo full again (the area lives 7 s)
+        g1, h1 = edgar_round("after")
+        print("status_check: Edgar: ammo refill %d -> %d, super charge per damage %.3f -> %.3f after his hypercharged super" % (g0, g1, h0, h1), flush=True)
+        fails["Edgar hyper reload / charge"] = judge_ratio(g1, g0, EDGAR_RELOAD, "Edgar's ammo refill") + judge_ratio(h1, h0, EDGAR_CHARGE, "Edgar's super charge per damage")
+
+        # 15. Darryl (spot 2): his hypercharged roll along the corridor
+        p, (dx, dy), d = at(2, 2); aim = float(np.degrees(np.arctan2(dy, dx))); R.place({2: p})
+        hyper_super(2, aim, 0.8); kinds = set()
+        for _ in range(20): R.step(); kinds |= {SA.data_name(k) for k in R.proj_kinds(2)}
+        print("status_check: Darryl's hypercharged roll: projectiles %s" % sorted(kinds), flush=True)
+        fails["Darryl BulletSpin"] = [] if "BarrelBotOverchargedProjectile" in kinds else ["Darryl's roll fired no BarrelBotOverchargedProjectile (%s)" % sorted(kinds)]
+
+        # 16. Pam (spot 3): teammate 8 at 600 u, the turret thrown 300 u (between them); enemy 9 shoots 8 from 500 u to the
+        # side (a clear corridor of the spot, perpendicular), clear of the turret. First her normal turret, after one shot
+        p, (dx, dy), d = at(3, 3); aim = float(np.degrees(np.arctan2(dy, dx)))
+        qx, qy = next(((u, v) for u, v in spots[3][2] if u * dx + v * dy == 0), (-dy, dx))
+        t8 = (p[0] + dx * 600, p[1] + dy * 600); r = R.place({3: p, 8: t8, 9: (t8[0] + qx * 500, t8[1] + qy * 500)})
+        aim9 = float(np.degrees(np.arctan2(-qy, -qx))); R.step({9: (-1, 1, aim9, 0.0)}, 1)
+        for _ in range(4): r = R.step()
+        pam_max = int(r.pl[3].max_hp)
+        R.fire(3, aim, min(1.0, 300 / SA.expected("MinigunDude")["range"])); last, gains = int(r.pl[8].hp), []
+        for _ in range(70):
+            r = R.step(ticks=1); h = int(r.pl[8].hp)
+            if h > last: gains.append((int(r.tick), h - last))
+            last = h
+        print("status_check: Pam's turret: teammate gains %s (Pam max hp %d)" % (gains, pam_max), flush=True)
+        fails["Pam turret heal 14 %"] = judge_turret(gains, pam_max)
+        # then her hypercharged turret, the enemy's shots after its instant heal
+        R.place({3: p, 8: t8, 9: (t8[0] + qx * 500, t8[1] + qy * 500)})
+        hyper_super(3, aim, min(1.0, 300 / SA.expected("MinigunDude", True)["range"]))
+        for _ in range(20): R.step()   # the turret lands, its instant heal is over
+        aim9 = float(np.degrees(np.arctan2(-qy, -qx)))
+        for _ in range(2):
+            R.step({9: (-1, 1, aim9, 0.0)}, 1)
+            for _ in range(3): r = R.step()
+        hp0 = int(r.pl[8].hp)
+        if a.verbose:
+            st = SA.parse_state(inst.state_bytes())
+            print("  pam objects", sorted(SA.data_name(c[1]) for c in st["ch"] if int(c[2]) == 3),
+                  sorted(SA.data_name(t[1]) for t in st["it"] if int(t[2]) == 3), flush=True)
+        for _ in range(15): r = R.step()
+        hp1 = int(r.pl[8].hp)
+        print("status_check: Pam's hypercharged turret: teammate hp %d -> %d in 30 ticks (max %d)" % (hp0, hp1, r.pl[8].max_hp), flush=True)
+        fails["Pam turret HotAndOverheals"] = ([] if hp0 < r.pl[8].max_hp and hp1 - hp0 >= TURRET_HEAL else
+                                               ["Pam's teammate: hp %d -> %d (max %d), want +%d" % (hp0, hp1, r.pl[8].max_hp, TURRET_HEAL)])
+
+        # 17. Angelo (spot 4): an attack, then his super at his feet, then an attack inside it
+        p, (dx, dy), d = at(4, 4); aim = float(np.degrees(np.arctan2(dy, dx))); R.place({4: p})
+        R.fire(4, aim, kind=1); R.step(); k0 = {SA.data_name(k) for k in R.proj_kinds(4)}
+        for _ in range(15): R.step()
+        R.fire(4, aim + 180, 0.05)
+        for _ in range(10): R.step()
+        k1 = set()
+        R.fire(4, aim, kind=1)
+        for _ in range(3): R.step(); k1 |= {SA.data_name(k) for k in R.proj_kinds(4)}
+        k1 -= k0 | {"InsectManUltiProjectile"}
+        print("status_check: Angelo's attack before his super %s, inside it %s" % (sorted(k0), sorted(k1)), flush=True)
+        fails["Angelo SwitchSkill"] = judge_kinds(k0, k1, "Angelo's attack in his super")
+    if 4 in B:   # battle 4 (issue #19 final): gadgets
+        names = NAMES4 + [TARGET] * (10 - len(NAMES4))
+        div = D.make_div(location=SA.MAP, chr=names); div["gadget"] = [GADGETS4.get(n, 0) for n in names]
+        inst.reset(93600003 + a.seed, gas=0, flags=0, native_mask=0, obs_mask=0, div=div)
+        R = Run(inst); R.step(ticks=10); R.place(home)
+
+        # 18. Fang next to a wall: enemy 5 in the open, 6 behind the wall, both 600 u away, both walk away from him
+        ws = wall_spot()
+        if ws is None: fails["Fang LoS stun"] = ["no wall spot on %s" % SA.MAP]
+        else:
+            f, eo, ew = ws; R.place({0: f, 5: eo, 6: ew})
+            R.step({0: (-1, 3, 0.0, 0.0)}, 1)
+            _, mo, _ = R.walk(5, 8, steps=3)   # 5 walks -x while stunned (10 ticks), then 6 walks +x
+            _, mw, _ = R.walk(6, 0, steps=3)
+            print("status_check: Fang's kick at %s: enemy in the open moved %.0f u, behind the wall %.0f u" % (f, mo, mw), flush=True)
+            fails["Fang LoS stun"] = judge_los(mo, mw)
+
+        # 19. Meeple (spot 1): enemy 7 (250 u) shoots her once, then her RageQuit; 7 walks away, and again later
+        p, (dx, dy), d = at(1, 1); aim = float(np.degrees(np.arctan2(dy, dx)))
+        R.place({1: p, 7: (p[0] + dx * 250, p[1] + dy * 250)})
+        for _ in range(1):
+            R.step({7: (-1, 1, aim + 180, 0.0)}, 1)
+            for _ in range(8): r = R.step()
+            if a.verbose: print("  meeple hp", r.pl[1].hp, flush=True)
+        hp = int(r.pl[1].hp); R.step({1: (-1, 3, aim, 0.0)}, 1)
+        _, mv, _ = R.walk(7, d, steps=3)
+        for _ in range(20): R.step()
+        _, mv2, _ = R.walk(7, (d + 8) % 16, steps=3)
+        print("status_check: Meeple's RageQuit at hp %d / %d: the enemy moved %.0f u, later %.0f u" % (hp, r.pl[1].max_hp, mv, mv2), flush=True)
+        fails["Meeple RageQuit stun"] = judge_los(mv, mv2)
+
+        # 20. Damian (spot 2): his wall gadget thrown 900 u along the corridor
+        p, (dx, dy), d = at(2, 2); aim = float(np.degrees(np.arctan2(dy, dx))); R.place({2: p})
+        inst.step(actions={**R.idle, 2: (-1, 3, aim, 1.0)}, ticks=1, flags=R.P.F_STATE | R.P.F_MAP, native_mask=0, obs_mask=0)
+        n = 0
+        for _ in range(12):
+            inst.step(actions=R.idle, ticks=2, flags=R.P.F_STATE | R.P.F_MAP, native_mask=0, obs_mask=0)
+            n = max(n, int((inst.map_tiles() == GLAD_WALL).sum()))
+        print("status_check: Damian's wall gadget: %d GladiatorWallDefault tiles" % n, flush=True)
+        fails["Damian wall gadget"] = [] if n > 0 else ["no GladiatorWallDefault tile after Damian's wall gadget"]
 
 
 def _check():
@@ -360,6 +592,16 @@ def _check():
     assert not judge_reload(71, 714) and judge_reload(71, 150) and judge_reload(0, 700)
     assert not judge_smoke(True, False, True) and judge_smoke(True, True, True) and judge_smoke(False, False, True)
     assert not judge_invis(True, False, True, True) and judge_invis(True, True, True, True) and judge_invis(True, False, False, True)
+    assert not judge_gain(1000, DRINK_MIN, "x") and judge_gain(0, DRINK_MIN, "x")
+    assert not judge_ratio(150, 100, 1.3, "x") and judge_ratio(110, 100, 1.3, "x") and judge_ratio(100, 0, 1.3, "x")
+    assert not judge_kinds({"a"}, {"b"}, "x") and judge_kinds({"a"}, {"a"}, "x") and judge_kinds(set(), {"b"}, "x")
+    assert not judge_los(20, 400) and judge_los(300, 400) and judge_los(20, 50)
+    assert not judge_turret([(238, 1400), (258, 1400), (271, 1014), (278, 200)], 10000)
+    assert judge_turret([(238, 304), (258, 304)], 10000) and judge_turret([(238, 1400), (268, 1400)], 10000)
+    assert judge_turret([(238, 1400)], 10000)
+    from nbpc import diversity as D
+    assert D.table("tiles.csv")["GladiatorWallDefault"][0] == GLAD_WALL
+    ws = wall_spot(); assert ws is not None and ws[0][1] == ws[1][1] == ws[2][1] and ws[2][0] - ws[1][0] == 4 * TILE
     print("status_check judging ok")
 
 

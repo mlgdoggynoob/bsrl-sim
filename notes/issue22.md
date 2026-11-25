@@ -16,9 +16,36 @@ sources (the fandom wiki, Supercell's release notes). 1 tile = 300 u, 1 tick = 5
 - Mico's landing hit: LeaperUltiAreaExplosion Radius 700, already read from the area. In the air 6 s (ActiveTime 6000, wiki).
 - Piper's bombs: SniperBombExplosion Radius 600.
 - Duo / Trio respawn: 17 s (`RespawnSeconds`) and 3 s of protection after it (wiki: "immunity shield for 3 seconds").
-- Bibi's Vitamin Booster: CustomValue1 10 = 10 % of max hp per second for 4 s; on her power-1 hp that is 500/s, the
-  card's and the Feb 2026 notes' 1000/s at power 11. The gap in #22 is the damage model's (below), not the gadget's.
+- Bibi's Vitamin Booster: CustomValue1 10 = 10 % of max hp per second for 4 s. The sim's brawlers have their power-11 hp
+  (Bibi 10000, below), so that is the card's and the Feb 2026 notes' 1000/s.
 - Meteor 2000 damage / 1200 radius, mushroom 1000 per second / 1000 radius / 5 s (already from the data).
+
+## Settled by the owner's clip: the damage and heal model (power 11)
+
+The owner's screen recording (training cave, Pam at power 11): 10000 max hp (data Hitpoints 5000); her turret
+(HealingStationHeal: Damage -10, DamageScaleType 2, Type Hot) healed +1400 a tick, ticks 1.0 s apart (8000 -> 9400 at
+t = 8.6 s, -> 10000, capped, at 9.6 s). So heals are power-11 numbers like damage. `engine/patches/heal_scale.patch`.
+
+How the sim models it (measured before the patch, a probe in a duo battle): brawlers spawn with their power-11 hp from
+libg's own level table (Pam 10000, Shelly 7800 = 2 x 3900); damage is x2 in `env.c` `my_root` (one Shelly shot 3000);
+summons keep their data hp (Pam's turret 3040), and libg's level scale 0xb565a8 is the identity (server code). The turret
+healed 304 a second (10 % of its own 3040). Heals per path, after the patch:
+
+| Heal | Where | Power 11 |
+|---|---|---|
+| Pam's turrets (normal and hypercharged) | `superfix.c` summon Hot | 14 % of Pam's max hp (`TURRET_HEAL_PCT`, the clip; the data says 10, the wiki 12 % "of Pam's maximum health"), every 20 ticks. `status_check` scene 16: +1400, +1400, 20 ticks apart. |
+| Heal areas (Heal, Hot, HealRegen; hyper.c's heal on deploy) | area create 0xb2aefc hooked in `env.c` | the heal word x2, except DamageScaleType 2 of a brawler owner (already a percent of power-11 hp) |
+| Status Healing (Byron's SnakeOilHot 380, Gus, Bull's gadget, ...) | `superfix_status.c` trigger | x2 (power-1 data) |
+| Poco's super ally / own heal | `superfix.c` heal own | projectile Damage x HealOwnPercent x2 |
+| R-T's rejoin | `superfix_moves.c` | card Value3 1000 x2 |
+| Regeneration, lifesteal, gadget HEAL / HEAL_NOW (% of max hp or of damage taken), hyper.c's DamageScaleType 2 fallback | libg 0xb3adc4 / 0xb439c4, `gadget.c` | unchanged: a percent of power-11 hp or of power-11 damage |
+| Berry's paint (660/s at P11) and dash heal (skill Damage x2) | `env.c` zones / charge | unchanged: already power-11 numbers (#5) |
+| Showdown healing mushrooms (1000/s) | `showdown_mods.c` | unchanged: a mode number, not a brawler's |
+
+`NB_HEAL_SCALE=0` turns the heal-area scaling off. A probe of healers under the native AI (two duo battles) saw libg heal
+only through regeneration (0xb3adc4) and lifesteal (0xb439c4); the other 17 libg callers of 0xb41554 were not reached and
+are left as they are. Not modelled: summons' power-11 hp (the turret still has 3040, half the game's), the hypercharged
+turret's overheal shield.
 
 ## Still guesses: what would settle each
 
@@ -31,5 +58,4 @@ sources (the fandom wiki, Supercell's release notes). 1 tile = 300 u, 1 tick = 5
 | Storm schedule: first step at tick 440, one tile per 5 s | `env.c` `gas_step` | The phone agent's measured clock. Not in the data or on the wiki. | One full Solo Showdown from the start: the time of each ring change. |
 | Storm damage: 20 % of max hp per second, +5 %/s after 5 s | `env.c` `gas_tick` | The phone agent's numbers. The wiki still says flat 1000 + 300; April 2026 notes add more damage deeper in the gas, with no amount. | A brawler standing at the gas edge and one 2 tiles in, with the damage numbers visible. |
 | Meteor / mushroom first spawn, interval, how fast it shortens | `showdown_mods.c` `MET_FIRST`..`MUSH_GAP_MIN` | No column; wiki only says "more often as the match goes on". | One full match of each modifier: the time of every spawn. |
-| Damage model: x2 at power 11 for damage, none for heals | `env.c` `my_root` | No level factor in the data. Heal areas have a `DamageScaleType` column (most heals 2), so heals likely scale in the game too; the wiki's power-level page is stale. | A power-11 brawler's hp at spawn and one hit and one heal (Pam's station) against a dummy. This one moves every battle, so do it first. |
 | Byron's Shot in the Arm | `gadget.c` HEAL | CustomValue1 25; the card's numbers are code-filled. Sources disagree (800/s vs 597/s). | Byron uses it at full health minus a known amount; read the heal numbers. |

@@ -26,6 +26,10 @@ extern int g_nmods;
 /* logging */
 extern int g_verbose;
 extern FILE *g_log;
+/* power 11 (issue #22): the sim's brawlers have their power-11 HP (libg's level table: Pam 10000 = 2 x Hitpoints 5000), the
+ * level scale 0xb565a8 is the identity (server code), so damage (env.c my_root) and heals from power-1 data numbers are
+ * multiplied by this; heals that are a percent of a brawler's max HP or of dealt damage are already power-11 numbers */
+#define P11_SCALE 2
 #define LOG(...) do { fprintf(g_log, __VA_ARGS__); fflush(g_log); } while (0)
 #define VLOG(...) do { if (g_verbose) { fprintf(g_log, __VA_ARGS__); fflush(g_log); } } while (0)
 

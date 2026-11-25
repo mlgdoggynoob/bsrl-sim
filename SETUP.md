@@ -132,6 +132,34 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   makes her small Meg (no kill, no duo / trio knock-out, super reset, no other hit that tick); knocked out as small Meg
   she respawns in her mech (`respawn_tick`). `hyper.c` `hyper_char_changed`: a running hypercharge follows any character
   change. `python -m charge_check` scene 5.
+- `split_and_paint.patch` (issues #6 / #5, a diff on top of `meg_mech.patch`): R-T's split and Berry's paint.
+  `superfix_moves.c`: the partner getter 0xb392d4 (compiled out) finds R-T's legs and the legs' head, and the host runs his
+  Brawler_Splitter component tick 0xb9c42c, which libg never calls: while split his weapon is the legs' Eat Static (both
+  blast when he attacks, client code) and he walks +100 faster (the stub 0xb5901c at that call site only, through
+  `superfix_status_speed`); his second super puts him where his legs stand, removes them and heals him by 1000
+  (SplitterLegs_ulti Value3); legs whose head is knocked out go too. `superfix_cc.c`: the weapon swap takes R-T's call
+  site. `env.c`: Berry's paint (DamageScaleType 4) is a percent of his main attack Damage (660 damage / 330 heal per second
+  at power 1, x2 at power 11) and his dash heals the teammates he passes by the skill's Damage. `python -m charge_check`
+  scenes 4 and 6.
+- `status_final.patch` (issue #19 final, a diff on top of `split_and_paint.patch`): `superfix_cc.c` applies Stun, Silence
+  and HpBasedStun areas (Meeple's RageQuit, longer the less HP she has) with libg's own target test (circle, InnerRadius
+  ring, RequireLineOfSight through the tile map's line test: Fang's sweep) and swaps Angelo's weapon to its SecondarySkill
+  inside his SwitchSkill area. `superfix_status.c` runs more area types the apply drops: ChargeSuper and GiveUlti (Max's
+  hypercharge), EnragerOverchargeSuper (Edgar: reload and super charge), BulletSpin (Darryl), HotAndOverheals (Pam's
+  turret, as Hot). `superfix.c`: Max's hypercharged drinks to each teammate, and a summon's own AreaEffect (the turrets'
+  heal, 8-Bit's booster, ...), which no client code spawns. `spawnfix.c`: Meeple's and Damian's wall areas. `gadget.c`: Fang's
+  sweep, Painter's push and Meeple's RageQuit are AREA gadgets. `env.c`: Edgar's super charge percent. `python -m status_check`
+  scenes 12-20.
+- `heal_scale.patch` (issue #22, a diff on top of `status_final.patch`): heals at power 11, like damage (the owner's clip:
+  Pam's turret +1400 a second at 10000 hp). `nbhost.h`: `P11_SCALE` 2. `env.c` hooks the area create 0xb2aefc: a heal
+  word from power-1 numbers is x2 (not DamageScaleType 2 of a brawler, already a percent of power-11 hp; `NB_HEAL_SCALE=0`
+  off). `superfix.c`: Pam's turrets heal 14 % of Pam's max hp a second (the clip; the data's 10 % of the turret's own hp
+  gave 304), Poco's super heal x2. `superfix_status.c`: status Healing x2. `superfix_moves.c`: R-T's rejoin heal x2.
+  `python -m status_check` scene 16. Notes: `notes/issue22.md`. Also (#6) Bonnie's hypercharged teeth: `spawnfix.c` starts
+  BulletExplosion bullets BulletExplosionBulletOffset units from the centre (a ring; `NB_SPAWNFIX_OFFSET=0` off), and
+  `env.c` charge_land gives the DamageScaleType 4 chain its Damage % of the skill's Damage (`notes/issue6-leftovers.md`).
+  And (#19) `superfix.c`: a summon area of DamageScaleType 1 / 3 on a summon without that skill is made with type 0 (8-Bit's
+  booster crashed the host; `notes/issue19-final.md`).
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
