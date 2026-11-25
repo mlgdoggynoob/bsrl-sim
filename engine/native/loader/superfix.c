@@ -90,9 +90,12 @@ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind,
  * client code creates it: the summons exist (state rows) but no area ever follows them (a host run with Pam's turret: no area
  * object, no area tick). From the character update (superfix_status.c), once per summon (not a brawler, 0xb34de4), when no
  * area of that data already follows it, the area is spawned at it through the chain above with follow and start, kind 2, no
- * extra damage (gadget.c's area spawn). It ends when its summon is gone (end tick +0xd8 set to now at its next tick). A Hot
- * area's apply heals the allies inside once (the spawn apply), so a summon's Hot area (the turrets) is applied again every
- * HOT_EVERY ticks while it lives, with +0xd0 / +0xd4 / +0xd8 restored as for DelayedDamage. */
+ * extra damage (gadget.c's area spawn). It ends when its summon is gone (end tick +0xd8 set to now at its next tick). A
+ * summon's Hot area (Pam's turrets; HotAndOverheals is Hot by then, superfix_status.c) heals nobody through libg's apply here
+ * (a live run: the teammate stayed at 6600 / 7800 beside the turret): every HOT_EVERY ticks while it and its summon live,
+ * every hurt ally of the area's team that libg's target test reaches (the summon itself not) is healed through libg's heal
+ * 0xb41554 by -Damage % of the summon's max HP (DamageScaleType 2: 10 % of 4200 = 420 for the hypercharged turret) or
+ * -Damage. [?] the client has no rate or scale rule for it. */
 typedef struct { int ch_id, area_id; uint8_t *a; } SumArea;
 #define SA_MAX 32
 static SumArea g_sa[SA_MAX]; static int g_nsa; static long g_nsum_area, g_nsum_end;
@@ -113,13 +116,24 @@ void superfix_summon_area(uint8_t *ch) {
     if (a) g_nsum_area++;
     LOG("[superfix] summon area: ch %d (data %d) gets area %d type %d -> %p\n", id, I32(cd, 0x20), I32(ad, 0x20), I32(ad, 0x118), a);
 }
-#define HOT_EVERY 20   /* ticks between a summon's Hot area applies [?]: the client has no rate; the turret heals per second */
+#define HOT_EVERY 20   /* ticks between a summon's Hot area heals [?]: the client has no rate; the turret heals per second */
+long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) __attribute__((weak));   /* superfix_cc.c: libg's target test */
 static long g_nsum_hot;
 static void summon_area_end(uint8_t *a, uint8_t *sim) {   /* from the area tick: the summon gone -> the area ends now */
     for (int i = 0; i < g_nsa; i++) if (g_sa[i].a == a && g_sa[i].area_id == I32(a, 8)) {
-        uint8_t *d = PTR(a, 0x10); int now = I32(sim, 0x10), d0 = I32(a, 0xd0), d4 = I32(a, 0xd4), d8 = I32(a, 0xd8);
-        if (d && I32(d, 0x118) == 4 && now > d0 && (now - d0) % HOT_EVERY == 0 && now < d8) {   /* Hot: libg's apply heals once */
-            ((void (*)(void *))B(0xb29494))(a); I32(a, 0xd0) = d0; I32(a, 0xd4) = d4; I32(a, 0xd8) = d8; g_nsum_hot++;
+        uint8_t *d = PTR(a, 0x10), *own = PTR(a, 0x108); int now = I32(sim, 0x10), d0 = I32(a, 0xd0);
+        if (d && own && I32(d, 0x118) == 4 && now > d0 && (now - d0) % HOT_EVERY == 0 && now < I32(a, 0xd8) && I32(own, 0x3c4) > 0) {
+            int amt = I32(d, 0x138) == 2 ? -I32(own, 0x3c8) * I32(d, 0x134) / 100 : -I32(d, 0x134);   /* DamageScaleType 2: % of max HP */
+            void *h = PTR(sim, 0); int n = h ? I32(h, 0xc) : 0; void **v = h ? PTR(h, 0) : NULL; int team = ((geti_t)B(0xb6a820))(a);
+            for (int k = 0; amt > 0 && v && k < n && k < 4096; k++) {
+                uint8_t *c = v[k];
+                if (!c || (int)((uint8_t *)PTR(c, 0) - g_libg->base) != 0x1209020 || I32(c, 0x3c4) <= 0 || c == own) continue;
+                if (((geti_t)B(0xb6a820))(c) != team || I32(c, 0x3c4) >= I32(c, 0x3c8)) continue;
+                if (!superfix_area_reach || superfix_area_reach(a, d, c) < 0) continue;
+                ((void (*)(void *, int, int, int, void *, int, int, int, long, long))B(0xb41554))(c, ((geti_t)B(0xb6a754))(a), amt, 1, NULL, 0, 0, 0, 0, 0);
+                g_nsum_hot++;
+                if (g_superfix_dbg) LOG("[superfix] summon Hot area %d heals ch %d by %d tick %d\n", I32(d, 0x20), I32(c, 8), amt, now);
+            }
         }
         uint8_t *owner = NULL;
         void *h = PTR(sim, 0); int n = h ? I32(h, 0xc) : 0; void **v = h ? PTR(h, 0) : NULL;
@@ -207,7 +221,7 @@ void superfix_install(void) {
     extern void superfix_cc_install(void) __attribute__((weak)); if (superfix_cc_install) superfix_cc_install();   /* issue #19 */
 }
 void superfix_status(void) { LOG("[superfix] areas spawned %ld, skipped %ld; delayed damage %ld; slippery hits %ld; heal own %ld projectiles, %ld owners; "
-                                 "Max's drinks %ld; summon areas %ld (ended %ld, Hot re-applies %ld)\n", g_narea, g_narea_skip, g_ndelayed, g_nslip, g_nheal,
+                                 "Max's drinks %ld; summon areas %ld (ended %ld, Hot heals %ld)\n", g_narea, g_narea_skip, g_ndelayed, g_nslip, g_nheal,
                                  g_nheal_self, g_ndrink, g_nsum_area, g_nsum_end, g_nsum_hot);
     extern void superfix_items_status(void) __attribute__((weak)); if (superfix_items_status) superfix_items_status();
     extern void superfix_moves_status(void) __attribute__((weak)); if (superfix_moves_status) superfix_moves_status();
