@@ -26,6 +26,9 @@ Gadgets (--gadgets 1, train_ppo's flag): the workers' battle_fn adds the loadout
 observation build gets env_v5.Env.gadget (self 3).
 Star powers (--star-powers 1, train_ppo's flag): the workers' battle_fn adds env_v5.with_star_powers (not observed).
 Gears (--gears 1, train_ppo's flag): the workers' battle_fn adds env_v5.with_gears (not observed).
+Imitation rows (--imit-data / --imit-updates / --imit-w / --imit-chunks / --imit-burn, train_ppo's flags and helpers, all off):
+the pretraining runs in the main process after the BC phase (resumed runs: before the first rollout); --imit-w adds the term
+to every minibatch (in the update thread with --overlap-update, which is then the only user of the imitation rng).
 Hypercharge (--hyper 1, train_ppo's flag): the same with env_v5.with_hyper and env_v5.Env.hyper (self 4).
 Hard scenarios (--eval-scenarios): every worker records its scenario episodes (scenarios.Recorder) and sends their
 index entries; the main process writes replays/scn/index.json and, at the eval's end, scenarios.jsonl.
@@ -56,8 +59,9 @@ def parse(argv=None):
     ap.add_argument("--kmix", default="1,2,3,4,5"); ap.add_argument("--brawler", default="Sniper", help="Sniper = Piper")
     ap.add_argument("--loc", default=None, help="Showdown location (default: the first of env_v5.locations())")
     ap.add_argument("--slider-scale", type=float, default=0.0, help="weight of the slider rewards (stage 1: off)")
-    from train_ppo import slider_flags, head_flags, scenario_flags, intent_flags
+    from train_ppo import slider_flags, head_flags, scenario_flags, intent_flags, imit_flags
     slider_flags(ap); head_flags(ap); scenario_flags(ap); intent_flags(ap)   # sliders; --vlive / --aux-w; --eval-scenarios; --intent-scale
+    imit_flags(ap)                                   # --imit-data / --imit-updates / --imit-w / --imit-chunks / --imit-burn
     ap.add_argument("--reward-w", default="", help='JSON overrides of maenv.REWARD_W, e.g. {"taken": -0.25, "dealt": 0.3, "shots": -0.03} (HISTORY 77)')
     ap.add_argument("--noise", type=int, default=1, help="ObsV5 vision noise + latency")
     ap.add_argument("--eval-min", type=float, default=30.0); ap.add_argument("--eval-episodes", type=int, default=200)
@@ -251,6 +255,7 @@ def main(argv=None):
     import env_v5 as E, obs_v5 as O
     from train_ppo import Buffer, chunks, eval_summary, eval_items, eval_presets, eval_plan, split_params, gae, expl_var, live_targets, head_loss
     from train_ppo import aux_targets, aux_readout, scenario_items, scenario_eval, intent_stats, load_opt
+    from train_ppo import imit_nll, imit_open, imit_pretrain, wmean
     import scenarios as SC
     from fast_act import StackedActor, OBS_W, _OFF
     NS = O.N_S
@@ -298,6 +303,9 @@ def main(argv=None):
         bnet = frozen(torch.load(a.base, map_location="cpu", weights_only=False)["model"] if a.base else ck["model"])
     ck = None
     print("hero table rows: %d" % net.add_heroes([O.brawler_stats(c) for c in sorted(set(E.heroes()) | {a.brawler})]), flush=True)
+    ds_i, imit_batch = imit_open(a)                  # --imit-*: own rng; the update thread (overlap) is the only one sampling during PPO
+    imit_pre = lambda: imit_pretrain(a, net, opt, main_p, imit_batch, dev)
+    if a.imit_updates and not bc(): imit_pre()       # no BC phase (resumed): before the first collect
     lnets = [frozen(net.state_dict()) for _ in range(M)]
     for k in range(M):
         if lpath[k]: lnets[k].load_state_dict(torch.load(lpath[k], map_location=dev), strict=False)
@@ -384,7 +392,7 @@ def main(argv=None):
                 lg, v, *xc = net.seq(g["s"][r], g["ent"][r], g["grid"][r], g["h"][r[:, 0]], g["priv"][r], feats=bool(X))
                 lg = [x[mk] for x in lg]; v = v[mk]
                 lp, ent, _ = dist_logp_ent(lg, g["act"][rf]); vl = 0.5 * ((v - RET[rf]) ** 2).mean()
-                lv = LIVE[rf]; lm = lambda x: (x * lv).sum() / lv.sum().clamp(min=1)
+                lv = LIVE[rf]; lm = lambda x: wmean(x, lv)
                 if is_bc:
                     loss = -lm(lp) + 0.5 * vl; st = [-lm(lp).item(), vl.item(), ent.mean().item(), 0.0, 0.0]
                 else:
@@ -397,6 +405,8 @@ def main(argv=None):
                     loss = pg - a.ent * lm(ent) + beta * kl + 0.5 * vl
                     st = [pg.item(), vl.item(), ent.mean().item(), kl.item(), ((ratio - 1).abs() > a.clip).float().mean().item()]
                 if X: hl, hs = head_loss(net, xc[0][mk], rf, X, a); loss = loss + hl; xst.append(hs)
+                if a.imit_w and not is_bc:           # --imit-w: the BC loss on the imitation rows next to the PPO loss
+                    il, ist = imit_nll(net, imit_batch(), dev); loss = loss + a.imit_w * il; xst.append(ist)
                 opt.zero_grad(set_to_none=True); opt_x.zero_grad(set_to_none=True); loss.backward()
                 torch.nn.utils.clip_grad_norm_(main_p, 0.5); opt.step()
                 if X: torch.nn.utils.clip_grad_norm_(x_p, 0.5); opt_x.step()
@@ -415,6 +425,7 @@ def main(argv=None):
         nonlocal upd, ref, bnet
         upd += 1; is_bc = P_["is_bc"]
         if is_bc and not bc():                           # BC done: freeze the anchor, PPO starts with an eval
+            if a.imit_updates: imit_pre()                # the anchor is the policy after the imitation pretraining
             ref = frozen(net.state_dict()); bnet = ref if bnet is None else bnet
             push(record=False); save(os.path.join(out, "bc.pt"))
             if anet is not net: anet.load_state_dict(net.state_dict())

@@ -532,6 +532,33 @@ def imit_nll(net, b, dev):
     return nll, {"imit_nll": nll.item(), "imit_w": w.sum().item() / max(1, (w > 0).sum().item())}
 
 
+def imit_flags(ap):
+    """--imit-*: the imitation flags (train_ppo and train_fast share them)"""
+    ap.add_argument("--imit-data", default="", help="imitation rows (imitation.py: a folder of .npz shards or one); empty = off")
+    ap.add_argument("--imit-updates", type=int, default=0, help="BC pretraining updates on --imit-data, after the native-AI BC phase and before PPO (each = --epochs minibatches of --imit-chunks windows)")
+    ap.add_argument("--imit-w", type=float, default=0.0, help="weight of the imitation NLL added to every PPO minibatch's loss (0 = off)")
+    ap.add_argument("--imit-chunks", type=int, default=64, help="imitation windows per minibatch"); ap.add_argument("--imit-burn", type=int, default=16, help="context rows before each window's --seq target rows")
+
+
+def imit_open(a):
+    """--imit-*: (dataset or None, its own rng: the other streams' draws stay the same, batch fn () -> one minibatch of windows)"""
+    ds = IM.load(a.imit_data) if a.imit_data else None; rng = np.random.default_rng(a.seed + 11)
+    assert ds or not (a.imit_updates or a.imit_w), "--imit-updates / --imit-w need --imit-data"
+    if ds: print("imitation rows: %d in %d episodes (label weight sum %.0f)" % (ds.n, len(ds.eps), ds.w_sum), flush=True)
+    return ds, (lambda: ds.batch(*ds.sample(rng, a.imit_chunks, a.seq, a.imit_burn)))
+
+
+def imit_pretrain(a, net, opt, main_p, batch, dev):
+    """--imit-updates: BC on the imitation rows (lr --bc-lr, the main optimizer, grad clip 0.5 as in the update loop)"""
+    for pg_ in opt.param_groups: pg_["lr"] = a.bc_lr
+    for u in range(a.imit_updates):
+        st = []
+        for _ in range(a.epochs):
+            l, d = imit_nll(net, batch(), dev); opt.zero_grad(set_to_none=True); l.backward()
+            torch.nn.utils.clip_grad_norm_(main_p, 0.5); opt.step(); st.append(d["imit_nll"])
+        print(json.dumps({"imit_pretrain": u + 1, "of": a.imit_updates, "imit_nll": round(float(np.mean(st)), 4)}), flush=True)
+
+
 def head_loss(net, xc, rf, X, a):
     """loss of the heads that never act on a minibatch (xc = cat[x, h] of its rows, rf = their buffer rows) -> (loss,
     {stat: value}); 0 with the flags off. --vlive: 0.5 x 0.5 MSE to the live lambda-return (as the critic's)"""
@@ -664,10 +691,7 @@ def main():
     ap.add_argument("--kmix", default="1,2,3,4,5"); ap.add_argument("--brawler", default="Sniper", help="Sniper = Piper")
     ap.add_argument("--loc", default=None, help="Showdown location (default: the first of env_v5.locations())")
     ap.add_argument("--slider-scale", type=float, default=0.0, help="weight of the slider rewards (stage 1: off)")
-    ap.add_argument("--imit-data", default="", help="imitation rows (imitation.py: a folder of .npz shards or one); empty = off")
-    ap.add_argument("--imit-updates", type=int, default=0, help="BC pretraining updates on --imit-data, after the native-AI BC phase and before PPO (each = --epochs minibatches of --imit-chunks windows)")
-    ap.add_argument("--imit-w", type=float, default=0.0, help="weight of the imitation NLL added to every PPO minibatch's loss (0 = off)")
-    ap.add_argument("--imit-chunks", type=int, default=64, help="imitation windows per minibatch"); ap.add_argument("--imit-burn", type=int, default=16, help="context rows before each window's --seq target rows")
+    imit_flags(ap)
     slider_flags(ap); head_flags(ap); scenario_flags(ap); intent_flags(ap)
     ap.add_argument("--noise", type=int, default=1, help="ObsV5 vision noise + latency")
     ap.add_argument("--eval-min", type=float, default=30.0); ap.add_argument("--eval-episodes", type=int, default=200)
@@ -720,21 +744,9 @@ def main():
         lnets[k].load_state_dict(torch.load(p, map_location=dev), strict=False); lname[k] = os.path.basename(p)
     if pool: [load_slot(k) for k in range(M)]
     bc = lambda: upd < a.bc_updates
-    ds_i = IM.load(a.imit_data) if a.imit_data else None; rng_i = np.random.default_rng(a.seed + 11)   # own stream: the others' draws stay the same
-    assert ds_i or not (a.imit_updates or a.imit_w), "--imit-updates / --imit-w need --imit-data"
-    if ds_i: print("imitation rows: %d in %d episodes (label weight sum %.0f)" % (ds_i.n, len(ds_i.eps), ds_i.w_sum), flush=True)
-    imit_batch = lambda: ds_i.batch(*ds_i.sample(rng_i, a.imit_chunks, a.seq, a.imit_burn))
-
-    def imit_pretrain():
-        """--imit-updates: BC on the imitation rows (lr --bc-lr, the main optimizer, grad clip 0.5 as in the update loop)"""
-        for pg_ in opt.param_groups: pg_["lr"] = a.bc_lr
-        for u in range(a.imit_updates):
-            st = []
-            for _ in range(a.epochs):
-                l, d = imit_nll(net, imit_batch(), dev); opt.zero_grad(set_to_none=True); l.backward()
-                torch.nn.utils.clip_grad_norm_(main_p, 0.5); opt.step(); st.append(d["imit_nll"])
-            print(json.dumps({"imit_pretrain": u + 1, "of": a.imit_updates, "imit_nll": round(float(np.mean(st)), 4)}), flush=True)
-    if a.imit_updates and not bc(): imit_pretrain()      # no BC phase (resumed): before the first collect
+    ds_i, imit_batch = imit_open(a)
+    imit_pre = lambda: imit_pretrain(a, net, opt, main_p, imit_batch, dev)
+    if a.imit_updates and not bc(): imit_pre()      # no BC phase (resumed): before the first collect
 
     def battle_fn(rng, i):
         cfg = battle_cfg(rng, i)                         # --gadgets: MAEnv's rng, so rng_b's draws stay the same
@@ -914,7 +926,7 @@ def main():
             acts = buf.act[rows]; fired = acts[acts[:, 1] > 0]
             upd += 1
             if is_bc and not bc():                           # BC done: freeze the anchor, PPO starts with an eval
-                if a.imit_updates: imit_pretrain()           # the anchor is the policy after the imitation pretraining
+                if a.imit_updates: imit_pre()                # the anchor is the policy after the imitation pretraining
                 ref = frozen(net.state_dict()); bnet = ref if bnet is None else bnet
                 env.record = False; save(os.path.join(out, "bc.pt")); start_eval()
             if not bc():                                     # league: a snapshot now and then, one opponent per update
