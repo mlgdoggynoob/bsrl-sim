@@ -89,11 +89,16 @@ static int bush_area(uint8_t *d) {
     return id == 17000314 || id == 17000692 || id == 17001024 || id == 17001025;
 }
 static int in_shape(int dx, int dy, int r) { return 300L * 300 * (dx * dx + dy * dy) < (long)r * r; }
+/* Issue #19 final: MeepleWallSpawn (42, Meeple's wall gadget / EndOfLineProjectile) and GladiatorWallSpawn (55, Damian's
+ * wall gadget) areas build the same shape from their CustomValue (+0x13c), a DynamicCode (MeepleWallDefault 18,
+ * OutOfLineWall 23 / 24, GladiatorWallDefault 26: Lifetime 80..140 ticks), for every tile of it (no Filler variant). [?]
+ * MeepleWallArea's CustomValue2 20 (the last of three MeepleWallDefault codes 18-20) is not used. */
 static void wall_ring(uint8_t *a, uint8_t *d) {
     uint8_t *pr = (g_cur_proj && g_cur_tick == (g_sim ? I32(g_sim, 0x10) : -1)) ? (uint8_t *)g_cur_proj : NULL;
-    int bush = bush_area(d), code = bush ? AREA_BUSH_CODE : wall_code_for(pr), r = I32(d, 0x12c);
+    int typed = I32(d, 0x118) == 42 || I32(d, 0x118) == 55;
+    int bush = bush_area(d), code = typed ? I32(d, 0x13c) : bush ? AREA_BUSH_CODE : wall_code_for(pr), r = I32(d, 0x12c);
     if (r <= 0 || r > 3000) r = 400;    /* WallyUltiArea's Radius */
-    void *wall = tile_by_code(code), *fill = bush ? wall : tile_by_code(code + 1);
+    void *wall = tile_by_code(code), *fill = bush || typed ? wall : tile_by_code(code + 1);
     int cx = I32(a, 0x38) / 300, cy = I32(a, 0x3c) / 300, n = 0, k = r / 300 + 1;
     uint8_t *tm_sim = g_sim ? PTR(g_sim, 0x68) : NULL, *tm_cl = g_client_obj ? PTR(g_client_obj, 0xf8) : NULL;
     g_nwall_areas++;
@@ -206,7 +211,11 @@ static void on_explode(uint64_t *c) {
 static void on_area(uint64_t *c) {
     if (!g_spawn_fix || !mode() || rec) return;
     uint8_t *a = (uint8_t *)c[0]; uint8_t *d = PTR(a, 0x10);
-    if (a && d && I32(d, 0x118) == 15 && g_spawn_fix && g_spawn_walls && mode() && !rec) wall_ring(a, d);
+    if (a && d && (I32(d, 0x118) == 15 || I32(d, 0x118) == 42 || I32(d, 0x118) == 55) && g_spawn_walls && I32(d, 0x13c) >= 0) {
+        static void *last_a; static int last_t = -1; int t = g_sim ? I32(g_sim, 0x10) : -1;
+        if (I32(d, 0x118) == 15 || a != last_a || t != last_t) wall_ring(a, d);   /* 42 / 55: once per spawn apply */
+        last_a = a; last_t = t;
+    }
     if (a && d && I32(d, 0x118) == 15 && g_spawn_dbg && getenv("NB_SPAWNFIX_TILEDIAG")) {
         uint8_t *cl = (uint8_t *)g_client_obj, *dec = cl ? PTR(cl, 0x38) : NULL, *L = dec ? PTR(dec, 0x10) : NULL;
         void **vt = L ? *(void ***)L : NULL;

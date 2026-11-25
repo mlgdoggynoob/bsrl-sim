@@ -461,12 +461,20 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
     return r;
 }
 /* super charge 0xc420d8(player, damage, ...): the root's calls charge for the level-scaled damage; the real game's
- * charge does not depend on the power level: divide by it (agent: only from the root's call sites) */
+ * charge does not depend on the power level: divide by it (agent: only from the root's call sites). Issue #19 final: the
+ * hitter's EnragerOverchargeSuper percent (Edgar, superfix_status_charge_pct) is added to those calls' damage. */
 typedef uint64_t (*fn6)(void *, int, int, int, void *, int);
 static fn6 o_charge;
+int superfix_status_charge_pct(uint8_t *ch) __attribute__((weak));   /* issue #19 final: Edgar's hypercharged super area */
 static uint64_t my_charge(void *p, int d, int a2, int a3, void *a4, int a5) {
     uint64_t ra = (uint64_t)__builtin_return_address(0) - (uint64_t)g_libg->base;
-    if (E.charge_level > 0 && (ra == 0xb4328c || ra == 0xb43300 || ra == 0xb43498) && d > 0) { d = jround((double)d / E.charge_level); E.charge_fixes++; }
+    int root = ra == 0xb4328c || ra == 0xb43300 || ra == 0xb43498;
+    if (E.charge_level > 0 && root && d > 0) { d = jround((double)d / E.charge_level); E.charge_fixes++; }
+    if (root && d > 0 && p && E.sim && superfix_status_charge_pct) {   /* the hitter's charge percent, + CustomValue2 % */
+        uint8_t *ch = obj_by_id(E.sim, player_char_id(p));
+        int pct = ch && VTOF(ch) == VT_CHAR ? superfix_status_charge_pct(ch) : 0;
+        if (pct > 0) d = jround(d * (100 + pct) / 100.0);
+    }
     return o_charge(p, d, a2, a3, a4, a5);
 }
 

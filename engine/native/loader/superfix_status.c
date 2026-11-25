@@ -104,9 +104,9 @@ static uint8_t *by_id(uint8_t *any, int id) {
 }
 
 /* issue #19 leftovers: what a character standing in an area gets while it stands there (SmokeScreen: invisibility level,
- * DamageBoost: damage percent), marked by superfix_status_area at the area's tick and read at the character's next update /
+ * DamageBoost: damage percent; issue #19 final: Edgar's reload and super charge percents, Angelo's weapon switch), marked by superfix_status_area at the area's tick and read at the character's next update /
  * damage: a mark lasts until the tick after it was made */
-enum { ZN_SMOKE = 1, ZN_DMG = 2 };
+enum { ZN_SMOKE = 1, ZN_DMG = 2, ZN_RELOAD = 3, ZN_CHARGE = 4, ZN_SWITCH = 5 };   /* 3-5: issue #19 final (area_extra) */
 typedef struct { uint8_t *ch; int ch_id, kind, val, until; } Zone;
 #define ZN_MAX 64
 static Zone g_zn[ZN_MAX]; static int g_nzn; static long g_nzone;
@@ -247,6 +247,8 @@ static void on_char_update(uint64_t *ctx) {
         U8(ch, CH_CCIMM) = cc; U8(ch, CH_LOSECTL) = lose; U8(ch, CH_STASIS) = stasis; U8(ch, CH_SILENCE) = silence;
         U8(ch, CH_FULLSTUN) = full; U8(ch, CH_TAUNT) = taunt; U8(ch, CH_FEAR) = fear;
         extern void superfix_cc_tick(uint8_t *) __attribute__((weak)); if (superfix_cc_tick) superfix_cc_tick(ch);
+        extern void superfix_cc_switch(uint8_t *, int) __attribute__((weak));   /* issue #19 final: Angelo's SwitchSkill area */
+        if (superfix_cc_switch) superfix_cc_switch(ch, zone_get(ch, ZN_SWITCH, t));
     }
     if (g_superfix_dbg) {   /* MountUp (component type 21, char +0xa60 / count +0xa6c): its mount ticks +0x38 (0xb50be8) */
         int nc = I32(ch, 0xa6c); void **c = PTR(ch, 0xa60);
@@ -359,10 +361,12 @@ static int st_field(uint8_t *ch, int off, uint8_t *src) {
 static long g_nreload, g_nsteal;
 static int my_reload_pct(uint8_t *ch) {
     if (!g_superfix || !mode() || !is_char(ch)) return 0;
-    int p = st_field(ch, SE_RELOAD, NULL); if (p <= 0) return 0;
+    int p = st_field(ch, SE_RELOAD, NULL), z = zone_get(ch, ZN_RELOAD, now_tick(ch));   /* z: Edgar's area, already r */
+    if (p <= 0 && z <= 0) return 0;
     if (p > 95) p = 95;
     g_nreload++;
-    return 100 * p / (100 - p);
+    int r = p > 0 ? 100 * p / (100 - p) : 0;
+    return r > z ? r : z;
 }
 /* issue #19: lifesteal. The damage root heals the attacker by damage x pct / 100 at 0xb439c4 (0xb41554 with the attacker's
  * CharacterData, kind 4) when pct = 0xba3258(victim +0x890, attacker) >= 1, a manager query compiled out (`mov w0, wzr;
@@ -397,6 +401,13 @@ int superfix_status_taunt(uint8_t *ch, int *x, int *y) {
     return kind;
 }
 
+/* issue #19 final: Edgar's hypercharged super area (EnragerOverchargeSuper): extra percent on the super charge his hits
+ * give (env.c my_charge), 0 = none */
+int superfix_status_charge_pct(uint8_t *ch) {
+    if (!g_superfix || !mode() || !is_char(ch)) return 0;
+    return zone_get(ch, ZN_CHARGE, now_tick(ch));
+}
+
 /* StatusEffect (type 36) areas, from superfix.c's area tick hook (0xb28c0c) */
 typedef struct { void *a, *d; int start, end, next; } AreaRec;
 #define AR_MAX 128
@@ -428,18 +439,66 @@ static AreaRec *area_rec(uint8_t *a, uint8_t *d, int t, int first) {   /* this a
  *     0xb4f7f8(ch, amount, 5, 0xb6a884(area)) (the call and the field of the shipped ChargeSuperFromProjectiles code 0xb2aa00,
  *     without its modifier). ExtraSuperCharge 31 (Bo's totem): every brawler of the owner's team inside. EnemyChargeSuper 26 /
  *     AllyChargeSuper 29 (personal passive areas; Buster for 29): the owner, while an enemy / a teammate brawler is inside.
- * Not done: ChargeSuper 18 / GiveUlti 57 (Max's hypercharge), SpeedBuff 11 / IncreaseHealth 22 (no row in use),
- *   ReloadSpeedBuff 12 (only MechaDudeReloadTower's area, a summon nothing spawns), PetrolDistribution 19, SwitchSkill 33,
- *   EnragerOverchargeSuper 32, BulletSpin 40, the Meeple types 42-44, HotAndOverheals 45, ShootsProjectileToSource 51,
- *   GladiatorWallSpawn 55. */
+ * Issue #19 final (libg reads none of these types; Max's drink projectiles: superfix.c my_spawn_area):
+ *   ChargeSuper 18 (Max's hypercharged drink, SpeedyOverchargedArea2: "granting them 25% Super charge"): once, every brawler
+ *     of the owner's team inside gets CustomValue (1000 = 25 % of the 4000 maximum) through 0xb4f7f8.
+ *   GiveUlti 57 (Max's hypercharged main attack hit, SpeedyOverchargedBuddyWeaponArea at Max): once, every teammate brawler
+ *     inside (not Max) gets Damage (300 = 7.5 %; the card text shows Damage "ultiChargeAsPercent") through 0xb4f7f8. [?]
+ *     that the owner is left out.
+ *   EnragerOverchargeSuper 32 (Edgar's hypercharged super, EnragerOverchargedUlti, 7 s): while it lives its owner reloads
+ *     CustomValue % faster (50: my_reload_pct's r) and his hits charge his super CustomValue2 % more (150: env.c
+ *     my_charge), wherever he is ("after using Super gain charging speed and reload speed for few seconds"). [?] which
+ *     value is which and that both are percents: the texts give no numbers.
+ *   SwitchSkill 33 (Angelo's InsectManUltiSwitchSkillArea, IsPersonal): while the owner is inside, his weapon is its
+ *     SecondarySkill (InsectManWeaponPoison: "while in the cloud, Angelo's arrows become poisoned"), superfix_cc_switch.
+ *   BulletSpin 40 (Darryl's hypercharged roll, BarrelBotOverchargeChargeArea, a trail area): at its first tick, CustomValue
+ *     (2) BulletExplosionBullets leave it evenly spread, flying BulletExplosionBulletDistance x 100 units, the spread turned
+ *     by SPIN_STEP degrees per tick of the battle ("shoots his shotguns around himself"). [?] the server's pattern.
+ *   HotAndOverheals 45 (Pam's hypercharged turret, MinigunOverchargedHealingStationHeal): the data's type is set to Hot 4 at
+ *     its first area tick (and the apply run once), so libg heals with it as with the normal turret's HealingStationHeal;
+ *     the overheal shield (OverHealTicks / MaxOverHeal / OverHealMultiplier) is not modelled.
+ * Not done: SpeedBuff 11 / IncreaseHealth 22 (no row in use), ReloadSpeedBuff 12 (only MechaDudeReloadTower's area, a
+ *   summon nothing spawns), PetrolDistribution 19 (Amber: the area lasts 500 ms; the lasting puddle and its ignition into
+ *   PetrolFire are server state), MeepleCheatArea 44 (its statuses' AttackThroughWalls / MoveThroughWalls / pierce have no
+ *   reader here), ShootsProjectileToSource 51 (Mortis's hypercharged dash: its MortisOverchargedBulletSpawner area is
+ *   never spawned in this build). Walls (MeepleWallSpawn 42, GladiatorWallSpawn 55) and HpBasedStun 43: spawnfix.c and
+ *   superfix_cc.c. Notes: notes/issue19-final.md. */
 #define SC_TICKS 20   /* super charge areas: CustomValue once a second (a guess: the rate is server code, not in the client) */
-static long g_nsmoke_hits, g_nheal_area, g_ncleanse, g_ncharge;
+static long g_nsmoke_hits, g_nheal_area, g_ncleanse, g_ncharge, g_nspin;
+#define SPIN_STEP 45   /* BulletSpin: degrees the spread turns per tick [?] (a trail area spawns every few ticks of the roll) */
+long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) __attribute__((weak));   /* superfix_cc.c: libg's target test */
 static void area_extra(uint8_t *a, uint8_t *d, int type) {
     uint8_t *owner = PTR(a, 0x108);
     if (!owner) return;
     int t = now_tick(a); if (t < 0) return;
     if (type == 3 && I32(d, 0x154) > 0) return;   /* libg's gate let it through */
-    int charge = type == 26 || type == 29 || type == 31;
+    if (type == 32 || type == 33) {   /* issue #19 final: the owner's marks, every tick of the area */
+        if (type == 32) { zone_mark(owner, ZN_RELOAD, I32(d, 0x13c), t); zone_mark(owner, ZN_CHARGE, I32(d, 0x140), t); }
+        else if (I32(owner, 0x3c4) > 0 && superfix_area_reach && superfix_area_reach(a, d, owner) >= 0) zone_mark(owner, ZN_SWITCH, 1, t);
+        return;
+    }
+    if (type == 45) {   /* Pam's hypercharged turret: from now on a Hot area for libg; run its first apply as one */
+        int d0 = I32(a, 0xd0), d4 = I32(a, 0xd4), d8 = I32(a, 0xd8);
+        I32(d, 0x118) = 4; ((void (*)(void *))B(0xb29494))(a);
+        I32(a, 0xd0) = d0; I32(a, 0xd4) = d4; I32(a, 0xd8) = d8; g_nheal_area++;
+        LOG("[superfix] st: HotAndOverheals area %d now Hot (owner ch %d)\n", data_id(d), I32(owner, 8));
+        return;
+    }
+    if (type == 40) {   /* Darryl's hypercharged roll: bullets around the trail area, once */
+        AreaRec *r = area_rec(a, d, t, t); if (t < r->next) return; r->next = 0x7fffffff;
+        uint8_t *bullet = PTR(d, 0x78); int n = I32(d, 0x13c), dist = I32(d, 0x144) * 100, dmg = I32(a, 0xe8) > 0 ? I32(a, 0xe8) : I32(d, 0x134);
+        if (!bullet || n < 1 || n > 16) return;
+        void *sim = ((getp_t)B(0xb6a378))(owner); int x = I32(a, 0x38), y = I32(a, 0x3c);
+        for (int i = 0; i < n; i++) {
+            int ang = (t * SPIN_STEP + 360 * i / n) % 360;
+            int vx = ((int (*)(int))B(0xd005e0))(ang + 0x5a), vy = ((int (*)(int))B(0xd005e0))(ang);   /* spawnfix.c's sin table */
+            void *p = ((void *(*)(int, int, void *, void *, void *, int, int, int, int, int, int, void *, void *, int, int, void *))B(0xb78190))(
+                x, y, owner, owner, bullet, x + ((vx * dist) >> 10), y + ((vy * dist) >> 10), dmg, dmg, 0, 0, NULL, sim, 0, I32(a, 0xf8), NULL);
+            if (p) g_nspin++;
+        }
+        return;
+    }
+    int charge = type == 26 || type == 29 || type == 31, once = type == 23 || type == 18 || type == 57;
     AreaRec *r = area_rec(a, d, t, U8(d, 0x17c) && charge ? t + SC_TICKS : t);
     if (t < r->next) return;
     if (type == 3 || type == 17) {   /* once, through libg's Hot body */
@@ -452,7 +511,7 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
                                 I32(owner, 8), t, I32(d, 0x134));
         return;
     }
-    r->next = type == 23 ? 0x7fffffff : charge ? t + SC_TICKS : t + 1;
+    r->next = once ? 0x7fffffff : charge ? t + SC_TICKS : t + 1;
     int n; void **v = objects(owner, &n); if (!v) return;
     int team = ((geti_t)B(0xb6a820))(a), ax = I32(a, 0x38), ay = I32(a, 0x3c), near_enemy = 0, near_ally = 0;
     for (int i = 0; i < n; i++) {
@@ -473,8 +532,11 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
             I32(o, CH_STUN_TICKS) = 0; U8(o, CH_LOSECTL) = 0;
             g_ncleanse++;
             if (g_superfix_dbg) LOG("[superfix] st: cleanse ch %d tick %d: %d statuses removed\n", id, t, removed);
-        } else if (type == 31 && same && hero) {
-            ((void (*)(void *, int, int, int))B(0xb4f7f8))(o, I32(d, 0x13c), 5, ((geti_t)B(0xb6a884))(a)); g_ncharge++;
+        } else if (((type == 31 || type == 18) && same && hero) || (type == 57 && same && hero && o != owner)) {
+            int amount = type == 57 ? I32(d, 0x134) : I32(d, 0x13c);
+            if ((type == 18 || type == 57) && superfix_area_reach && superfix_area_reach(a, d, o) < 0) continue;
+            ((void (*)(void *, int, int, int))B(0xb4f7f8))(o, amount, 5, ((geti_t)B(0xb6a884))(a)); g_ncharge++;
+            if (g_superfix_dbg && type != 31) LOG("[superfix] st: charge area %d type %d: ch %d +%d tick %d\n", data_id(d), type, I32(o, 8), amount, t);
         }
         if (o != owner && hero) { if (same) near_ally = 1; else near_enemy = 1; }
     }
@@ -492,7 +554,8 @@ void superfix_status_area(uint8_t *a) {
         return;
     }
     if (d) { int ty = I32(d, 0x118);   /* issue #19 leftovers: the dropped types above */
-        if (ty == 1 || ty == 3 || ty == 10 || ty == 17 || ty == 23 || ty == 26 || ty == 29 || ty == 31) { area_extra(a, d, ty); return; } }
+        if (ty == 1 || ty == 3 || ty == 10 || ty == 17 || ty == 23 || ty == 26 || ty == 29 || ty == 31 ||
+            ty == 18 || ty == 32 || ty == 33 || ty == 40 || ty == 45 || ty == 57) { area_extra(a, d, ty); return; } }
     if (!d || I32(d, 0x118) != 36) return;
     void *self = PTR(d, 0x88), *ally = PTR(d, 0x90), *enemy = PTR(d, 0x98);
     uint8_t *owner = PTR(a, 0x108);
@@ -549,7 +612,8 @@ void superfix_status_install(void) {
 void superfix_status_status(void) {
     LOG("[superfix] status: added %ld, refreshed %ld, full %ld, ended %ld, removed %ld, live %d; damage %ld, heal %ld; "
         "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
-        "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld\n",
+        "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld, "
+        "spin bullets %ld\n",
         g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal, g_narea_apply, g_narea_hits, g_nmount, g_nstun,
-        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge);
+        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nspin);
 }

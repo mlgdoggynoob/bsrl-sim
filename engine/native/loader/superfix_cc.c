@@ -28,6 +28,8 @@
  *     Static) while the partner getter 0xb392d4 finds the legs (superfix_moves.c split_partner), and back to CharacterData
  *     +0x260 (SplitterWeapon) once they are gone: the same swap, a mount unless the data is his own weapon. The other 21
  *     callers stay a no-op as before.
+ *   - Angelo (InsectMan, issue #19 final): his SwitchSkill area swaps slot 0 to his weapon's SecondarySkill while he stands
+ *     in it (superfix_cc_switch), the same swap.
  * NB_SUPERFIX=0 turns this off with the rest, NB_SUPERFIX_CC=0 this part alone; NB_SUPERFIX_DBG=1 logs every stun / silence / swap. */
 #include "nbhost.h"
 #include <stdlib.h>
@@ -201,6 +203,26 @@ static void my_change_skill(uint8_t *ch, int slot, void *data) {
     Swap *w = swap_rec(ch); if (!w) return;
     if (mount) w->spare = NULL;
     w->want = data; w->mount = mount; do_swap(ch, w);
+}
+
+/* issue #19 final: Angelo's SwitchSkill area (superfix_status.c area_extra marks its owner while he stands in it): inside, slot
+ * 0 becomes his weapon's SecondarySkill (weapon SkillData +0x158: InsectManWeaponPoison), outside his own weapon
+ * (CharacterData +0x260) again, through the swap above (a swap waits while the weapon is running). Only characters whose
+ * own weapon has a SecondarySkill are touched, and only while the area marks them or their slot 0 holds that skill. */
+void superfix_cc_switch(uint8_t *ch, int inside) {
+    if (!on() || !is_char(ch)) return;
+    uint8_t *cd = ((uint8_t *(*)(void *))B(0xb6a384))(ch), *own = cd ? PTR(cd, 0x260) : NULL, *sec = own ? PTR(own, 0x158) : NULL;
+    uint8_t **sk = PTR(ch, 0x458);
+    if (!sec || !sk || I32(ch, 0x464) < 1 || !sk[0]) return;
+    void *cur = PTR(sk[0], 0), *want = inside ? sec : own;
+    if (cur != own && cur != sec) return;   /* another swap (Draco, R-T) owns slot 0 */
+    Swap *w = NULL;
+    for (int i = 0; i < g_nsw; i++) if (g_sw[i].ch == ch && g_sw[i].id == I32(ch, 8)) w = &g_sw[i];
+    if (cur == want) { if (w && w->want && w->want != want) w->want = NULL; return; }
+    if (w && w->want == want) return;   /* pending */
+    if (!w) w = swap_rec(ch);
+    if (inside) w->spare = NULL;
+    w->want = want; w->mount = inside; do_swap(ch, w);
 }
 
 /* ------------------------------------------------------------------ per character tick (superfix_status.c's update hook) */

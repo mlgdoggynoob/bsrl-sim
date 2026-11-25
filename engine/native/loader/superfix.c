@@ -24,6 +24,7 @@
  * through 0xb41554 when it is >= 1) is never set. The `bl` is redirected: +0x10c = projectile damage (+0xd4) x percent
  * / 100, and the owner is healed the same amount once per attack (DamageOnlyWithOneProj, getter 0xafaa08), only for the
  * owner's super (attack slot [sp+256] == 2 at that point).
+ * Max's hypercharged super throws its drinks from here (max_drinks, issue #19 final).
  * NB_SUPERFIX=0 turns every part off. */
 #include "nbhost.h"
 #include <stdlib.h>
@@ -41,6 +42,30 @@ static long g_narea, g_narea_skip;
 
 typedef void *(*mkarea_t)(void *data, void *owner, int x, int y, int z, int kind, int extra);
 typedef int (*geti_t)(void *);
+/* issue #19 final: Max's hypercharged super ("Max throws an energy drink to each team member, increasing their movement
+ * speed and granting them 25% Super charge"). SpeedyUlti is the only skill with OverchargedProjectiles (SkillData +0x68,
+ * count +0x74; hyper.c) and no Projectiles (+0x58, count +0x64), an AreaBuff: its cast reaches libg's spawnAreaEffect (here)
+ * but nothing throws the projectiles. When a hypercharged brawler (Character::isOvercharged 0xb35bf0, hyper.c) spawns an
+ * area while its super is such a skill, its first overcharged projectile (SpeedyOverchargedProjectile, TravelType 9) goes
+ * from it to every other living brawler of its team, through the projectile spawn 0xb78190 (spawnfix.c's arguments, kind 2);
+ * where it lands libg spawns its areas (SpeedyOverchargedArea: speed; SpeedyOverchargedArea2: ChargeSuper, applied in
+ * superfix_status.c). One cast spawns one area, so each teammate gets one drink. */
+static long g_ndrink;
+static void max_drinks(uint8_t *ch) {
+    uint8_t **sk = PTR(ch, 0x458); uint8_t *sd = sk && I32(ch, 0x464) >= 2 && sk[1] ? PTR(sk[1], 0) : NULL;
+    if (!sd || I32(sd, 0x74) < 1 || I32(sd, 0x64) > 0 || !PTR(sd, 0x68) || !(((geti_t)B(0xb35bf0))(ch) & 1)) return;
+    void *pd = ((void **)PTR(sd, 0x68))[0], *sim = ((void *(*)(void *))B(0xb6a378))(ch), *h = sim ? PTR(sim, 0) : NULL;
+    int n = h ? I32(h, 0xc) : 0, team = ((geti_t)B(0xb6a820))(ch); void **v = h ? PTR(h, 0) : NULL;
+    for (int i = 0; pd && v && i < n && i < 4096; i++) {
+        uint8_t *o = v[i];
+        if (!o || o == ch || (int)((uint8_t *)PTR(o, 0) - g_libg->base) != 0x1209020 || I32(o, 0x3c4) <= 0) continue;
+        if (((geti_t)B(0xb6a820))(o) != team || !(((geti_t)B(0xb34de4))(o) & 1)) continue;   /* teammate brawlers */
+        void *p = ((void *(*)(int, int, void *, void *, void *, int, int, int, int, int, int, void *, void *, int, int, void *))B(0xb78190))(
+            I32(ch, 0x38), I32(ch, 0x3c), ch, ch, pd, I32(o, 0x38), I32(o, 0x3c), 0, 0, 0, 0, NULL, sim, 0, 2, NULL);
+        if (p) g_ndrink++;
+        if (g_superfix_dbg) LOG("[superfix] drink from ch %d to ch %d: %p\n", I32(ch, 8), I32(o, 8), p);
+    }
+}
 static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind, int w5, int w6, int follow,
                            void *s0, void *s1, void *mods, long start) {
     (void)w2; (void)w5; (void)w6; (void)s0; (void)s1;
@@ -53,6 +78,7 @@ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind,
     ((void (*)(void *, void *))B(0xb63198))(PTR(ch, 0x20), a);
     if (start & 1) ((void (*)(void *))B(0xb29494))(a);
     g_narea++;
+    max_drinks(ch);
     if (g_superfix_dbg) LOG("[superfix] spawnAreaEffect owner %p data %p type %d kind %d extra %d follow %d start %d -> %p\n",
                             ch, data, I32(data, 0x118), kind, extra, follow & 1, (int)(start & 1), a);
     return a;
@@ -134,8 +160,8 @@ void superfix_install(void) {
     extern void superfix_status_install(void) __attribute__((weak)); if (superfix_status_install) superfix_status_install();
     extern void superfix_cc_install(void) __attribute__((weak)); if (superfix_cc_install) superfix_cc_install();   /* issue #19 */
 }
-void superfix_status(void) { LOG("[superfix] areas spawned %ld, skipped %ld; delayed damage %ld; slippery hits %ld; heal own %ld projectiles, %ld owners\n",
-                                 g_narea, g_narea_skip, g_ndelayed, g_nslip, g_nheal, g_nheal_self);
+void superfix_status(void) { LOG("[superfix] areas spawned %ld, skipped %ld; delayed damage %ld; slippery hits %ld; heal own %ld projectiles, %ld owners; "
+                                 "Max's drinks %ld\n", g_narea, g_narea_skip, g_ndelayed, g_nslip, g_nheal, g_nheal_self, g_ndrink);
     extern void superfix_items_status(void) __attribute__((weak)); if (superfix_items_status) superfix_items_status();
     extern void superfix_moves_status(void) __attribute__((weak)); if (superfix_moves_status) superfix_moves_status();
     extern void superfix_status_status(void) __attribute__((weak)); if (superfix_status_status) superfix_status_status();
