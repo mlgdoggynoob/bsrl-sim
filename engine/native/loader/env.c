@@ -611,7 +611,8 @@ int g_native_charge = 1; static long g_native_charges;
 /* env charge contact (RE-IMPLEMENTED, not the game's code): the native start state for the charge's own hit processing is not
  * known, so env applies the charge skill's Damage once to every living enemy character (brawlers, summons, boxes) the charger
  * passes within CHARGE_HIT_R, through the damage root like the leap bombs (x2 power level, +10 % per cube), then the skill's
- * ChargePushback with the game's knockback (a negative one pulls the hit enemies to the landing point, charge_end); Berry (type 21) heals a teammate he passes by the same amount instead. The
+ * ChargePushback with the game's knockback (a negative one pulls the hit enemies to the landing point, charge_end) and its
+ * OnChargeHitStatusEffect (hypercharged Trunk's ants, DomainOverchargedUltiDamage); Berry (type 21) heals a teammate he passes by the same amount instead. The
  * charge's areas and Bull's wall breaking are env's too (charge_end, below).
  * --native-charge 2 = movement only (no env contact damage, pushback, areas or wall breaking). */
 #define CHARGE_HIT_R 250
@@ -620,7 +621,7 @@ int g_native_charge = 1; static long g_native_charges;
 #define CHARGE_LAND_WALL_R 300   /* El Primo: tiles around the landing point ([?] radius unknown: LuchadorUlti has no area, the
                                   * wiki only says "in a radius around him"; one tile ring) */
 #define CHARGE_LAND_R 200        /* Bonnie (type 16): her landing hit, CannonGirlExplosion's Radius ([?] the server's rule is compiled out) */
-typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; } ChargeJob;
+typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; void *hit_st; } ChargeJob;
 static ChargeJob g_cj[NBE_MAXP]; static int g_ncj; static long g_charge_hits, g_charge_pushes, g_charge_areas, g_charge_walls, g_charge_heals;
 /* knockback 0xb49834(victim, srcX, srcY, strength, a4..a7, 10 stack slots, the last = pusher's owner index): pushes the victim
  * 6 * strength u away from (srcX, srcY) over 10 ticks (half for CollisionRadius >= 150), the call the game's own charge sweep
@@ -760,12 +761,18 @@ static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type
     { uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464);
       for (int k = 1; k >= 0; k--) if (sk && k < n && sk[k]) { uint8_t *d = ((uint8_t *(*)(void *, int))B(0xb7adfc))(sk[k], 0);
           if (d && I32(d, 0x1a8) == 2) { I32(ch, 0x6d8) = k + 1; break; } } }
+    /* OnChargeHitStatusEffect (SkillData +0x1f0, the resolved StatusEffectData: loader 0xb0b410; no libg reader in this build):
+     * the active skill's data as the skill code sees it (+49 = overcharged: Trunk's DomainOverchargedUlti, DomainOverchargedUltiDamage) */
+    void *hit_st = NULL;
+    { uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464), k = I32(ch, 0x6d8) - 1;
+      if (sk && k >= 0 && k < n && sk[k]) { uint8_t *d = ((uint8_t *(*)(void *, int))B(0xb7adfc))(sk[k], U8(sk[k], 49) & 1);
+          if (d) hit_st = PTR(d, 0x1f0); } }
     if (full && g_ncj < NBE_MAXP) {
         int id = I32(ch, 8), k; for (k = 0; k < g_ncj && g_cj[k].id != id; k++) {}
         if (k == g_ncj) g_ncj++; else if (g_cj[k].type) PTR(ch, 0x550) = g_cj[k].old550;   /* a charge restarted mid-charge */
         /* Bonnie's launch (type 16) changes her into CannonGirlSmall before the start (0xb7bb58): no Charge skill, +0x6d8 stays 0 */
         g_cj[k] = (ChargeJob){id, I32(ch, 0x80), dmg, I32(sim, 0x10), 0, I32(ch, 0x6d8) == 2 || type == 16, type, push, -1000000, -1000000,
-                              area1, area_end, PTR(ch, 0x550), area2, {0}};
+                              area1, area_end, PTR(ch, 0x550), area2, {0}, hit_st};
         /* trail (Stu's fire, Berry's paint, Trunk's ants): while +0x490 is set and +0x550 holds area data, the character tick
          * spawns it through 0xb47360 each time the charger is farther than the area's Radius (+0x12c) from the last spawn point
          * (+0xc98/+0xc9c); the far point makes the first one land at the start. Only the client constructor writes +0x550. */
@@ -864,6 +871,11 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
             if (sp > 0) o_root(c, j->owner, sp, sp, 0, ch, NULL, 1, x, y, NULL, 0, 0, 0, 1, 0, 0, 0);
             if (pl_ && j->ulti) I32(pl_, 0x54) = charge0;
             int pc = mech_pop(sim, c, hp0);
+            /* the skill's OnChargeHitStatusEffect on the hit enemy, through the status store (superfix_status.c) with the
+             * arguments of the area enemy call 0xb2a71c (source player, team, source object, source character, kind 2 = super) */
+            if (j->hit_st && !pc && I32(c, 0x3c4) > 0 && I32(c, 0x84) != I32(ch, 0x84))
+                ((void (*)(void *, void *, int, int, void *, void *, int, int, int, int, int))B(0xb35dd0))(c, j->hit_st, j->owner,
+                    I32(ch, 0x84), ch, ch, 2, 0, -1, -1, 0);
             /* ChargePushback (Bull / El Primo 130 -> 780 u, Darryl 70, Surge / Stu 100), away from the charger as at 0xb5afd4;
              * not after a knock-out (the victim is parked or gone) */
             if (j->push > 0 && I32(c, 0x3c4) > 0) { KNOCKBACK(c, x, y, j->push, j->owner); g_charge_pushes++; }
