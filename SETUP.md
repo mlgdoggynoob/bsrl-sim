@@ -167,9 +167,10 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   re-implements the compiled-out ones: damage below 50 % hp and the 900 shield (`env.c` my_root), speed in bushes
   (`env.c` rec_move), reload (`superfix_status.c`); `NB_GEARS=0` turns those off. `NbeResp` gear_* fields.
   `python -m gear_check`. Notes: `notes/issue51.md`.
-- `desc_audit.patch` (issue #55, a diff on top of `gears.patch`): three more cards in `gadget.c`'s `g_masked`, whose kind
-  disagrees with the game's own description (`python -m desc_audit`): Barley's healing potion (fired as damage), Tick's
-  shield-then-burst (no shield) and Colt's two-shot reload (one shot).
+- `desc_audit.patch` (issue #55, a diff on top of `gears.patch`): gadgets made to match the game's own description
+  (`python -m desc_audit`). AREA gives the row's ShieldPercent for ShieldTicks (Tick's shield before the burst) through a
+  new `superfix_status.c` zone, `superfix_status_shield`; SHOT fires extra waves for the cards in `g_waves` (Colt's
+  Gunslinger_Reload: two shots); Barley's healing potion (REPEAT fires it as main-attack damage) joins `g_masked`.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

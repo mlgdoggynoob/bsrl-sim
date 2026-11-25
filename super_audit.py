@@ -48,9 +48,10 @@ Output: super_audit_hyper.json / .md.
 `gadget_kind` mirrors nbhost gadget.c's classify functions: area at the brawler, the gadget's own skill shot or area, repeat /
 spin volleys, items, instant heals; R-T's super charge is gadget_check's). Each shooter gets that gadget card and fires it
 (fire 3, aimed at the target) in place of the super; consumed = the host counted a use (NbeResp gad_used). Expected effects
-come from the tables (`expected_gadget`). --gadget-slot 1 audits each brawler's second such gadget. Output:
+come from the tables and from the card's own description (`expected_gadget`: damage, push and heal that texts.csv names
+are expected too, issue #55; the other effects it names are listed as not checked live). --gadget-slot 1 audits each brawler's second such gadget. Output:
 super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*)."""
-import argparse, collections, functools, json, os, sys, threading, time
+import argparse, collections, functools, json, os, re, sys, threading, time
 import numpy as np
 
 NIL = -2147483648
@@ -235,8 +236,8 @@ HEAL_TYPES = ("Heal", "Hot", "HealRegen", "HealAndDamage", "HotAndDot")
 
 MASKED = {"BowDude_Totem", "Speedy_Rewind", "HammerDude_Pull", "HookDude_Homing", "AssaultShotgun_Bomb", "Ninja_InvisibleArea",
           "Gladiator_Amp", "MagicalGirl_FlyArea",
-          "Barkeep_HealPotion", "ClusterBombDude_Explosion", "Gunslinger_Reload"}   # gadget.c g_masked: classified, but no
-# effect in this audit, or (the last three) the effect disagrees with the game's description (desc_audit, #55) -> not usable
+          "Barkeep_HealPotion"}   # gadget.c g_masked: classified, but no
+# effect in this audit, or (the last one, Barley's) the effect disagrees with the game's description (desc_audit, #55) -> not usable
 GADGET_KINDS = ("area", "shot", "skill_area", "repeat", "spin", "item", "heal_now", "super")
 
 
@@ -298,7 +299,7 @@ def area_gadgets():
     return {b: next((c, n) for c, n, k in gs if k == "area") for b, gs in all_gadgets().items() if any(k == "area" for _, _, k in gs)}
 
 
-def expected_gadget(name, slot=0):
+def _expected_gadget(name, slot=0):
     """--gadget: the brawler's audit_gadgets(slot) gadget -> the same dict as expected(). area: area always; damage, push,
     heal from the area's area_effects_logic row, range = its radius (the target stands inside it). shot / skill_area: the
     gadget's own skill as expected_skill() reads a super. repeat / spin: projectile + damage (the host gives them the main
@@ -328,6 +329,42 @@ def expected_gadget(name, slot=0):
     if kind == "item":
         return {**base, "kind": "Gadget: item", "range": 600.0, "expect": ["item"], "items": [a["CustomObject"].split(";")[0]]}
     return {**base, "kind": "Gadget: heal_now", "range": 600.0, "expect": ["heal"]}
+
+
+TEXT_OBSERVABLE = ("damage", "push", "heal")     # text_effects names this audit measures (observed()): the rest is "not checked live"
+
+
+@functools.lru_cache(None)
+def _gadget_text():
+    """(brawler, accessories row name) -> the card's description text (desc_audit.rows())"""
+    import desc_audit
+    return {(r["brawler"], r["card"]): r["text"] for r in desc_audit.rows() if r["type"] == "gadget"}
+
+
+def text_expectation(name, acc):
+    """the card's description text -> (effects it names that observed() can measure, notes for the rest / the text itself)"""
+    import desc_audit
+    text = _gadget_text().get((name, acc), ""); fx = desc_audit.text_effects(text)
+    seen = [e for e in TEXT_OBSERVABLE if e in fx]
+    rest = sorted(fx - set(TEXT_OBSERVABLE))
+    notes = []
+    if rest: notes.append("not checked live (text names): " + ", ".join(rest))
+    if re.search(r"split|divid|in 2|in two", text.lower()): notes.append("not checked live (text names): split")
+    if re.search(r"shield", text.lower()) and "shield" not in rest: notes.append("not checked live (text names): shield")
+    if re.search(r"follow|homing|closest|seek", text.lower()): notes.append("not checked live (text names): homing")
+    if seen: notes.append("text says: " + ", ".join(seen))
+    return seen, notes
+
+
+def expected_gadget(name, slot=0):
+    """_expected_gadget (the data-derived effects) plus the damage / push / heal the card's description text names (text_expect);
+    other text effects (slow, speed, invisible, split, homing, stun, ...) go to notes as "not checked live" """
+    e = _expected_gadget(name, slot)
+    seen, notes = text_expectation(name, e["skill"])
+    e["text_expect"] = [x for x in seen if x not in e["expect"]]
+    e["expect"] = e["expect"] + e["text_expect"]
+    e["notes"] = e["notes"] + notes
+    return e
 
 
 # ------------------------------------------------------------------ classification
@@ -802,16 +839,21 @@ def _check():
         ag = area_gadgets()   # --gadget: the host's AREA gadgets, Rosa's WallSpawn left out
         assert {"Barkeep", "DeadMariachi", "Ghost", "Domain", "Meeple", "KickerDude"} <= set(ag) and "Rosa" not in ag, sorted(ag)
         assert all(c // 1000000 == 23 for c, _ in ag.values())
-        assert "ClusterBombDude" not in ag   # Tick's ClusterBombDude_Explosion: masked, the shield is missing (desc_audit, #55)
+        eb = expected_gadget("ClusterBombDude")   # Tick's: the host also gives the 50 % shield, which observed() cannot see
+        assert "ClusterBombDude" in ag and eb["skill"] == "ClusterBombDude_Explosion" and {"area", "damage", "push"} <= set(eb["expect"]) and eb["delay"] == 20, eb
         assert expected_gadget("DeadMariachi")["expect"] == ["area", "heal"] and expected_gadget("Ghost")["expect"] == ["area"]
         kinds = collections.Counter(k for gs in all_gadgets().values() for _, _, k in gs)   # gadget.c's coverage of the enabled cards
-        assert sum(kinds.values()) == 213 and kinds["shot"] == 24 and kinds["repeat"] + kinds["spin"] == 7, kinds   # #55 masked Colt's and Barley's
+        assert sum(kinds.values()) == 213 and kinds["shot"] == 25 and kinds["repeat"] + kinds["spin"] == 7, kinds   # #55 masked Barley's
         assert kinds["item"] == 2 and kinds["heal_now"] == 2 and kinds["super"] == 1 and kinds["skill_area"] == 2, kinds
-        assert audit_gadgets(0)["Gunslinger"][1] == "Gunslinger_BigBullet" and "Gunslinger" not in audit_gadgets(1)   # Reload: masked (#55)
+        assert audit_gadgets(0)["Gunslinger"][1] == "Gunslinger_Reload" and audit_gadgets(1)["Gunslinger"][1] == "Gunslinger_BigBullet"
         assert expected_gadget("Gunslinger")["expect"][:1] == ["projectile"] and expected_gadget("Gunslinger")["gadget_kind"] == "shot"
         assert not {"BowDude", "HookDude"} & set(audit_gadgets(0))
-        assert "Barkeep" not in audit_gadgets(1) and expected_gadget("ElectroSniper")["expect"] == ["item"]   # Barley's HealPotion: masked (#55)
+        assert "Barkeep" not in audit_gadgets(1) and expected_gadget("ElectroSniper")["expect"][:1] == ["item"]   # Barley's HealPotion: masked (#55)
         assert expected_gadget("BullDude", 1)["gadget_kind"] == "skill_area" and "area" in expected_gadget("BullDude", 1)["expect"]
+        eg = expected_gadget("ElectroSniper")   # text effects: damage the data did not give goes to text_expect, the unmeasurable to notes
+        assert eg["text_expect"] == ["damage"] and "damage" in eg["expect"] and any("slow" in x for x in eg["notes"]), eg
+        assert expected_gadget("DeadMariachi")["text_expect"] == [] and any("not checked live" in x and "slow" in x for x in expected_gadget("Ghost")["notes"])
+        assert any("slow, stun" in x for x in expected_gadget("BullDude", 1)["notes"])
         assert expected_gadget("Samurai")["expect"] == ["heal"] and "Splitter" not in audit_gadgets(0)
         sp = find_spots(MAP)
         assert len(sp) == 10 and all(len(d) >= 2 for _, _, d in sp), len(sp)

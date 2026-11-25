@@ -31,13 +31,15 @@
  *         at the brawler with the shipped helper 0xb35c40 (create 0xb2aefc, world add 0xb63198, start 0xb29494, the chain
  *         superfix.c's spawnAreaEffect uses), kind 2 and no extra damage, as at every shipped caller: the area's damage,
  *         heal, status and wall spawn then come from libg and the earlier rounds (superfix, spawnfix). ActivationDelay
- *         ticks (Tick: 20) are waited out first, and the area is placed where the brawler is then.
+ *         ticks (Tick: 20) are waited out first, and the area is placed where the brawler is then. A row's ShieldPercent
+ *         for ShieldTicks (Tick: 50 % for 21) starts at the fire (superfix_status_shield, issue #55).
  *   SHOT  empty Type, no AreaEffect, a Skill whose BehaviorType is Attack with Projectiles (32 rows: Spike, Colt x2, Brock,
  *         Shelly, Emz x2, ...; published PROJECTILE): NumBulletsInOneAttack of the skill's first projectile over Spread degrees
  *         centred on the aim, to CastingRange, with the skill's Damage scaled by the brawler's damage percent (0xb4b660, as the
  *         attack path scales it), spawned with the projectile spawn 0xb78190 (spawnfix.c) at kind 4. What the projectile
- *         does on hit or at its end (areas, items, summons, pull / push) is libg's and the earlier rounds'. Not applied: the
- *         skill's timing (ActiveTime, MsBetweenAttacks waves), TwoGuns, AttackPattern.
+ *         does on hit or at its end (areas, items, summons, pull / push) is libg's and the earlier rounds'. The skill's timing
+ *         (ActiveTime, MsBetweenAttacks waves) is not read: g_waves lists the cards whose description names more waves
+ *         (Colt's Gunslinger_Reload: two shots, issue #55). Not applied: TwoGuns, AttackPattern.
  *   SKILL AREA  the same, but the skill has no projectile, only an AreaEffectObject (published SPAWN): Bull's Stomp (Attack:
  *         at the brawler), 8-Bit's Extra Credits (AimableArea: at the aim point at CastingRange).
  *   REPEAT  repeat_shot with a CustomObject projectile (6 rows, PROJECTILE): CustomValue1 projectiles over CustomValue2 degrees
@@ -87,6 +89,9 @@ static int ad_get(void *ad, uint64_t getter) { return ((AdGet)B(getter))(ad); }
 #define AD_CV2 0xa933e0
 #define AD_ACT_DELAY 0xa932b8   /* ActivationDelay (column index at 0x123f000+1952, the getters' pattern) */
 #define AD_AREA 0x70            /* AccessoryData +0x70: AreaEffect -> AreaEffectData (0xa92568 stores it) */
+#define AD_SHIELD_PCT 0xa93370  /* ShieldPercent (column index at 0x123f000+0x7fc, the getters' pattern; issue #55) */
+#define AD_SHIELD_TICKS 0xa93380 /* ShieldTicks (+0x800) */
+void superfix_status_shield(uint8_t *ch, int pct, int ticks) __attribute__((weak));
 
 typedef struct Gad Gad;
 typedef struct {
@@ -101,6 +106,8 @@ struct Gad {
     void *area_data; int area_x, area_y, area_here;        /* the area to spawn (NULL = the accessory's AreaEffect) and where
                                                             * (area_here 1 = at the brawler when it spawns, 0 = area_x / y) */
     int spin_id, spin_next, spin_end, spin_ang;            /* spin_shoot: char id, next volley tick, end tick, volley angle */
+    int burst_id, burst_left, burst_next, burst_gap, burst_deg;   /* SHOT waves after the first (g_waves): char id, volleys
+                                                                   * still to fire, next tick, ticks between, angle */
     int hp_prev, hp_lost[100];                        /* damage taken per tick (ring by tick % 100), for HEAL_TAKEN */
 };
 static Gad g_gad[NBE_MAXP];
@@ -160,6 +167,9 @@ static int area_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
     if (I32(ch, 0x3c4) <= 0 || g->area_at) return 0;
     int delay = ad_get(g->ad, AD_ACT_DELAY);
     g->area_id = I32(ch, 8); g->area_at = tick + (delay > 0 ? delay : 0); g->area_data = NULL; g->area_here = 1;
+    /* the row's own shield over the delay (Tick: 50 % for 21 ticks, then the burst at 20; issue #55) */
+    int sp = ad_get(g->ad, AD_SHIELD_PCT), st = ad_get(g->ad, AD_SHIELD_TICKS);
+    if (sp > 0 && st > 0 && superfix_status_shield) superfix_status_shield(ch, sp, st);
     if (delay <= 0) area_spawn(sim, g);
     return 1;
 }
@@ -230,12 +240,31 @@ static int shot_classify(void *ad, int type) {
     void *sd = type == ACC_PLAIN ? PTR(ad, AD_SKILL) : NULL;
     return sd && !PTR(ad, AD_AREA) && I32(sd, SD_BEHAVIOR) == BT_ATTACK && skill_proj(sd);
 }
-static int shot_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
-    (void)g; (void)tick;
-    void *sd = PTR(g->ad, AD_SKILL); if (I32(ch, 0x3c4) <= 0) return 0;
+/* SHOT gadgets that fire more than one wave (issue #55: python -m desc_audit compares the description): card, waves,
+ * ticks between them. The skill's ActiveTime / MsBetweenAttacks do not pin the count (Colt's 300 / 100 would be 3 waves). */
+static const struct { int card, waves, gap; } g_waves[] = {
+    {23000273, 2, 2},   /* Gunslinger_Reload: "fires two quick shots", MsBetweenAttacks 100 ms = 2 ticks */
+};
+static int shot_volley(void *sim, Gad *g, uint8_t *ch, double deg) {
+    void *sd = PTR(g->ad, AD_SKILL);
     int n = sd_get(sd, SD_NBULLETS), cr = sd_get(sd, SD_RANGE);
     n = n < 1 ? 1 : n > 16 ? 16 : n;   /* NumBulletsInOneAttack 1..5 in the gadget rows */
-    return volley(sim, ch, skill_proj(sd), deg, n, sd_get(sd, SD_SPREAD), cr > 0 ? cr * 100 : 1000, dmg_scaled(ch, sd_get(sd, SD_DAMAGE))) > 0;
+    return volley(sim, ch, skill_proj(sd), deg, n, sd_get(sd, SD_SPREAD), cr > 0 ? cr * 100 : 1000, dmg_scaled(ch, sd_get(sd, SD_DAMAGE)));
+}
+static int shot_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+    if (I32(ch, 0x3c4) <= 0 || g->burst_left) return 0;
+    if (shot_volley(sim, g, ch, deg) <= 0) return 0;
+    for (unsigned k = 0; k < sizeof g_waves / sizeof *g_waves; k++)
+        if (g_waves[k].card == g->card && g_waves[k].waves > 1) {
+            g->burst_id = I32(ch, 8); g->burst_left = g_waves[k].waves - 1; g->burst_gap = g_waves[k].gap > 0 ? g_waves[k].gap : 1;
+            g->burst_next = tick + g->burst_gap; g->burst_deg = (int)deg;
+        }
+    return 1;
+}
+static void burst_tick(void *sim, Gad *g, int tick) {   /* the later waves, along the first wave's angle */
+    uint8_t *ch = env_obj_by_id(sim, g->burst_id);
+    if (!ch || I32(ch, 0x3c4) <= 0) { g->burst_left = 0; return; }
+    while (g->burst_left > 0 && tick >= g->burst_next) { shot_volley(sim, g, ch, g->burst_deg); g->burst_left--; g->burst_next += g->burst_gap; }
 }
 
 /* ---- SKILL AREA: the gadget's skill has no projectile, only an AreaEffectObject: an Attack skill's area at the brawler
@@ -371,8 +400,6 @@ static const int g_masked[] = {
     23001255,   /* MagicalGirl_FlyArea: the area summon never spawns */
     /* issue #55: the game's description disagrees with what the kind does (python -m desc_audit) */
     23000293,   /* Barkeep_HealPotion: a heal for allies; REPEAT fires it as main-attack damage at the policy's aim */
-    23000355,   /* ClusterBombDude_Explosion: a shield, then a burst; AREA gives only the burst */
-    23000273,   /* Gunslinger_Reload: two quick slowing shots; SHOT fires one */
 };
 static int masked(int card) { for (unsigned k = 0; k < sizeof g_masked / sizeof *g_masked; k++) if (g_masked[k] == card) return 1; return 0; }
 
@@ -416,6 +443,7 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
         if (g_gad[i].hot_end) heal_tick(sim, &g_gad[i], tick);
         if (g_gad[i].area_at && tick >= g_gad[i].area_at) area_spawn(sim, &g_gad[i]);
         if (g_gad[i].spin_end) spin_tick(sim, &g_gad[i], tick);
+        if (g_gad[i].burst_left) burst_tick(sim, &g_gad[i], tick);
         if (g_gad[i].im && g_gad[i].type == ACC_HEAL_TAKEN) taken_tick(sim, &g_gad[i], tick);
     }
 }
