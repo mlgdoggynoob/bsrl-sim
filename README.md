@@ -1,6 +1,6 @@
 <p align="center">
-  <a href="https://youtu.be/KqxcA1EehUY"><img src="docs/img/intro.gif" alt="The RL policy playing a real match (projectile overlay on)" width="720"></a><br>
-  <sub>The RL policy playing a real match (projectile overlay on) · <a href="https://youtu.be/KqxcA1EehUY">full video</a></sub>
+  <a href="https://youtu.be/KqxcA1EehUY"><img src="docs/img/intro.gif" alt="The RL policy playing a real match with the det_v6 detection overlay (Barley's burning area boxed as an area effect)" width="720"></a><br>
+  <sub>The RL policy playing a real match with the det_v6 detection overlay (Barley's burning area boxed as an area effect) · <a href="https://youtu.be/KqxcA1EehUY">full video</a></sub>
 </p>
 
 <h1 align="center">bsrl-sim</h1>
