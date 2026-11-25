@@ -24,7 +24,9 @@
  *   AREA  empty Type (+0x24 == 0) with an AreaEffect (AccessoryData +0x70, resolved by createReferences at 0xa92568): the
  *         gadgets that only drop their area at the brawler (Barley's Slow, Poco's Regen and Cleanse, Tick's Explosion,
  *         Shade's Spooky, Trunk's Area). Left out: Rosa's GrowBush (a WallSpawn area: spawnfix.c's wall ring would put
- *         walls where she grows bushes) and Meeple's RageQuit (HpBasedStun: not applied by the client build). Published
+ *         walls where she grows bushes). Meeple's RageQuit (HpBasedStun) stuns through superfix_cc.c (issue #19 final);
+ *         the spin_shoot rows without a projectile (Fang's KickerDude_Sweep, a LineOfSight stun area, and Painter_Push) are
+ *         AREA too (their spin animation is the client's). Published
  *         as kind SPAWN; `python -m super_audit --gadget` checks each one's effects. The area is spawned
  *         at the brawler with the shipped helper 0xb35c40 (create 0xb2aefc, world add 0xb63198, start 0xb29494, the chain
  *         superfix.c's spawnAreaEffect uses), kind 2 and no extra damage, as at every shipped caller: the area's damage,
@@ -41,7 +43,7 @@
  *   REPEAT  repeat_shot with a CustomObject projectile (6 rows, PROJECTILE): CustomValue1 projectiles over CustomValue2 degrees
  *         at the main attack's range and damage (the reading of the values is this host's, see repeat_fire).
  *   SPIN  spin_shoot with a CustomObject projectile (TntDude, BarrelBot, KickerDude_Mines; PROJECTILE): volleys around the
- *         brawler for ActiveTicks (spin_fire). The two rows without a projectile (KickerDude_Sweep, Painter_Push) stay unusable.
+ *         brawler for ActiveTicks (spin_fire). The two rows without a projectile (KickerDude_Sweep, Painter_Push) are AREA.
  *   ITEM  spawn rows whose CustomObject is an items.csv row (Bolt's trap, Gale's wind wall; SPAWN): the item at the
  *         brawler through the item factory 0xb55684.
  *   SUPER charge_ulti (R-T; published SUPER): the super charge to CustomValue1 % of its maximum.
@@ -139,11 +141,10 @@ static void heal_tick(void *sim, Gad *g, int tick) {
 /* ---- AREA (at the brawler) */
 #define AREA_WALLSPAWN 15   /* AreaEffectData +0x118 type: spawnfix.c's wall ring would build walls (Sprout / Wally tiles),
                              * not Rosa's bushes: left out until a bush ring exists */
-#define AREA_HPSTUN 43      /* HpBasedStun (Meeple's RageQuit): the area spawns, but the client build applies neither its stun
-                             * nor its pushback (super_audit --gadget: no push), so the gadget would be a no-op: left out */
-static int area_classify(void *ad, int type) {
-    void *a = type == ACC_PLAIN ? PTR(ad, AD_AREA) : NULL;
-    return a && I32(a, 0x118) != AREA_WALLSPAWN && I32(a, 0x118) != AREA_HPSTUN;
+static void *custom_proj(void *ad);
+static int area_classify(void *ad, int type) {   /* issue #19 final: also spin_shoot rows with an area and no projectile */
+    void *a = type == ACC_PLAIN || (type == ACC_SPIN && !custom_proj(ad)) ? PTR(ad, AD_AREA) : NULL;
+    return a && I32(a, 0x118) != AREA_WALLSPAWN;
 }
 static void area_spawn(void *sim, Gad *g) {
     uint8_t *ch = env_obj_by_id(sim, g->area_id); g->area_at = 0;

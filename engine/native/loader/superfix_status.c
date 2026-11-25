@@ -487,7 +487,7 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
 void superfix_status_area(uint8_t *a) {
     if (!g_superfix || !mode() || !a) return;
     uint8_t *d = ((getp_t)B(0xb6a384))(a);
-    if (d && (I32(d, 0x118) == 16 || I32(d, 0x118) == 24)) {   /* issue #19: Stun / Silence areas (superfix_cc.c) */
+    if (d && (I32(d, 0x118) == 16 || I32(d, 0x118) == 24 || I32(d, 0x118) == 43)) {   /* issue #19: Stun / Silence / HpBasedStun areas (superfix_cc.c) */
         extern void superfix_cc_area(uint8_t *, uint8_t *) __attribute__((weak)); if (superfix_cc_area) superfix_cc_area(a, d);
         return;
     }
