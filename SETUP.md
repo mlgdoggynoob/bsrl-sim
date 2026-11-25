@@ -155,7 +155,9 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   word from power-1 numbers is x2 (not DamageScaleType 2 of a brawler, already a percent of power-11 hp; `NB_HEAL_SCALE=0`
   off). `superfix.c`: Pam's turrets heal 14 % of Pam's max hp a second (the clip; the data's 10 % of the turret's own hp
   gave 304), Poco's super heal x2. `superfix_status.c`: status Healing x2. `superfix_moves.c`: R-T's rejoin heal x2.
-  `python -m status_check` scene 16. Notes: `notes/issue22.md`.
+  `python -m status_check` scene 16. Notes: `notes/issue22.md`. Also (#6) Bonnie's hypercharged teeth: `spawnfix.c` starts
+  BulletExplosion bullets BulletExplosionBulletOffset units from the centre (a ring; `NB_SPAWNFIX_OFFSET=0` off), and
+  `env.c` charge_land gives the DamageScaleType 4 chain its Damage % of the skill's Damage (`notes/issue6-leftovers.md`).
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

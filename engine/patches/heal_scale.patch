@@ -4,9 +4,11 @@
 # numbers x2, not DamageScaleType 2 of a brawler owner; NB_HEAL_SCALE=0 off. superfix.c: a summon Hot area of
 # DamageScaleType 2 (Pam's turrets) heals TURRET_HEAL_PCT 14 % of the summoner's max hp, else x2; Poco's super heal x2.
 # superfix_status.c: status Healing x2. superfix_moves.c: R-T's rejoin heal x2.
+# Issue #6, Bonnie's hypercharged teeth: spawnfix.c starts BulletExplosion bullets BulletExplosionBulletOffset units out
+# (NB_SPAWNFIX_OFFSET=0 off); env.c charge_area returns the area, charge_land sets a DamageScaleType 4 chain's share.
 # Paths relative to engine/.
 diff --git a/native/loader/env.c b/native/loader/env.c
-index 5fb5756..294b06a 100644
+index 5fb5756..0a8ea40 100644
 --- a/native/loader/env.c
 +++ b/native/loader/env.c
 @@ -7,7 +7,7 @@
@@ -44,7 +46,42 @@ index 5fb5756..294b06a 100644
  /* super charge 0xc420d8(player, damage, ...): the root's calls charge for the level-scaled damage; the real game's
   * charge does not depend on the power level: divide by it (agent: only from the root's call sites). Issue #19 final: the
   * hitter's EnragerOverchargeSuper percent (Edgar, superfix_status_charge_pct) is added to those calls' damage. */
-@@ -2564,6 +2583,8 @@ void env_install(void) {
+@@ -681,12 +700,13 @@ static void zone_tick(void *sim) {   /* pre-snapshot, once per tick */
+ /* area create + place 0xb2aefc(areaData, ownerChar, x, y, z, kind 2 = super, extraDmg) -> area (team, owner, skin, damage),
+  * then world add 0xb63198 and the area apply 0xb29494 (spawnfix's hook gives a BulletExplosion its child projectiles), the
+  * sequence of every client spawn (0xb47360 for the trail) */
+-static void charge_area(void *sim, uint8_t *ch, void *data, int x, int y) {
+-    if (!data || !ch) return;
+-    void *a = ((void *(*)(void *, void *, int, int, int, int, int))B(0xb2aefc))(data, ch, x, y, 0, 2, 0); if (!a) return;
++static uint8_t *charge_area(void *sim, uint8_t *ch, void *data, int x, int y) {
++    if (!data || !ch) return NULL;
++    uint8_t *a = ((void *(*)(void *, void *, int, int, int, int, int))B(0xb2aefc))(data, ch, x, y, 0, 2, 0); if (!a) return NULL;
+     void *w = PTR(ch, 0x20) ? PTR(ch, 0x20) : PTR(sim, 0);
+     ((void (*)(void *, void *))B(0xb63198))(w, a); ((void (*)(void *))B(0xb29494))(a); I32(ch, 0x700) = 0;
+     g_charge_areas++; zone_add(sim, ch, data, x, y);
++    return a;
+ }
+ static void charge_break(void *sim, uint8_t *ch, int x, int y, int r) {
+     void *m = PTR(sim, 0x68); if (!m) return;
+@@ -737,10 +757,15 @@ static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type
+ /* Bonnie's landing (charge type 16, RE-IMPLEMENTED): the start's AreaEffectObject (CannonGirlExplosion, an Effect area the
+  * apply's type gate ignores; the hypercharged one is a StatusEffect area) is spawned where she lands, and every living
+  * enemy character within CHARGE_LAND_R (the Effect area's own Radius when it is one) is hit once for the skill's Damage,
+- * scaled as the charge contact (x2 power level, +10 % per cube); the owner's super charge is kept */
++ * scaled as the charge contact (x2 power level, +10 % per cube); the owner's super charge is kept. A chain of DamageScaleType 4
++ * (the hypercharged landing's CannonGirlBulletExplosionOvercharged teeth, Damage 25) takes Damage % of the extra the spawner
++ * passes: the landing area's damage word, which superfix_items.c's chain copies, is set to that share of the skill's Damage
++ * (25 % of 1000, power 1: my_root scales each tooth's hit). [?] that the extra is the skill's Damage (server code). */
+ static long g_charge_land_hits;
+ static void charge_land(void *sim, ChargeJob *j, uint8_t *ch, int x, int y) {
+-    if (j->area1) charge_area(sim, ch, j->area1, x, y);
++    uint8_t *la = j->area1 ? charge_area(sim, ch, j->area1, x, y) : NULL;
++    uint8_t *chain = la && j->dmg > 0 ? ((void *(*)(void *))B(0xa97c04))(PTR(la, 0x10)) : NULL;
++    if (chain && I32(chain, 0x138) == 4 && I32(chain, 0x134) > 0) I32(la, 0xe8) = I32(la, 0xec) = j->dmg * I32(chain, 0x134) / 100;
+     int r = j->area1 && I32(j->area1, 0x118) == 6 && I32(j->area1, 0x12c) > 0 ? I32(j->area1, 0x12c) : CHARGE_LAND_R;
+     if (j->dmg <= 0) return;
+     int d = jround(j->dmg * 2.0 * (1 + 0.10 * cubes_of(j->id))), np_, n; void **ps_ = players(sim, &np_);
+@@ -2564,6 +2589,8 @@ void env_install(void) {
      hook_enter(g_libg, 0xb4103c, rec_stop);
      hook_enter(g_libg, 0x863d88, my_joy_enter);
      o_root = hook_replace(g_libg, 0xb422d0, my_root);
@@ -68,6 +105,63 @@ index 6b34baa..16e25eb 100644
  #define LOG(...) do { fprintf(g_log, __VA_ARGS__); fflush(g_log); } while (0)
  #define VLOG(...) do { if (g_verbose) { fprintf(g_log, __VA_ARGS__); fflush(g_log); } } while (0)
  
+diff --git a/native/loader/spawnfix.c b/native/loader/spawnfix.c
+index 9b59bc8..030b086 100644
+--- a/native/loader/spawnfix.c
++++ b/native/loader/spawnfix.c
+@@ -7,8 +7,12 @@
+  * server's part; here it is re-implemented with libg's own spawn function.
+  *
+  * BulletExplosion (area data +0x118 == 5): N = CustomValue (+0x13c) copies of BulletExplosionBullet (+0x78) leave the area's
+- * position evenly spread over 360 degrees, starting at the angle of the parent's flight (area +0x140) plus BulletExplosionBulletOffset
+- * (+0x148 is not an angle in the data: unused here), each flying BulletExplosionBulletDistance (+0x144) * 100 world units. */
++ * position evenly spread over 360 degrees, starting at the angle of the parent's flight (area +0x140), each flying
++ * BulletExplosionBulletDistance (+0x144) * 100 world units. BulletExplosionBulletOffset (+0x148, units, 31 rows: Bonnie's
++ * hypercharged teeth 500, Byron's 600, Chester's 300, 8-Bit's bonus shot 600, bosses) is the start distance from the centre
++ * on each bullet's own line, so the bullets leave a ring instead of all hitting whoever stands at the centre (issue #6:
++ * Bonnie's 6 teeth all hit an enemy on her landing spot). [?] the server's spawn is compiled out; the column's name and
++ * that it is never an angle (no row above 600) are the evidence. NB_SPAWNFIX_OFFSET=0: all from the centre again. */
+ #include "nbhost.h"
+ #include <stdlib.h>
+ #include <string.h>
+@@ -18,7 +22,7 @@ void hook_enter(Module *m, uint64_t off, void (*fn)(uint64_t *ctx));
+ #define I32(p, o) (*(int32_t *)((uint8_t *)(p) + (o)))
+ #define PTR(p, o) (*(void **)((uint8_t *)(p) + (o)))
+ static int mode(void) { return I32(g_libg->base, 0x12eefb4) == 3; }
+-int g_spawn_fix = 1, g_spawn_dbg = 0;
++int g_spawn_fix = 1, g_spawn_dbg = 0, g_spawn_offset = 1;
+ static long g_nbe, g_nbe_proj;
+ 
+ typedef long (*spawn_t)(int, int, void *, void *, void *, int, int, int, int, int, int, void *, void *, int, int, void *);
+@@ -250,16 +254,17 @@ static void on_area(uint64_t *c) {
+     if (!bullet || !owner || n < 1 || n > 32) return;
+     void *sim = ((void *(*)(void *))B(0xb6a378))(owner);
+     int x = I32(a, 0x38), y = I32(a, 0x3c), kind = I32(a, 0xf8);
+-    int base = 0, dmg = I32(a, 0xe8);
++    int base = 0, dmg = I32(a, 0xe8), off = g_spawn_offset && I32(d, 0x148) > 0 && I32(d, 0x148) <= 3000 ? I32(d, 0x148) : 0;
+     if (g_cur_proj && g_cur_tick == (g_sim ? I32(g_sim, 0x10) : -1)) {
+         uint8_t *pr = (uint8_t *)g_cur_proj; base = angle_of(I32(pr, 0x38) - I32(pr, 0xfc), I32(pr, 0x3c) - I32(pr, 0x100));
+     }
+     for (int i = 0; i < n; i++) {
+         int ang = base + (360 * i) / n;
+         int vx = ((i1_t)B(0xd005e0))(ang + 0x5a), vy = ((i1_t)B(0xd005e0))(ang);
+-        int tx = x + ((vx * dist * 100) >> 10), ty = y + ((vy * dist * 100) >> 10);
++        int sx = x + ((vx * off) >> 10), sy = y + ((vy * off) >> 10);   /* BulletExplosionBulletOffset: the ring it starts on */
++        int tx = sx + ((vx * dist * 100) >> 10), ty = sy + ((vy * dist * 100) >> 10);
+         rec = 1;
+-        void *p = (void *)((spawn_t)B(0xb78190))(x, y, owner, owner, bullet, tx, ty, dmg, dmg, 0, 0, NULL, sim, 0, kind, NULL);
++        void *p = (void *)((spawn_t)B(0xb78190))(sx, sy, owner, owner, bullet, tx, ty, dmg, dmg, 0, 0, NULL, sim, 0, kind, NULL);
+         rec = 0;
+         if (p) g_nbe_proj++;
+         if (g_spawn_dbg && i < 2) LOG("[spawnfix]   child %d ang %d -> %d,%d proj %p\n", i, ang, tx, ty, p);
+@@ -268,6 +273,7 @@ static void on_area(uint64_t *c) {
+ void spawnfix_install(void) {
+     const char *e = getenv("NB_SPAWNFIX"); if (e) g_spawn_fix = atoi(e);
+     if (getenv("NB_SPAWNFIX_DBG")) g_spawn_dbg = 1;
++    if ((e = getenv("NB_SPAWNFIX_OFFSET"))) g_spawn_offset = atoi(e);
+     if ((e = getenv("NB_SPAWNFIX_CHAIN"))) g_spawn_chain = atoi(e);
+     if ((e = getenv("NB_SPAWNFIX_WALLS"))) g_spawn_walls = atoi(e);
+     if (!g_spawn_fix) { LOG("[spawnfix] disabled\n"); return; }
 diff --git a/native/loader/superfix.c b/native/loader/superfix.c
 index 4c3f857..c3d2155 100644
 --- a/native/loader/superfix.c

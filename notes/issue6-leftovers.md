@@ -65,12 +65,15 @@ HP 2440 -> 3440; knocked out while split: the legs go. Weapon swap log: mount ->
   duo: teammate 4240 -> 7280.
 
 ## Dead ends / not done
-- Bonnie's hypercharged teeth (CannonGirlBulletExplosionOvercharged, DamageScaleType 4, Damage 25) carry 0 damage: the
-  chain copies the landing area's damage word (superfix_items.c), and charge_land spawns it with extra 0. Tried: landing
-  area +0xe8 = 25 % of the skill's 1000. Then all 6 teeth hit an enemy on the landing point (5250 with the landing hit),
-  because spawnfix.c spawns BulletExplosion bullets at the centre and ignores BulletExplosionBulletOffset (500 here); an
-  enemy 600 u out got none. Reverted. Needs the offset's meaning (probably the start distance), which changes every
-  BulletExplosion with an offset (31 rows, most of them boss rows).
+- Bonnie's hypercharged teeth (CannonGirlBulletExplosionOvercharged, DamageScaleType 4, Damage 25, CustomValue 6,
+  BulletExplosionBulletOffset 500, Distance 20), fixed in `heal_scale.patch` (#22 branch): spawnfix.c starts each
+  BulletExplosion bullet BulletExplosionBulletOffset units out on its own line (a ring; the server's spawn is compiled out,
+  the column name is the evidence), and env.c charge_land sets the landing area's damage word to Damage % (25) of the
+  skill's 1000, which the chain copies. Probe (enemies at the landing spot and 650 u out every 60 degrees, one at 1200 u
+  between two teeth): centre 2100 (the landing hit only), each of the six 525 (one tooth: 250 x2 power 11 x1.05
+  hypercharge), the one between none. `super_audit --hyper`: Bonnie works (2100, 6 teeth), Surge, Chuck, Gus as before;
+  Byron's hypercharged super now 3150 on its target instead of 7800 (its 6 SnakeOilHyperExplodedProjectile, offset 600, no
+  longer all hit the centre; "missing: heal" either way, the audit's own-heal check). `NB_SPAWNFIX_OFFSET=0`: the old spawn.
 - R-T's marks (SplitterTag: the next hit consumes it for extra damage) are main-attack and gadget logic, not the super; not
   checked.
 - The second split of a battle spawned legs at 4454 / 7800 HP (the first at 7800): client code in the summon (0xb57804..);

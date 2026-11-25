@@ -700,12 +700,13 @@ static void zone_tick(void *sim) {   /* pre-snapshot, once per tick */
 /* area create + place 0xb2aefc(areaData, ownerChar, x, y, z, kind 2 = super, extraDmg) -> area (team, owner, skin, damage),
  * then world add 0xb63198 and the area apply 0xb29494 (spawnfix's hook gives a BulletExplosion its child projectiles), the
  * sequence of every client spawn (0xb47360 for the trail) */
-static void charge_area(void *sim, uint8_t *ch, void *data, int x, int y) {
-    if (!data || !ch) return;
-    void *a = ((void *(*)(void *, void *, int, int, int, int, int))B(0xb2aefc))(data, ch, x, y, 0, 2, 0); if (!a) return;
+static uint8_t *charge_area(void *sim, uint8_t *ch, void *data, int x, int y) {
+    if (!data || !ch) return NULL;
+    uint8_t *a = ((void *(*)(void *, void *, int, int, int, int, int))B(0xb2aefc))(data, ch, x, y, 0, 2, 0); if (!a) return NULL;
     void *w = PTR(ch, 0x20) ? PTR(ch, 0x20) : PTR(sim, 0);
     ((void (*)(void *, void *))B(0xb63198))(w, a); ((void (*)(void *))B(0xb29494))(a); I32(ch, 0x700) = 0;
     g_charge_areas++; zone_add(sim, ch, data, x, y);
+    return a;
 }
 static void charge_break(void *sim, uint8_t *ch, int x, int y, int r) {
     void *m = PTR(sim, 0x68); if (!m) return;
@@ -756,10 +757,15 @@ static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type
 /* Bonnie's landing (charge type 16, RE-IMPLEMENTED): the start's AreaEffectObject (CannonGirlExplosion, an Effect area the
  * apply's type gate ignores; the hypercharged one is a StatusEffect area) is spawned where she lands, and every living
  * enemy character within CHARGE_LAND_R (the Effect area's own Radius when it is one) is hit once for the skill's Damage,
- * scaled as the charge contact (x2 power level, +10 % per cube); the owner's super charge is kept */
+ * scaled as the charge contact (x2 power level, +10 % per cube); the owner's super charge is kept. A chain of DamageScaleType 4
+ * (the hypercharged landing's CannonGirlBulletExplosionOvercharged teeth, Damage 25) takes Damage % of the extra the spawner
+ * passes: the landing area's damage word, which superfix_items.c's chain copies, is set to that share of the skill's Damage
+ * (25 % of 1000, power 1: my_root scales each tooth's hit). [?] that the extra is the skill's Damage (server code). */
 static long g_charge_land_hits;
 static void charge_land(void *sim, ChargeJob *j, uint8_t *ch, int x, int y) {
-    if (j->area1) charge_area(sim, ch, j->area1, x, y);
+    uint8_t *la = j->area1 ? charge_area(sim, ch, j->area1, x, y) : NULL;
+    uint8_t *chain = la && j->dmg > 0 ? ((void *(*)(void *))B(0xa97c04))(PTR(la, 0x10)) : NULL;
+    if (chain && I32(chain, 0x138) == 4 && I32(chain, 0x134) > 0) I32(la, 0xe8) = I32(la, 0xec) = j->dmg * I32(chain, 0x134) / 100;
     int r = j->area1 && I32(j->area1, 0x118) == 6 && I32(j->area1, 0x12c) > 0 ? I32(j->area1, 0x12c) : CHARGE_LAND_R;
     if (j->dmg <= 0) return;
     int d = jround(j->dmg * 2.0 * (1 + 0.10 * cubes_of(j->id))), np_, n; void **ps_ = players(sim, &np_);

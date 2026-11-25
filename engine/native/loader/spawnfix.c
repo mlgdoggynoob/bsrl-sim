@@ -7,8 +7,12 @@
  * server's part; here it is re-implemented with libg's own spawn function.
  *
  * BulletExplosion (area data +0x118 == 5): N = CustomValue (+0x13c) copies of BulletExplosionBullet (+0x78) leave the area's
- * position evenly spread over 360 degrees, starting at the angle of the parent's flight (area +0x140) plus BulletExplosionBulletOffset
- * (+0x148 is not an angle in the data: unused here), each flying BulletExplosionBulletDistance (+0x144) * 100 world units. */
+ * position evenly spread over 360 degrees, starting at the angle of the parent's flight (area +0x140), each flying
+ * BulletExplosionBulletDistance (+0x144) * 100 world units. BulletExplosionBulletOffset (+0x148, units, 31 rows: Bonnie's
+ * hypercharged teeth 500, Byron's 600, Chester's 300, 8-Bit's bonus shot 600, bosses) is the start distance from the centre
+ * on each bullet's own line, so the bullets leave a ring instead of all hitting whoever stands at the centre (issue #6:
+ * Bonnie's 6 teeth all hit an enemy on her landing spot). [?] the server's spawn is compiled out; the column's name and
+ * that it is never an angle (no row above 600) are the evidence. NB_SPAWNFIX_OFFSET=0: all from the centre again. */
 #include "nbhost.h"
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +22,7 @@ void hook_enter(Module *m, uint64_t off, void (*fn)(uint64_t *ctx));
 #define I32(p, o) (*(int32_t *)((uint8_t *)(p) + (o)))
 #define PTR(p, o) (*(void **)((uint8_t *)(p) + (o)))
 static int mode(void) { return I32(g_libg->base, 0x12eefb4) == 3; }
-int g_spawn_fix = 1, g_spawn_dbg = 0;
+int g_spawn_fix = 1, g_spawn_dbg = 0, g_spawn_offset = 1;
 static long g_nbe, g_nbe_proj;
 
 typedef long (*spawn_t)(int, int, void *, void *, void *, int, int, int, int, int, int, void *, void *, int, int, void *);
@@ -250,16 +254,17 @@ static void on_area(uint64_t *c) {
     if (!bullet || !owner || n < 1 || n > 32) return;
     void *sim = ((void *(*)(void *))B(0xb6a378))(owner);
     int x = I32(a, 0x38), y = I32(a, 0x3c), kind = I32(a, 0xf8);
-    int base = 0, dmg = I32(a, 0xe8);
+    int base = 0, dmg = I32(a, 0xe8), off = g_spawn_offset && I32(d, 0x148) > 0 && I32(d, 0x148) <= 3000 ? I32(d, 0x148) : 0;
     if (g_cur_proj && g_cur_tick == (g_sim ? I32(g_sim, 0x10) : -1)) {
         uint8_t *pr = (uint8_t *)g_cur_proj; base = angle_of(I32(pr, 0x38) - I32(pr, 0xfc), I32(pr, 0x3c) - I32(pr, 0x100));
     }
     for (int i = 0; i < n; i++) {
         int ang = base + (360 * i) / n;
         int vx = ((i1_t)B(0xd005e0))(ang + 0x5a), vy = ((i1_t)B(0xd005e0))(ang);
-        int tx = x + ((vx * dist * 100) >> 10), ty = y + ((vy * dist * 100) >> 10);
+        int sx = x + ((vx * off) >> 10), sy = y + ((vy * off) >> 10);   /* BulletExplosionBulletOffset: the ring it starts on */
+        int tx = sx + ((vx * dist * 100) >> 10), ty = sy + ((vy * dist * 100) >> 10);
         rec = 1;
-        void *p = (void *)((spawn_t)B(0xb78190))(x, y, owner, owner, bullet, tx, ty, dmg, dmg, 0, 0, NULL, sim, 0, kind, NULL);
+        void *p = (void *)((spawn_t)B(0xb78190))(sx, sy, owner, owner, bullet, tx, ty, dmg, dmg, 0, 0, NULL, sim, 0, kind, NULL);
         rec = 0;
         if (p) g_nbe_proj++;
         if (g_spawn_dbg && i < 2) LOG("[spawnfix]   child %d ang %d -> %d,%d proj %p\n", i, ang, tx, ty, p);
@@ -268,6 +273,7 @@ static void on_area(uint64_t *c) {
 void spawnfix_install(void) {
     const char *e = getenv("NB_SPAWNFIX"); if (e) g_spawn_fix = atoi(e);
     if (getenv("NB_SPAWNFIX_DBG")) g_spawn_dbg = 1;
+    if ((e = getenv("NB_SPAWNFIX_OFFSET"))) g_spawn_offset = atoi(e);
     if ((e = getenv("NB_SPAWNFIX_CHAIN"))) g_spawn_chain = atoi(e);
     if ((e = getenv("NB_SPAWNFIX_WALLS"))) g_spawn_walls = atoi(e);
     if (!g_spawn_fix) { LOG("[spawnfix] disabled\n"); return; }
