@@ -58,7 +58,7 @@ intent (or none = free play), with a readable reason. The intent goes into the o
 
 ```mermaid
 flowchart LR
-    H["Game host"] -->|"obs + state"| O["Observation v5.7<br/>self · cond · intent · 39 entity rows · 25×25 grid"]
+    H["Game host"] -->|"obs + state"| O["Observation v5.9<br/>self · cond · intent · 39 entity rows · 25×25 grid"]
     O -->|"1 / s"| PL["Rule planner"] -->|"intent"| O
     O -->|"10 / s"| P["Policy (GRU)"] -->|"actions"| H
 ```
@@ -125,6 +125,8 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | v5.5 | intent block (11) at the tail of self | zero-padded, act the same |
 | v5.6 | enemy brawler identity and line of sight (entity rows 20 → 36) | zero-padded, act the same |
 | v5.7 | fire head: 4th class gadget (zero-initialised `fire_x` head), allowed only while self 3 (gadget ready) is set | `fire_x` zeros, act the same while self 3 is 0 |
+| v5.8 | fire head: 5th class hypercharge, allowed only while self 4 (hypercharge ready) is set | act the same while self 4 is 0 |
+| v5.9 | invisible enemies are left out of the observation beyond their reveal distance (host `encode.c`; no shape change) | load unchanged |
 
 ## What is here
 
@@ -247,7 +249,7 @@ cd $SIM_WORK/runs && python -m http.server 8766      # dashboard: http://localho
   charge, gadget cooldown). They are not in the observation. `python -m gear_check` asserts each gear's effect in one
   battle, `--check` without the host; the gear list and what libg still reads: `notes/issue51.md`.
 - Observation layout changes must be mirrored by anything that consumes exported policies. `obs_v5` carries the
-  version (`obs_v5.OBS_VERSION`, now `v5.8`; saved in every checkpoint) that exported policies are checked against.
+  version (`obs_v5.OBS_VERSION`, now `v5.9`; saved in every checkpoint) that exported policies are checked against.
 
 ## Licence
 
