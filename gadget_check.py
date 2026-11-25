@@ -6,7 +6,8 @@
      with its test). The effect has to show in at least EFFECT_SHARE of the activations of each kind: a dash aimed into
      a wall stops short and enemy fire can outweigh a heal over time, and the check plays random agents in a real battle;
   3. fire 3 on a gadget that is not ready (no use left / cooldown / kind not implemented) spends nothing;
-  4. env_v5.Env.gadget (obs_v5 self 3) agrees with the response.
+  4. env_v5.Env.gadget (obs_v5 self 3) agrees with the response;
+  5. (also --check) no usable gadget disagrees with the game's own description (desc_audit, issue #55) beyond DESC_OPEN.
 With no implemented kind in play (an old host build) it checks 1, 3 and 4 and says so.
 python -m gadget_check [--minutes 4] [--per-kind 6] [--roster Splitter,Attacher,Samurai]   (--roster: only these brawlers,
 e.g. to reach a kind that one brawler has: R-T's SUPER)      python -m gadget_check --check   (no game: the judging rules)"""
@@ -17,6 +18,18 @@ SETTLE = 6         # ticks from the fire to the effect judgement; a heal over ti
 DASH_MIN = 400.0   # world units in SETTLE ticks: a walk covers < 220 (720 u/s x 6 ticks x 50 ms), a dash (600..1300 u at
                    # 2000..3500 u/s) 600 unless a wall stops it
 EFFECT_SHARE = 0.6
+DESC_OPEN = {"Sniper_HandGun": "#54", "Leaper_Shotgun": "#54"}   # desc_audit mismatches with an open fix (repeat_shot aim / count)
+
+
+def desc_mismatches():
+    """usable gadgets whose kind disagrees with the game's own description (desc_audit, issue #55), minus DESC_OPEN. None:
+    no game data. A new mismatch fails the check: mask the card (gadget.c g_masked, super_audit.MASKED) or fix its kind."""
+    try:
+        import desc_audit
+        rows = desc_audit.flagged()
+    except (OSError, KeyError, StopIteration):
+        return None
+    return ["%s %s (%s): %s" % (r["brawler"], r["card"], r["kind"], ", ".join(r["flags"])) for r in rows if r["card"] not in DESC_OPEN]
 
 
 def snap(r, p):
@@ -93,7 +106,9 @@ def _check():
     assert WANT["SUPER"](s(sc=0)) and not WANT["SUPER"](s(sc=3000))
     assert judge(s(cd=5), s(cd=4)) == [] and judge(s(cd=5), s(cd=4, used=1)) == ["not ready, yet a use was spent"]
     assert judge(s(kind=P.GAD_NONE, charges=0), s(kind=P.GAD_NONE, charges=0)) == []
-    print("gadget_check self-check ok")
+    bad = desc_mismatches()
+    assert not bad, "gadgets that disagree with their description: " + "; ".join(bad)
+    print("gadget_check self-check ok" + ("" if bad is not None else " (no game data: description audit skipped)"))
 
 
 def main():
@@ -103,6 +118,7 @@ def main():
     ap.add_argument("--check", action="store_true", help="the judging rules on made-up responses (no game)")
     a = ap.parse_args()
     if a.check: return _check()
+    bad = desc_mismatches(); assert not bad, "gadgets that disagree with their description: " + "; ".join(bad)
     _load_proto(); import env_v5 as E
     env = E.Env(1, E.make_battle_fn(10, roster=[x for x in a.roster.split(",") if x] or None, gadgets=True), ticks=2, fair=True, max_ticks=4000)
     rng = np.random.default_rng(0); pend = {}; fails = []; done = collections.Counter(); refused = collections.Counter()

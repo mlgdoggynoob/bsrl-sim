@@ -234,15 +234,18 @@ HEAL_TYPES = ("Heal", "Hot", "HealRegen", "HealAndDamage", "HotAndDot")
 
 
 MASKED = {"BowDude_Totem", "Speedy_Rewind", "HammerDude_Pull", "HookDude_Homing", "AssaultShotgun_Bomb", "Ninja_InvisibleArea",
-          "Gladiator_Amp", "MagicalGirl_FlyArea"}   # gadget.c g_masked: classified, but no effect in this audit -> not usable
+          "Gladiator_Amp", "MagicalGirl_FlyArea",
+          "Barkeep_HealPotion", "ClusterBombDude_Explosion", "Gunslinger_Reload"}   # gadget.c g_masked: classified, but no
+# effect in this audit, or (the last three) the effect disagrees with the game's description (desc_audit, #55) -> not usable
 GADGET_KINDS = ("area", "shot", "skill_area", "repeat", "spin", "item", "heal_now", "super")
 
 
-def gadget_kind(a):
-    """accessories.csv row -> the host's gadget.c implementation that handles it (GADGET_KINDS), None = not usable.
+def gadget_kind(a, masked=True):
+    """accessories.csv row -> the host's gadget.c implementation that handles it (GADGET_KINDS), None = not usable
+    (masked=False: the kind a MASKED row classifies as).
     Mirrors gadget.c's classify functions (accessory Type, AreaEffect, the Skill's BehaviorType, CustomObject's table)."""
     T = _tables(); t = a.get("Type") or ""; num = lambda k: _num(a, k)
-    if a.get("Name") in MASKED: return None
+    if masked and a.get("Name") in MASKED: return None
     obj = (a.get("CustomObject") or "").split(";")[0]
     is_proj = obj in T["pskin"] or obj in T["plog"]
     if (not t or (t == "spin_shoot" and not is_proj)) and a.get("AreaEffect"):   # AREA: the area at the brawler (Fang's sweep too), Rosa's WallSpawn left out
@@ -797,18 +800,17 @@ def _check():
         assert hy["ShotgunGirl"]["skill"] == "ShotgunGirlUlti" and "hyper_cast" in hy["ShotgunGirl"]["expect"]
         assert "hyper_cast" not in inf["Jester"]["expect"]
         ag = area_gadgets()   # --gadget: the host's AREA gadgets, Rosa's WallSpawn left out
-        assert {"Barkeep", "DeadMariachi", "ClusterBombDude", "Ghost", "Domain", "Meeple", "KickerDude"} <= set(ag) and "Rosa" not in ag, sorted(ag)
+        assert {"Barkeep", "DeadMariachi", "Ghost", "Domain", "Meeple", "KickerDude"} <= set(ag) and "Rosa" not in ag, sorted(ag)
         assert all(c // 1000000 == 23 for c, _ in ag.values())
-        tk = expected_gadget("ClusterBombDude")
-        assert tk["skill"] == "ClusterBombDude_Explosion" and tk["expect"] == ["area", "damage", "push"] and tk["delay"] == 20, tk
+        assert "ClusterBombDude" not in ag   # Tick's ClusterBombDude_Explosion: masked, the shield is missing (desc_audit, #55)
         assert expected_gadget("DeadMariachi")["expect"] == ["area", "heal"] and expected_gadget("Ghost")["expect"] == ["area"]
         kinds = collections.Counter(k for gs in all_gadgets().values() for _, _, k in gs)   # gadget.c's coverage of the enabled cards
-        assert sum(kinds.values()) == 213 and kinds["shot"] == 25 and kinds["repeat"] + kinds["spin"] == 8, kinds
+        assert sum(kinds.values()) == 213 and kinds["shot"] == 24 and kinds["repeat"] + kinds["spin"] == 7, kinds   # #55 masked Colt's and Barley's
         assert kinds["item"] == 2 and kinds["heal_now"] == 2 and kinds["super"] == 1 and kinds["skill_area"] == 2, kinds
-        assert audit_gadgets(0)["Gunslinger"][1] == "Gunslinger_Reload" and audit_gadgets(1)["Gunslinger"][1] == "Gunslinger_BigBullet"
-        assert expected_gadget("Gunslinger")["expect"][:1] == ["projectile"] and expected_gadget("Gunslinger", 1)["gadget_kind"] == "shot"
+        assert audit_gadgets(0)["Gunslinger"][1] == "Gunslinger_BigBullet" and "Gunslinger" not in audit_gadgets(1)   # Reload: masked (#55)
+        assert expected_gadget("Gunslinger")["expect"][:1] == ["projectile"] and expected_gadget("Gunslinger")["gadget_kind"] == "shot"
         assert not {"BowDude", "HookDude"} & set(audit_gadgets(0))
-        assert expected_gadget("Barkeep", 1)["expect"] == ["projectile", "damage"] and expected_gadget("ElectroSniper")["expect"] == ["item"]
+        assert "Barkeep" not in audit_gadgets(1) and expected_gadget("ElectroSniper")["expect"] == ["item"]   # Barley's HealPotion: masked (#55)
         assert expected_gadget("BullDude", 1)["gadget_kind"] == "skill_area" and "area" in expected_gadget("BullDude", 1)["expect"]
         assert expected_gadget("Samurai")["expect"] == ["heal"] and "Splitter" not in audit_gadgets(0)
         sp = find_spots(MAP)

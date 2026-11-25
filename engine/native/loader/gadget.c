@@ -369,6 +369,10 @@ static const int g_masked[] = {
     23000408,   /* Ninja_InvisibleArea: the invisibility area summon never spawns */
     23001247,   /* Gladiator_Amp: the healing item never spawns */
     23001255,   /* MagicalGirl_FlyArea: the area summon never spawns */
+    /* issue #55: the game's description disagrees with what the kind does (python -m desc_audit) */
+    23000293,   /* Barkeep_HealPotion: a heal for allies; REPEAT fires it as main-attack damage at the policy's aim */
+    23000355,   /* ClusterBombDude_Explosion: a shield, then a burst; AREA gives only the burst */
+    23000273,   /* Gunslinger_Reload: two quick slowing shots; SHOT fires one */
 };
 static int masked(int card) { for (unsigned k = 0; k < sizeof g_masked / sizeof *g_masked; k++) if (g_masked[k] == card) return 1; return 0; }
 
