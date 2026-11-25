@@ -268,11 +268,24 @@ static void oc_heal_areas(uint8_t *ch) {
  * holder would answer). The other types' call sites are not checked here and keep the -1 they had.
  * overcharge_attack_pattern_override (202): the super's Attack handler (0xb7e1a8..0xb7f2ec) takes the AttackPattern from Value
  * and NumBulletsInOneAttack from Value2 in place of the skill's. HammerDude_overcharge 19 / 10 (Frank: "hits an entire circle
- * around him"; pattern 19 is the full circle of MegaBossFrankAttackHyper) and Mender_overcharge 19 / 14 (Glowy). */
+ * around him"; pattern 19 is the full circle of MegaBossFrankAttackHyper) and Mender_overcharge 19 / 14 (Glowy).
+ * Checked and left at -1 (types above 210): overcharge_ruffs 263 (+Value % damage, read by the projectile hit 0xb29bd0 that
+ * Ruffs' supply drop never reaches: its explosion area deals the damage), _door_man 272 (portal count, Value 2 = the default
+ * 2; the shield Value2 has no reader), _mecha_dude 281 (Value 0 / 0, which the reader 0xb7d030 skips), _geisha 296 (Value2 %
+ * on the skill's ChargeSpeed, 0 for GeishaUlti), _stalker 319 (read at 0xb2a340 only while the character's stalk bonus
+ * +0x96c is set, which nothing in this build writes). */
 #define CT_PROJ_SPAWN 177    /* overcharge_projectile_spawn (the `mov w8, #N` per Type string in the card loader 0xaa3000..) */
 #define CT_PET_BUFF 179      /* overcharge_pet_buff_stats */
 #define CT_PATTERN_OVERRIDE 202   /* overcharge_attack_pattern_override (the parse at 0xaa66e4) */
 #define CT_MORE_PETS 274     /* overcharge_more_pets */
+#define CT_DRAGON_RIDER 304  /* overcharge_dragon_rider (Draco 10 / 4, "breathes more flames in a wider area and with longer
+                              * range"): while hypercharged and mounted (CharacterData UniqueProperty 28), the dragon's attack
+                              * fires NumBulletsInOneAttack + Value2 flames (Attack handler 0xb7e3dc: 4 -> 8 at Spread 90) and
+                              * reaches Value more tiles (the range bonus 0xc6e4d4 -> 0xc6e958) */
+#define CT_DIGGER 307        /* overcharge_digger (Moe 10 / 300 / 100 / 5, "Driller has longer range and lasts for longer"):
+                              * the dive's ChargeSpeed + Value3 % (skill fire 0xb7bc14: 2500 -> 5000), its range bonus + Value
+                              * tiles (0xc6e754), and the Driller's (UniqueProperty 32) attack Value4 more tiles (0xc6e998:
+                              * DiggerDrillWeapon 5 -> 10). Value2 (the longer Driller form) has no reader in this build. */
 /* The other types whose call sites apply the value themselves (the Type enum from the card loader's string table; Value<n>
  * from cards.csv; the "Attack handler" is the super's attack setup 0xb7d108..0xb7f2ec, where the overrides chain 192 -> 201
  * -> 194 -> 200 -> 202 for the super, w27 == 2): */
@@ -300,6 +313,7 @@ static const int CARD_TYPES[] = {
             * 0xb7fefc): "the Super will follow Angelo" */
     209,   /* overcharge_sniper, Piper (1 / 2500): ChargeSpeed Value2 (1500 -> 2500, 0xb7bbfc): "departs at an increased speed";
             * Value is not asked (no call site): the terrain breaking is not here */
+    CT_DRAGON_RIDER, CT_DIGGER,
 };
 static void *g_card[NBE_MAXP];   /* player i's hypercharge card (cfg +0x28), set at hyper_use */
 static uint8_t *g_card_ch[NBE_MAXP]; static int g_card_id[NBE_MAXP];   /* the brawler holding it (object, id), kept after the end */
