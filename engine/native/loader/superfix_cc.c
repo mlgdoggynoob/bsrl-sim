@@ -208,17 +208,27 @@ static void my_change_skill(uint8_t *ch, int slot, void *data) {
 /* issue #19 final: Angelo's SwitchSkill area (superfix_status.c area_extra marks its owner while he stands in it): inside, slot
  * 0 becomes his weapon's SecondarySkill (weapon SkillData +0x158: InsectManWeaponPoison), outside his own weapon
  * (CharacterData +0x260) again, through the swap above (a swap waits while the weapon is running). Only characters whose
- * own weapon has a SecondarySkill are touched, and only while the area marks them or their slot 0 holds that skill. */
+ * own weapon has a SecondarySkill are touched, and only after the area marked them (Draco's and Starr Nova's own swaps of
+ * their secondary skills are left alone). */
+typedef struct { uint8_t *ch; int id; } Sw33;
+static Sw33 g_s33[16]; static int g_ns33;   /* characters this switch put on their SecondarySkill */
 void superfix_cc_switch(uint8_t *ch, int inside) {
     if (!on() || !is_char(ch)) return;
+    int k; for (k = 0; k < g_ns33 && !(g_s33[k].ch == ch && g_s33[k].id == I32(ch, 8)); k++) {}
+    if (!inside && k == g_ns33) return;   /* never switched here: Draco's / Starr Nova's own secondary skills stay theirs */
     uint8_t *cd = ((uint8_t *(*)(void *))B(0xb6a384))(ch), *own = cd ? PTR(cd, 0x260) : NULL, *sec = own ? PTR(own, 0x158) : NULL;
     uint8_t **sk = PTR(ch, 0x458);
     if (!sec || !sk || I32(ch, 0x464) < 1 || !sk[0]) return;
     void *cur = PTR(sk[0], 0), *want = inside ? sec : own;
     if (cur != own && cur != sec) return;   /* another swap (Draco, R-T) owns slot 0 */
+    if (inside && k == g_ns33) { if (g_ns33 >= 16) return; g_s33[g_ns33++] = (Sw33){ch, I32(ch, 8)}; }
     Swap *w = NULL;
     for (int i = 0; i < g_nsw; i++) if (g_sw[i].ch == ch && g_sw[i].id == I32(ch, 8)) w = &g_sw[i];
-    if (cur == want) { if (w && w->want && w->want != want) w->want = NULL; return; }
+    if (cur == want) {
+        if (w && w->want && w->want != want) w->want = NULL;
+        if (!inside) g_s33[k] = g_s33[--g_ns33];   /* back on its own weapon: done */
+        return;
+    }
     if (w && w->want == want) return;   /* pending */
     if (!w) w = swap_rec(ch);
     if (inside) w->spare = NULL;
