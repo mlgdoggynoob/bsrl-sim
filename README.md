@@ -1,4 +1,41 @@
-# bsrl-sim
+<p align="center">
+  <a href="https://youtu.be/KqxcA1EehUY"><img src="docs/img/intro.gif" alt="The RL policy playing a real match (projectile overlay on)" width="720"></a><br>
+  <sub>The RL policy playing a real match (projectile overlay on) · <a href="https://youtu.be/KqxcA1EehUY">full video</a></sub>
+</p>
+
+<h1 align="center">bsrl-sim</h1>
+
+<p align="center"><b>Reinforcement-learning environment and trainer for a 10-player top-down battle royale, played from imperfect perception.</b></p>
+
+<p align="center">
+  <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white">
+  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white">
+  <img alt="Observation v5.9" src="https://img.shields.io/badge/observation-v5.9-blue">
+  <a href="LICENSE"><img alt="Licence: AGPL v3" src="https://img.shields.io/badge/licence-AGPL--3.0-green"></a>
+</p>
+
+## At a glance
+
+<p align="center">
+  <img src="docs/img/replay-view.webp" alt="Battle replay in viz.html: the map with the focus agent and native AI players on the left, what the policy saw (noisy tile grid and detected entities) on the right" width="900"><br>
+  <sub>Battle replay in <code>viz.html</code>: the battle on the left, what the focus agent's policy saw on the right.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/img/dashboard-curves.webp" alt="viz.html run dashboard: eval rank, training rank, win rate, return, damage, kills and cubes curves" width="900"><br>
+  <sub>Run dashboard in <code>viz.html</code> (a short 3-update run, so the curves only show the layout).</sub>
+</p>
+
+## Contents
+
+- [How it works](#how-it-works)
+- [What is here](#what-is-here)
+- [Vision models](#vision-models)
+- [Requirements](#requirements)
+- [Setup](#setup)
+- [Notes](#notes)
+- [Licence](#licence)
+- [Credits](#credits)
 
 Reinforcement-learning environment and trainer for a 10-player top-down battle royale (Showdown mode). The policy
 does not get the true game state. It gets what vision models would read from the screen: a 25 x 25 tile grid of terrain
