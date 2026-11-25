@@ -6,6 +6,9 @@ classes, a set of detected entities with measured detector noise and latency, an
 testbed for training agents that have to act from imperfect perception, and policies trained here can run behind real
 vision models without retraining.
 
+Those vision models (detector and segmentation for Showdown) are in
+**[showdown-vision](https://github.com/mlgdoggynoob/showdown-vision)**, latest release `v6`: see [Vision models](#vision-models).
+
 The battles run in **nirkt's** battle host and environment, included under `engine/` (see Credits). `setup.sh` builds
 everything. Game files are not included: you supply them.
 
@@ -124,7 +127,7 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 ## Vision models
 
 The detector and segmentation models this observation is built around are in
-**[showdown-vision](https://github.com/mlgdoggynoob/showdown-vision)**. Each model version is a release there with its
+**[showdown-vision](https://github.com/mlgdoggynoob/showdown-vision)** (latest release `v6`). Each model version is a release there with its
 model files (ONNX and PyTorch), class lists, val numbers and validation set; the README gives the exact
 pre / post-processing.
 
