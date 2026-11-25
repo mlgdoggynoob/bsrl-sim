@@ -25,8 +25,8 @@ class InstanceDead(RuntimeError):
 
 
 def set_div(d, div):
-    """fill a proto.Div from {"location", "theme", "chr", "skin", "gadget", "star", "hyper", ...} (chr / skin / gadget / star:
-    {player index: id} or a list by index; hyper: player indices, or a bit mask)"""
+    """fill a proto.Div from {"location", "theme", "chr", "skin", "gadget", "star", "hyper", "gear", ...} (chr / skin / gadget /
+    star: {player index: id} or a list by index; hyper: player indices, or a bit mask; gear: per player up to two ids)"""
     div = div or {}
     d.location = int(div.get("location") or 0); d.theme = int(div.get("theme") or 0)
     for f in ("chr", "skin", "gadget", "star"):
@@ -43,6 +43,11 @@ def set_div(d, div):
     g = div.get("team_groups")   # rl round: group id 0-7 per player (0 = alone); players of one group share a team
     if g: d.reserved[0] = ((1 << 31) | sum((int(x) & 7) << (3 * i) for i, x in enumerate(list(g)[:10]))) - (1 << 32)
     d.reserved[1] = int(div.get("map_location") or 0)   # RESET: a location (any mode) whose map layout is used (needs native/loader/nbhost_maps)
+    gv = div.get("gear") or {}   # gear round: {player index: (id, id)} or a list by index (needs native/loader/gear.c)
+    for i in range(P.MAXP): d.gear[i][0] = d.gear[i][1] = 0
+    for i, ids in (gv.items() if isinstance(gv, dict) else enumerate(gv)):
+        if 0 <= int(i) < P.MAXP:
+            for k, x in enumerate(list(ids or ())[:2]): d.gear[int(i)][k] = int(x or 0)
     hm = div.get("hyper") or ()   # hypercharge round: player indices whose brawler gets its hypercharge card (needs native/loader/hyper.c)
     d.hyper_mask = int(hm) & 0xffffffff if isinstance(hm, int) else sum(1 << int(i) for i in hm if 0 <= int(i) < P.MAXP)
 

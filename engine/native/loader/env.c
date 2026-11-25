@@ -179,6 +179,11 @@ static int brawler_owner(void *sim, uint8_t *c) {   /* player index whose curren
 void hyper_clear(void); void hyper_reset_player(int i, void *p); int hyper_active(void *p); int hyper_use(int i, void *p, uint8_t *ch);
 int hyper_tick_player(int i, void *p, uint8_t *ch, int alive); int hyper_damage(void *pa, int ai, void *pv, int vi, int d);
 int hyper_speed(int i, void *p, uint8_t *ch); void hyper_publish(NbeResp *r, void **ps, int np);
+/* gear round (bsrl-sim issue #51): gear.c */
+extern int32_t g_div_gear[NBE_MAXP][2]; void gear_clear(void); void gear_reset_player(int i, void *cfg); void gear_install(void);
+int gear_damage(uint8_t *ach, int ai, uint8_t *vch, int vi, int d, int storm); int gear_speed(int i, uint8_t *ch, int base, int bush);
+int gear_tick_player(int i, uint8_t *ch, int alive, int bush); void gear_publish(NbeResp *r); int gear_has(int i, int type);
+static int bush_at(void *sim, int x, int y);   /* the live tile map has a bush at world (x, y) (encoder map, below) */
 /* issue #19: status effects (superfix_status.c, mirrors its StMods) */
 typedef struct { int spd_bp, spd_ba, spd_rp, spd_ra, dmg_bp, dmg_rp, recv_bp, recv_ba; } StMods;
 int superfix_status_speed(uint8_t *ch, int base) __attribute__((weak));
@@ -437,6 +442,13 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
         if (am && (ma.dmg_bp || ma.dmg_rp)) { int pct = 100 + ma.dmg_bp - ma.dmg_rp; nd = nd * (pct > 0 ? pct : 0) / 100; }
         if (vm && (mv.recv_bp || mv.recv_ba)) nd = nd * (100 + mv.recv_bp) / 100 + mv.recv_ba;
         if (nd != dmg) { if (a3 == dmg) a3 = (int)nd; dmg = (int)nd; E.st_dmg++; }
+    }
+    if (dmg > 0 && mode3 && E.sim && victim) {   /* gear round (issue #51): LowHealthDamage of the attacker, then the victim's shield */
+        int ai, vi; void *pa = owner_player(E.sim, attacker, &ai), *pv = owner_player(E.sim, victim, &vi);
+        if (pa || pv) {
+            int nd = gear_damage(pa ? (uint8_t *)attacker : NULL, pa ? ai : -1, pv ? (uint8_t *)victim : NULL, pv ? vi : -1, dmg, E.in_own_call == 1);
+            if (nd != dmg) { if (a3 == dmg) a3 = nd; dmg = nd; }
+        }
     }
     int vchar = victim && VTOF(victim) == VT_CHAR, before = vchar ? I32(victim, 0x3c4) : 0;
     if (vchar && mode3 && just_popped(victim)) { E.charge_level = saved_level; return 0; }
@@ -1034,6 +1046,10 @@ static void rec_move(uint64_t *ctx) {
         uint8_t *ch = (uint8_t *)ctx[0];
         int i; void *p = owner_player(E.sim, ch, &i); int sp = p ? hyper_speed(i, p, ch) : 0;
         if (sp > 0) { ctx[3] = 1; ctx[4] = (uint64_t)(uint32_t)sp; E.hyper_moves++; }
+        if (p && VTOF(ch) == VT_CHAR && gear_has(i, 0)) {   /* gear round: ForestSpeed (LogicType 0) on a bush tile */
+            int gs = gear_speed(i, ch, sp > 0 ? sp : base_speed(ch), bush_at(E.sim, I32(ch, 0x38), I32(ch, 0x3c)));
+            if (gs > 0) { sp = gs; ctx[3] = 1; ctx[4] = (uint64_t)(uint32_t)gs; }
+        }
         if (VTOF(ch) == VT_CHAR) { int tx, ty; if (taunt_target(ch, &tx, &ty)) {   /* issue #19: the native AI's moves too */
             ctx[1] = (uint64_t)(uint32_t)tx; ctx[2] = (uint64_t)(uint32_t)ty; E.st_taunt_moves++; } }
         if (superfix_status_speed && VTOF(ch) == VT_CHAR) {
@@ -1358,6 +1374,8 @@ static void hyper_tick(void *sim) {   /* hypercharge round: drain / end (hyper.c
         uint8_t *c = obj_by_id(sim, player_char_id(ps[i])); if (c && VTOF(c) != VT_CHAR) c = NULL;
         if (hyper_active(ps[i]) && hyper_tick_player(i, ps[i], c, c && I32(c, 0x3c4) > 0 && !waiting(i))) E.sent_valid[i] = 0;
         hyper_unswap(i, c);   /* the normal super back after a hypercharged one (hyper.c) */
+        int alive = c && I32(c, 0x3c4) > 0 && !waiting(i);   /* gear round: the shield's regeneration; a bush change re-sends the move */
+        if (gear_tick_player(i, c, alive, c && alive && gear_has(i, 0) ? bush_at(sim, I32(c, 0x38), I32(c, 0x3c)) : 0)) E.sent_valid[i] = 0;
     }
 }
 void env_tick_leave(void *sim) {   /* after a completed outer tick: showdownTick + afterState */
@@ -1725,7 +1743,8 @@ static void div_reset(const NbeCmd *c) {   /* a RESET was accepted: set up the n
     g_div_hyper = c->div.hyper_mask;   /* hypercharge round: offline.c my_player_ctor */
     g_div_map_loc = c->div.reserved[1] ? div_data(c->div.reserved[1]) : NULL;
     if (c->div.reserved[1] && (!g_div_map_loc || c->div.reserved[1] / 1000000 != 15)) { g_div_err |= 1 << 30; g_div_map_loc = NULL; }
-    for (int i = 0; i < NBE_MAXP; i++) { g_div_char[i] = c->div.chr[i]; g_div_skin[i] = c->div.skin[i]; g_div_gadget[i] = c->div.gadget[i]; g_div_star[i] = c->div.star[i]; }
+    for (int i = 0; i < NBE_MAXP; i++) { g_div_char[i] = c->div.chr[i]; g_div_skin[i] = c->div.skin[i]; g_div_gadget[i] = c->div.gadget[i]; g_div_star[i] = c->div.star[i];
+                                    g_div_gear[i][0] = c->div.gear[i][0]; g_div_gear[i][1] = c->div.gear[i][1]; }   /* gear round */
     static int nlog; if ((c->div.location || c->div.theme) && nlog++ < 20)
         LOG("[div] reset: location %d -> %p, theme %d (err %#x)\n", c->div.location, loc, c->div.theme, (unsigned)g_div_err);
 }
@@ -1744,7 +1763,7 @@ static void div_publish(void *sim) {   /* RESET response: read the battle back f
     R->div_variation = I32(sim, 0x104);
     R->div_reserved[0] = U8(sim, 0x134);   /* the builder's "cards" flag (global 0x12eefd4): 0 = player configs get no star power /
                                               gadget / overcharge cards (0xc27d64) */
-    int np; void **ps = players(sim, &np); gadget_clear(); hyper_clear(); mech_reset();
+    int np; void **ps = players(sim, &np); gadget_clear(); hyper_clear(); mech_reset(); gear_clear();
     for (int i = 0; i < NBE_MAXP; i++) {
         R->pl_char[i] = R->pl_skin[i] = 0;
         if (i >= np || !ps[i]) continue;
@@ -1754,6 +1773,7 @@ static void div_publish(void *sim) {   /* RESET response: read the battle back f
         if (PTR(ps[i], 0x190)) R->div_reserved[1] |= 1 << i;
         gadget_reset_player(i, PTR(ps[i], 0x190));   /* gadget round: the player's accessory object (NULL = no gadget) */
         hyper_reset_player(i, ps[i]);                         /* hypercharge round */
+        gear_reset_player(i, ((void *(*)(void *))B(0xc41460))(ps[i]));   /* gear round: the config the battle reads (player+0x348, else the loadout's) */
         if (ld && ld[1] && PTR(ld[1], 0x08)) R->div_reserved[2] |= 1 << i;
     }
 }
@@ -1821,6 +1841,14 @@ static int32_t g_maptmp[NBE_MAP_CAP];
 static void enc_map_update(void *sim) {
     int wh[2]; uint32_t h = snap_map(sim, g_maptmp, NBE_MAP_CAP, wh);
     if (h != g_emap_hash) { enc_map_build(&g_emap, g_maptmp, wh[0], wh[1]); g_emap_hash = h; }
+}
+int env_char_owner(void *ch) { return E.sim && ch && VTOF(ch) == VT_CHAR ? brawler_owner(E.sim, ch) : -1; }   /* gear round: player index of a brawler, -1 */
+static int bush_at(void *sim, int x, int y) {   /* gear round: a bush tile (300 units) at world (x, y) on the live map */
+    static void *last_sim; static int last_tick = -1;
+    if (!sim) return 0;
+    if (sim != last_sim || I32(sim, 0x10) != last_tick) { enc_map_update(sim); last_sim = sim; last_tick = I32(sim, 0x10); }   /* once per tick */
+    int tx = x / 300, ty = y / 300;
+    return g_emap.bush && x >= 0 && y >= 0 && tx < g_emap.W && ty < g_emap.H && g_emap.bush[ty * g_emap.W + tx];
 }
 /* Sim-only mode has no client, so state2's 'client' flags (presence in the client's object list = what the viewer sees;
  * the encoder's enemy 'visible' feature r[19]) would all be -1 (= not visible: bc3p then ranked 6.84 on the PC vs 5.85 on
@@ -1923,6 +1951,7 @@ static void publish(void *sim, uint32_t seq, int status, const char *err) {
     if (E.cur.type == NBE_CMD_RESET) div_publish(sim);   /* diversity round (before gadget_publish: it sets up the gadgets) */
     gadget_publish(R, I32(sim, 0x10));                   /* gadget round */
     { int np; void **ps = players(sim, &np); hyper_publish(R, ps, np); }   /* hypercharge round */
+    gear_publish(R);                                                        /* gear round */
     R->njumps = 0; for (int i = 0; i < E.njobs && i < NBE_MAXP; i++) { int *j = R->jumps[R->njumps++]; j[0] = E.jobs[i].id; j[1] = E.jobs[i].t; j[2] = E.jobs[i].T; j[3] = E.jobs[i].x1; j[4] = E.jobs[i].y1; }
     R->ncubes = 0; for (int i = 0; i < E.ncube && i < NBE_MAXP; i++) { R->cubes[R->ncubes][0] = E.cube_id[i]; R->cubes[R->ncubes++][1] = E.cube_n[i]; }
     R->cam_valid = 0;
@@ -2596,6 +2625,7 @@ void env_install(void) {
     o_alive = hook_replace(g_libg, 0xc42ae8, my_alive);
     o_dispatch = hook_replace(g_libg, 0xb47084, my_dispatch);
     hyper_install();   /* hypercharge round: Character::isOvercharged (hyper.c) */
+    gear_install();    /* gear round (issue #51): NB_GEARS */
     if (!g_env_simonly) {
         /* client-mode crash fix (T4/T5): 0xdc1ec0 walks a slot table of weak pointers (x19+0xd0); when lock() 0x11a51c0 fails
          * for an entry that was not yet marked expired (freed concurrently, seen during a reset's loading screen: SIGSEGV

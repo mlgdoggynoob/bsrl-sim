@@ -67,6 +67,9 @@
 * Star powers (--star-powers 1, default 0 = off; issue #20, no observation change): every battle but the hard scenarios
   gives each player one of its brawler's star power cards that the star power probe found read by this build
   (env_v5.with_star_powers over star_audit.LIVE, drawn from MAEnv's rng after the gadgets). The policy does not see it.
+* Gears (--gears 1, default 0 = off; issue #51, no observation change): every battle but the hard scenarios gives each
+  player two gears its brawler may carry whose effect gear_check confirmed (env_v5.with_gears over gear_check.LIVE, drawn
+  from MAEnv's rng after the star powers). The policy does not see them.
 shortcut: no exploiters (a second learner trained only to beat this one); add them if b_rank flattens again with PFSP.
 """
 import argparse, glob, json, os, shutil, signal, sys, time
@@ -644,6 +647,7 @@ def main():
     ap.add_argument("--pfsp-p", type=float, default=2.0)
     ap.add_argument("--gadgets", type=int, default=0, help="1 = players carry a gadget, the policy sees it ready (self 3) and may use it (obs v5.7, issue #3; needs a host that activates its kind)")
     ap.add_argument("--star-powers", type=int, default=0, help="1 = players carry a star power card the probe found read by this build (star_audit.LIVE; issue #20; not in the observation)")
+    ap.add_argument("--gears", type=int, default=0, help="1 = players carry two gears of their brawler whose effect gear_check confirmed (gear_check.LIVE; issue #51; not in the observation)")
     ap.add_argument("--hyper", type=int, default=0, help="1 = players carry their hypercharge card, the policy sees it ready (self 4) and may activate it (obs v5.8, issue #4; needs a host with hyper.c)")
     a = ap.parse_args()
     if a.smoke: a.n, a.rollout, a.chunks, a.bc_updates, a.eval_episodes, a.evalb_episodes, a.hours, a.scenario_seeds = 2, 2048, 64, 1, 4, 4, 0.2, 1
@@ -684,6 +688,7 @@ def main():
         cfg = battle_cfg(rng, i)                         # --gadgets: MAEnv's rng, so rng_b's draws stay the same
         cfg = E.with_gadgets(cfg, rng) if a.gadgets and "scenario" not in cfg else cfg   # scenarios: as set up
         cfg = E.with_star_powers(cfg, rng) if a.star_powers and "scenario" not in cfg else cfg   # after the gadgets' draws
+        cfg = E.with_gears(cfg, rng) if a.gears and "scenario" not in cfg else cfg             # after the star powers' draws
         return E.with_hyper(cfg) if a.hyper and "scenario" not in cfg else cfg         # --hyper: no draw
 
     def battle_cfg(rng, i):

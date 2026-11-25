@@ -51,6 +51,9 @@ typedef struct {          /* diversity round: NbeCmd.div (RESET) */
     /* hypercharge round (bsrl-sim issue #4, appended): bit i = put player i's brawler's hypercharge card (cards.csv MetaType 6)
      * in its config (+0x28), so NbeAction.fire 4 can activate it (hyper.c); 0 = none (as before). A brawler without one gets none */
     uint32_t hyper_mask;
+    /* gear round (bsrl-sim issue #51, appended): per player index two gear_boosts.csv 62xxxxxx ids -> config +0x18 / +0x20
+     * (gear.c); 0 = none. A gear not allowed for the character (libg 0xae2aa4) or a second of one kind is rejected */
+    int32_t gear[NBE_MAXP][2];
 } NbeDiv;
 #define NBE_DIV_MAGIC 0x31564944u   /* 'DIV1' in NbeHdr.reserved[0]: this game host understands NbeCmd.div / NbeResp.div_* */
 
@@ -159,6 +162,13 @@ typedef struct {
     /* hypercharged supers (appended): supers cast while hypercharged so far, and the SkillData data id the last one used
      * (the brawler's OverchargedUltimateSkill where characters.csv has one, else its UltimateSkill) */
     int32_t hyp_supers[NBE_MAXP], hyp_super_id[NBE_MAXP];
+    /* gear round (bsrl-sim issue #51, appended): the gears in each player's config and the host's gear state (gear.c); all 0
+     * (gear_valid 0) with a host without it. gear_stat per player, counts this battle: [0] hits boosted by LowHealthDamage,
+     * [1] hp the ConsumableShield absorbed, [2] moves sped up by ForestSpeed, [3] reload queries ReloadSpeed answered */
+    int32_t gear_valid;
+    int32_t gear_id[NBE_MAXP][2];     /* gear_boosts.csv data ids in config +0x18 / +0x20 (0 = none) */
+    int32_t gear_shield[NBE_MAXP];    /* ConsumableShield hp left (0 without the gear) */
+    int32_t gear_stat[NBE_MAXP][4];
 } NbeResp;
 /* NbeResp.gad_kind: what an activation does (one re-implementation per kind, from the gadget's own data rows) */
 #define NBE_GAD_NONE 0

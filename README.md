@@ -1,4 +1,41 @@
-# bsrl-sim
+<p align="center">
+  <a href="https://youtu.be/KqxcA1EehUY"><img src="docs/img/intro.gif" alt="The RL policy playing a real match with the det_v6 detection overlay (Barley's burning area boxed as an area effect)" width="720"></a><br>
+  <sub>The RL policy playing a real match with the det_v6 detection overlay (Barley's burning area boxed as an area effect) · <a href="https://youtu.be/KqxcA1EehUY">full video</a></sub>
+</p>
+
+<h1 align="center">bsrl-sim</h1>
+
+<p align="center"><b>Reinforcement-learning environment and trainer for a 10-player top-down battle royale, played from imperfect perception.</b></p>
+
+<p align="center">
+  <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white">
+  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white">
+  <img alt="Observation v5.9" src="https://img.shields.io/badge/observation-v5.9-blue">
+  <a href="LICENSE"><img alt="Licence: AGPL v3" src="https://img.shields.io/badge/licence-AGPL--3.0-green"></a>
+</p>
+
+## At a glance
+
+<p align="center">
+  <img src="docs/img/replay-view.webp" alt="Battle replay in viz.html: the map with the focus agent and native AI players on the left, what the policy saw (noisy tile grid and detected entities) on the right" width="900"><br>
+  <sub>Battle replay in <code>viz.html</code>: the battle on the left, what the focus agent's policy saw on the right.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/img/dashboard-curves.webp" alt="viz.html run dashboard: eval rank, training rank, win rate, return, damage, kills and cubes curves" width="900"><br>
+  <sub>Run dashboard in <code>viz.html</code> (a short 3-update run, so the curves only show the layout).</sub>
+</p>
+
+## Contents
+
+- [How it works](#how-it-works)
+- [What is here](#what-is-here)
+- [Vision models](#vision-models)
+- [Requirements](#requirements)
+- [Setup](#setup)
+- [Notes](#notes)
+- [Licence](#licence)
+- [Credits](#credits)
 
 Reinforcement-learning environment and trainer for a 10-player top-down battle royale (Showdown mode). The policy
 does not get the true game state. It gets what vision models would read from the screen: a 25 x 25 tile grid of terrain
@@ -21,7 +58,7 @@ intent (or none = free play), with a readable reason. The intent goes into the o
 
 ```mermaid
 flowchart LR
-    H["Game host"] -->|"obs + state"| O["Observation v5.7<br/>self · cond · intent · 39 entity rows · 25×25 grid"]
+    H["Game host"] -->|"obs + state"| O["Observation v5.9<br/>self · cond · intent · 39 entity rows · 25×25 grid"]
     O -->|"1 / s"| PL["Rule planner"] -->|"intent"| O
     O -->|"10 / s"| P["Policy (GRU)"] -->|"actions"| H
 ```
@@ -88,6 +125,8 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | v5.5 | intent block (11) at the tail of self | zero-padded, act the same |
 | v5.6 | enemy brawler identity and line of sight (entity rows 20 → 36) | zero-padded, act the same |
 | v5.7 | fire head: 4th class gadget (zero-initialised `fire_x` head), allowed only while self 3 (gadget ready) is set | `fire_x` zeros, act the same while self 3 is 0 |
+| v5.8 | fire head: 5th class hypercharge, allowed only while self 4 (hypercharge ready) is set | act the same while self 4 is 0 |
+| v5.9 | invisible enemies are left out of the observation beyond their reveal distance (host `encode.c`; no shape change) | load unchanged |
 
 ## What is here
 
@@ -120,7 +159,7 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | `setup.sh` | One-command setup: host build, venv, game files (SETUP.md). Rebuilds the host when its sources changed. |
 | `update.sh` | Updates a checkout to the latest `main` (fast-forward, or a merge into your branch), then reruns `setup.sh`; `--check` runs the self-checks. |
 | `engine/` | nirkt's battle host and environment as one tree: `native/` (host sources, qemu patches), `py/` (`nbpc`, `models4.py`), `train/`, nirkt's vision-label tools; this project's changes applied. What came from where: `engine/NOTICE.md`. |
-| `engine/patches/` | Record of this project's changes to nirkt's host and camera rules (`training_round`, `fair_view`, `live_state`, `gadgets`, `charge`, `hypercharge`, `hypercharged_supers`, `hyper_supers_fix`, `area_gadgets`, `gadgets_batch2`, `showdown`, `showdown_leftovers`, `star_probe`, `star_card_hits`, `supers`, `status_movement`, `obs_invisibility`, `trio_respawn_gas`, `broken_supers`, `guessed_numbers`, `status_leftovers`, `meg_mech`, `split_and_paint`, `status_final`, `heal_scale`; already applied in `engine/`). |
+| `engine/patches/` | Record of this project's changes to nirkt's host and camera rules (`training_round`, `fair_view`, `live_state`, `gadgets`, `charge`, `hypercharge`, `hypercharged_supers`, `hyper_supers_fix`, `area_gadgets`, `gadgets_batch2`, `showdown`, `showdown_leftovers`, `star_probe`, `star_card_hits`, `supers`, `status_movement`, `obs_invisibility`, `trio_respawn_gas`, `broken_supers`, `guessed_numbers`, `status_leftovers`, `meg_mech`, `split_and_paint`, `status_final`, `heal_scale`, `gears`; already applied in `engine/`). |
 | `notes/` | Working notes from the sessions behind each host change (libg offsets, measurements, guesses); index and dates in `notes/README.md`. |
 | `pro_strategies.md` | Community Showdown habits and what each means for the observation / reward. |
 
@@ -205,8 +244,12 @@ cd $SIM_WORK/runs && python -m http.server 8766      # dashboard: http://localho
   skill code runs the tables' `Overcharged*` columns (the client build's "is hypercharged" check always said no), and the
   seven brawlers with a separate hypercharged super (`characters.csv` `OverchargedUltimateSkill`: Chester, Mandy,
   Larry & Lawrie, Ollie, Trunk, Mina, Meg's mech) cast that one. Training with gadget loadouts is `--gadgets 1`, with hypercharge `--hyper 1` (both off by default).
+- Gears (issue #51): `--gears 1` (off by default) gives every player two gears its brawler may carry (`env_v5.with_gears`,
+  the seven `gear_check` confirmed: speed in bushes, health regen, damage below 50 % hp, the 900 shield, reload, super
+  charge, gadget cooldown). They are not in the observation. `python -m gear_check` asserts each gear's effect in one
+  battle, `--check` without the host; the gear list and what libg still reads: `notes/issue51.md`.
 - Observation layout changes must be mirrored by anything that consumes exported policies. `obs_v5` carries the
-  version (`obs_v5.OBS_VERSION`, now `v5.8`; saved in every checkpoint) that exported policies are checked against.
+  version (`obs_v5.OBS_VERSION`, now `v5.9`; saved in every checkpoint) that exported policies are checked against.
 
 ## Licence
 

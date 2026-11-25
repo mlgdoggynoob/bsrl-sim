@@ -42,6 +42,10 @@ Star powers (issue #20, off by default, no observation change): make_battle_fn(s
 --star-powers 1) give every player one of its brawler's star power cards (div "star", offline.c my_player_ctor), drawn
 from the cards the star power probe found read by this build (star_audit.LIVE); a brawler with none gets none. The
 policy does not see which card it carries.
+Gears (issue #51, off by default, no observation change): make_battle_fn(gears=True) / with_gears (trainer --gears 1) give
+every player two gears of different kinds (div "gear", offline.c my_player_ctor -> gear.c), drawn from the gears its
+brawler may carry (gear_boosts.csv: Rare gears all, the others the listed heroes that are not HeroDeprecated; libg's
+0xae2aa4) whose effect gear_check confirmed (gear_check.LIVE); a brawler with fewer gets fewer. The policy does not see them.
 """
 import argparse, functools, json, os, sys, time
 import numpy as np
@@ -132,6 +136,48 @@ def with_star_powers(cfg, rng, live_only=True):
     return {**cfg, "div": div}
 
 
+T_GEAR = 62   # gear_boosts.csv data type (libg 0xb05020); ids count the named rows (an unnamed row continues a gear's lists)
+
+
+@functools.lru_cache(None)
+def gear_rows():
+    """gear_boosts.csv -> [{id, name, type (LogicType), value (ModifierValue), unit (ModifierType), rarity, all (its
+    rarity is AvailableToAllBrawlers), heroes, deprecated (ExtraHerosAvailableTo rows with / without HeroDeprecated)}]"""
+    allb = {r["Name"] for r in D._rows("gear_rarities.csv") if r["Name"] and r.get("AvailableToAllBrawlers", "").upper() == "TRUE"}
+    out = []
+    for r in D._rows("gear_boosts.csv"):
+        if r["Name"]:
+            out.append({"id": T_GEAR * 1000000 + len(out), "name": r["Name"], "type": int(r["LogicType"]), "value": int(r["ModifierValue"]),
+                        "unit": r["ModifierType"], "rarity": r["Rarity"], "all": r["Rarity"] in allb, "heroes": [], "deprecated": []})
+        if r.get("ExtraHerosAvailableTo") and out:
+            out[-1]["deprecated" if r.get("HeroDeprecated", "").upper() == "TRUE" else "heroes"].append(r["ExtraHerosAvailableTo"])
+    return out
+
+
+def gear_ok(g, brawler):
+    """libg's 0xae2aa4: the gear row may go to this brawler (all brawlers or listed, and not deprecated for it)"""
+    return (g["all"] or brawler in g["heroes"]) and brawler not in g["deprecated"]
+
+
+@functools.lru_cache(None)
+def gear_cards(live_only=True):
+    """brawler (heroes()) -> gear_boosts.csv data ids it may carry; live_only: only the gears gear_check.LIVE lists"""
+    import gear_check
+    rows = [g for g in gear_rows() if not live_only or g["name"] in gear_check.LIVE]
+    return {b: [g["id"] for g in rows if gear_ok(g, b)] for b in heroes()}
+
+
+def with_gears(cfg, rng, live_only=True, n=2):
+    """battle cfg -> the same cfg, every player (tag "chr") with n (2, as in the game) distinct gears of its brawler
+    (gear_cards; fewer if it has fewer). Every gear row has its own LogicType, so distinct rows are distinct kinds."""
+    gc = gear_cards(live_only); div = dict(cfg["div"]); out = []
+    for b in cfg["tag"]["chr"]:
+        c = gc.get(b, [])
+        out.append([int(x) for x in rng.choice(c, size=min(n, len(c)), replace=False)] if c else [])
+    div["gear"] = out
+    return {**cfg, "div": div}
+
+
 def with_hyper(cfg):
     """battle cfg -> the same cfg, every player (tag "chr") with its brawler's hypercharge card (the host looks the card up;
     a brawler without one gets none). No random draw."""
@@ -168,11 +214,11 @@ def use_genmaps(n_inst, dirs=None):
 
 
 def make_battle_fn(agents=10, seed0=10_000_000, roster=None, locs=None, p_team=0.5, gen=None, p_gen=0.5, gadgets=False, hyper=False,
-                   star_powers=False):
+                   star_powers=False, gears=False):
     """gen = use_genmaps()'s {instance: dir}: there a battle plays the generated layout with probability p_gen;
     gadgets: every player gets a random gadget card of its brawler (none if it has none); hyper: every player gets its
     brawler's hypercharge card (with_hyper); star_powers: every player gets a random live star power card of its brawler
-    (with_star_powers)"""
+    (with_star_powers); gears: every player gets two live gears of its brawler (with_gears)"""
     roster = roster or heroes(); locs = locs or locations(); gen = gen or {}
     seeds = iter(range(seed0, seed0 + 10 ** 9))
 
@@ -192,6 +238,7 @@ def make_battle_fn(agents=10, seed0=10_000_000, roster=None, locs=None, p_team=0
                "tag": {"loc": os.path.basename(os.path.dirname(g)) if g else loc, "chr": br, "team_size": size, "groups": groups}}
         cfg = with_gadgets(cfg, rng) if gadgets else cfg   # drawn last: the rest of the battle is the same without gadgets
         cfg = with_star_powers(cfg, rng) if star_powers else cfg   # after the gadgets: their draws stay the same
+        cfg = with_gears(cfg, rng) if gears else cfg               # after the star powers, for the same reason
         return with_hyper(cfg) if hyper else cfg            # no draw
     return battle_fn
 
@@ -1012,9 +1059,10 @@ def _check():
     _check_who(NS)
     _check_gadgets(NS)
     _check_star_powers()
+    _check_gears()
     _check_hyper(NS)
     _check_roster()
-    print("env_v5 sliders, aux labels, intents, planner hook, identity rows, gadget / hypercharge readiness, star powers, roster ok")
+    print("env_v5 sliders, aux labels, intents, planner hook, identity rows, gadget / hypercharge readiness, star powers, gears, roster ok")
 
 
 def _check_roster():
@@ -1028,6 +1076,28 @@ def _check_roster():
     assert set(cfg["tag"]["chr"]) <= set(hs), cfg["tag"]["chr"]
     gc = gadget_cards()                                                         # Disabled TRUE (Driller_Proto, Baseball_Proto): out
     assert len(gc["Driller"]) == 2 and len(gc["Baseball"]) == 2, (gc.get("Driller"), gc.get("Baseball"))
+
+
+def _check_gears():
+    """the gear loadout request: the game's gear_boosts.csv, the allowed rule, LIVE-only by default, drawn after the star powers"""
+    import gear_check
+    g = {r["name"]: r for r in gear_rows()}
+    assert len(g) >= 19 and g["ForestSpeed"]["id"] == 62000000 and g["SuperBulletSpeed"]["id"] == 62000018, sorted(g)
+    assert all(r["type"] == r["id"] - 62000000 for r in g.values())   # this build: the row order is the LogicType order
+    assert g["ConsumableShield"]["all"] and g["ConsumableShield"]["value"] == 900 and not g["ReloadSpeed"]["all"]
+    assert gear_ok(g["ReloadSpeed"], "ElectroSniper") and not gear_ok(g["ReloadSpeed"], "Gunslinger") and not gear_ok(g["SuperHealth"], "ShotgunGirl")
+    assert set(gear_check.LIVE) <= set(g), set(gear_check.LIVE) - set(g)
+    hs = heroes(); ga, gl = gear_cards(False), gear_cards()
+    assert all(set(gl[b]) <= set(ga[b]) for b in hs) and all(len(ga[b]) >= 5 for b in hs)
+    cfg = with_gears({"div": {}, "tag": {"chr": hs[:10]}}, np.random.default_rng(0))
+    assert all(len(set(x)) == len(x) <= 2 and set(x) <= set(gl[b]) for x, b in zip(cfg["div"]["gear"], hs[:10]))
+    r1, r2 = np.random.default_rng(5), np.random.default_rng(5)
+    c1 = make_battle_fn(3, seed0=7, gadgets=True, star_powers=True)(r1, 0)
+    c2 = make_battle_fn(3, seed0=7, gadgets=True, star_powers=True, gears=True)(r2, 0)
+    assert c1["tag"] == c2["tag"] and c1["div"]["star"] == c2["div"]["star"] and "gear" not in c1["div"] and len(c2["div"]["gear"]) == 10
+    from nbpc import instance as NI
+    d = P.Div(); NI.set_div(d, {"gear": [[62000004, 62000000], [], [62000001]]})
+    assert [list(d.gear[i]) for i in range(4)] == [[62000004, 62000000], [0, 0], [62000001, 0], [0, 0]]
 
 
 def _check_star_powers():

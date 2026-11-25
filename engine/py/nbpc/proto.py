@@ -37,7 +37,8 @@ class Div(C.Structure):
                 ("setup_super_mask", C.c_uint32),                            # SETUP: bit i = fill player i's super
                 ("setup_unprotect_mask", C.c_uint32),                        # SETUP: bit i = clear player i's spawn protection
                 ("reserved", C.c_int32 * 2),
-                ("hyper_mask", C.c_uint32)]   # hypercharge round (bsrl-sim issue #4): bit i = equip player i's hypercharge card
+                ("hyper_mask", C.c_uint32),   # hypercharge round (bsrl-sim issue #4): bit i = equip player i's hypercharge card
+                ("gear", (C.c_int32 * 2) * MAXP)]   # gear round (bsrl-sim issue #51): per player two gear_boosts.csv 62xxxxxx ids (0 = none)
 
 
 DIV_MAGIC = 0x31564944   # Hdr.reserved[0] of a game host that understands Cmd.div / Resp.div_*
@@ -92,7 +93,12 @@ class Resp(C.Structure):
         ("hyp_valid", C.c_int32), ("hyp_card", C.c_int32 * MAXP), ("hyp_left", C.c_int32 * MAXP), ("hyp_used", C.c_int32 * MAXP),
         ("hyp_damage_pct", C.c_int32 * MAXP), ("hyp_speed_pct", C.c_int32 * MAXP), ("hyp_shield_pct", C.c_int32 * MAXP),
         # hypercharged supers (appended): supers cast while hypercharged so far, the SkillData data id the last one used
-        ("hyp_supers", C.c_int32 * MAXP), ("hyp_super_id", C.c_int32 * MAXP)]
+        ("hyp_supers", C.c_int32 * MAXP), ("hyp_super_id", C.c_int32 * MAXP),
+        # gear round (bsrl-sim issue #51, appended): native/loader/gear.c; all 0 (gear_valid 0) with a host without it. Per
+        # player: the two gear ids in its config, ConsumableShield hp left, counts [low-hp hits boosted, shield hp absorbed,
+        # ForestSpeed moves, ReloadSpeed answers]
+        ("gear_valid", C.c_int32), ("gear_id", (C.c_int32 * 2) * MAXP), ("gear_shield", C.c_int32 * MAXP),
+        ("gear_stat", (C.c_int32 * 4) * MAXP)]
 
 
 GAD_NONE, GAD_DASH, GAD_HEAL, GAD_SHIELD, GAD_SPAWN, GAD_PROJECTILE, GAD_STATUS, GAD_SUPER = range(8)   # Resp.gad_kind (nbenv_proto.h NBE_GAD_*)

@@ -65,7 +65,7 @@ static void ensure(uint8_t *ch) {
     if (PTR(cfg, 0x20)) want[nw++] = PTR(cfg, 0x20);
     int n = I32(ch, 0xd74), cap = I32(ch, 0xd70);
     if (n || !nw || n < 0 || cap < 0 || cap > 128) return;
-    for (int i = 0; i < nw; i++) { int k = ((int (*)(void *))B(0xb6a994))(want[i]); if (k != 0 && k != 1) return; }
+    for (int i = 0; i < nw; i++) { int k = ((int (*)(void *))B(0xb6a994))(want[i]); if (k < 0 || k > 18) return; }   /* bsrl-sim #51: every gear_boosts LogicType (was 0 / 1) */
     void *fresh[2];
     for (int i = 0; i < nw; i++) {
         fresh[i] = ((void *(*)(unsigned long))B(0x11a4d90))(0x20); memset(fresh[i], 0, 0x20);
