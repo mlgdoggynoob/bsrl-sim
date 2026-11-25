@@ -24,7 +24,8 @@
  * OverchargedProjectiles, OverchargedChainProjectile, OverchargedSummonedCharacters, OverchargedAreaEffectObject/2,
  * OverchargedSpawnedItem and the Overcharged*Effect visuals; two reads of a normal list that ignore it (AttackPattern 11's
  * per-attack projectile, the Attack handler's summon) take the overcharged list here (hyper_proj_site, hyper_summon_bl),
- * and a hypercharged brawler's Heal area heals here (oc_heal_areas). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
+ * a hypercharged brawler's Heal area heals here (oc_heal_areas), and the card-value stub 0xb5281c answers the hypercharge
+ * card's overcharge_attack_pattern_override (Frank's and Glowy's full-circle supers, my_card_value). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
  * MechaDudeBig) have a separate super instead (characters.csv OverchargedUltimateSkill): the game builds it as the brawler's
  * third skill instance (char+0x458[2], 0xb34560) but what picks it for a super cast is compiled out; here instances 1
  * (the super) and 2 are swapped while hypercharged, so the game's own super code casts it, and swapped back once the
@@ -249,11 +250,15 @@ static void oc_heal_areas(uint8_t *ch) {
  * overcharge_more_pets (Ash, 0xb7eeac..0xb7eee8, only for a skill instance whose +0x31 latch is set): NumSpawns + Value,
  * MaxSpawns + Value2 (Knight_overcharge 5 / 10: "Little Helper spawns 5 more rats"). my_card_value answers it from the card of
  * a brawler whose hypercharge is on (Type enum card +0x100, Value<i> 0xaa9568), for the types in CARD_TYPES only: the other
- * types' call sites (overcharge_brock, _barkeep, _sniper, ...) are not checked here and keep the -1 they had. */
+ * types' call sites (overcharge_brock, _barkeep, _sniper, ...) are not checked here and keep the -1 they had.
+ * overcharge_attack_pattern_override (202): the super's Attack handler (0xb7e1a8..0xb7f2ec) takes the AttackPattern from Value
+ * and NumBulletsInOneAttack from Value2 in place of the skill's. HammerDude_overcharge 19 / 10 (Frank: "hits an entire circle
+ * around him"; pattern 19 is the full circle of MegaBossFrankAttackHyper) and Mender_overcharge 19 / 14 (Glowy). */
 #define CT_PROJ_SPAWN 177    /* overcharge_projectile_spawn (the `mov w8, #N` per Type string in the card loader 0xaa3000..) */
 #define CT_PET_BUFF 179      /* overcharge_pet_buff_stats */
+#define CT_PATTERN_OVERRIDE 202   /* overcharge_attack_pattern_override (the parse at 0xaa66e4) */
 #define CT_MORE_PETS 274     /* overcharge_more_pets */
-static const int CARD_TYPES[] = {CT_MORE_PETS};
+static const int CARD_TYPES[] = {CT_PATTERN_OVERRIDE, CT_MORE_PETS};
 static void *g_card[NBE_MAXP];   /* player i's hypercharge card (cfg +0x28), set at hyper_use */
 static int card_value(void *card, int idx) { return ((int (*)(void *, int))B(0xaa9568))(card, idx); }
 static int my_card_value(uint8_t *ch, int type, int idx) {
