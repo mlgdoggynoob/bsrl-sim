@@ -64,8 +64,16 @@
  * legs, or the legs' living head: same player, UniqueProperty 13, the other kind), the speed stub is taken at that call site
  * only (return 0xb9c4fc; superfix_split_speed feeds superfix_status_speed), and the split with legs alive is the rejoin
  * (Radar Waves): R-T moves to his legs, the legs are retired the way 0xb4ffec retires a character (HP 0, +3273), and he heals
- * by Value3 of the legs' ulti card (SplitterLegs_ulti 1000). Legs whose head is gone (knocked out) are retired too. Once
- * the getter finds no legs, the component swaps the weapon back and the speed lapses.
+ * by Value3 of the legs' ulti card (SplitterLegs_ulti 1000); when the legs' spot is blocked for him (water, a wall) he goes
+ * to the nearest walkable spot instead (split_land, on the live map). Legs whose head is gone are retired too, at once when
+ * env.c parks a knocked-out head (superfix_split_drop: he keeps full HP while he waits). Once the getter
+ * finds no legs, the component swaps the weapon back and the speed lapses. The split head walks over water: the shipped
+ * canWalkOverWater 0xb51200 calls isSplit 0xb5a7b0 and drops the result (isSplit's other call, 0xb55560 in 0xb554e4, drops it
+ * too, so hooking isSplit would change nothing); my_wow takes 0xb51200 and adds "a head with living legs". A head whose legs
+ * went while he stood on water (a linked hit he survived, see env.c split_link) is put on the nearest land by his next
+ * tick. env.c does the rest of the server half: the legs' death kills the head (split_link), the storm hits the legs
+ * (split_gas); it finds the parts through superfix_split_head / superfix_split_legs, and moves a teammate who would respawn
+ * on a split head's water spot to land (superfix_land).
  *
  * The per-tick work runs from the character tick 0xb3ae74 (enter hook, per character; only characters with a job do
  * anything). NB_SUPERFIX=0 turns every part off (superfix_install does not call this file's install). */
@@ -389,6 +397,63 @@ static int card_value(void *cd, int meta, int k) {   /* the character's card of 
     return card ? ((int (*)(void *, int))B(0xaa9568))(card, k) : -1;
 }
 static void retire(uint8_t *c) { I32(c, 0x3c4) = 0; U8(c, 3273) = 1; }   /* 0xb4ffec's end: HP 0, the retired flag */
+/* env.c: R-T's legs (UniqueProperty 13, not the hero kind), and the living head of legs (NULL: none, or not legs) */
+int superfix_split_legs(uint8_t *c) { return g_split_on && mode() && c && VTOF(c) == VT_CHAR && up_of(c) == 13 && !hero_kind(c); }
+uint8_t *superfix_split_head(uint8_t *legs) { return superfix_split_legs(legs) ? split_partner(legs) : NULL; }
+/* env.c: R-T's head is knocked out (duo / trio: parked at full HP, so the partner lookup would still see him) -> his legs go */
+void superfix_split_drop(uint8_t *head) {
+    if (!g_split_on || !mode() || !head || VTOF(head) != VT_CHAR || up_of(head) != 13 || !hero_kind(head)) return;
+    uint8_t *legs = split_partner(head); if (!legs) return;
+    retire(legs); g_split_orphan++;
+    if (g_superfix_dbg) LOG("[superfix] split: legs %d retired (head %d knocked out)\n", I32(legs, 8), I32(head, 8));
+}
+static int walkable_now(void *sim, int x, int y) {   /* walkable() on the live tile data (+0, Open once a wall is broken; +8 is
+                                                       * the battle-start one), as env.c snap_map */
+    void *m = PTR(sim, 0x68); if (!m) return 1;
+    int W = I32(m, 0xc4), Hh = I32(m, 0xc8), tx = (int)floor(x / 300.0), ty = (int)floor(y / 300.0);
+    if (tx < 0 || ty < 0 || tx >= W || ty >= Hh) return 0;
+    void *t = ((void **)PTR(m, 0x20))[tx + W * ty]; if (!t) return 1;
+    void *d = PTR(t, 0) ? PTR(t, 0) : PTR(t, 8); return !d || !tile_blocks_move(I32(d, 0x20));
+}
+#define SPLIT_LAND_STEP 100   /* [?] the search for land: rings every 100 u up to 900 u (3 tiles), 16 points each. The research */
+#define SPLIT_LAND_MAX 900    /* (RADAR WAVES: "if the legs stand on water, R-T is pushed to the nearest land") has no distance */
+static int split_land(void *sim, int *x, int *y) {   /* a blocked spot -> the nearest walkable one; 1 = moved */
+    if (!sim || walkable_now(sim, *x, *y)) return 0;
+    for (int r = SPLIT_LAND_STEP; r <= SPLIT_LAND_MAX; r += SPLIT_LAND_STEP)
+        for (int a = 0; a < 16; a++) {
+            int px = (int)floor(*x + r * cos(a * M_PI / 8) + 0.5), py = (int)floor(*y + r * sin(a * M_PI / 8) + 0.5);
+            if (walkable_now(sim, px, py)) { *x = px; *y = py; return 1; }
+        }
+    /* farther out (a lake wider than the rings): the centre of the nearest walkable tile of the whole map. [?] Neither search
+     * looks at walls in between or at the storm */
+    void *m = PTR(sim, 0x68); if (!m) return 0;
+    int W = I32(m, 0xc4), Hh = I32(m, 0xc8), bx = 0, by = 0; long best = -1;
+    if (W < 1 || Hh < 1 || W * Hh > 16384) return 0;
+    for (int ty = 0; ty < Hh; ty++)
+        for (int tx = 0; tx < W; tx++) {
+            int cx = tx * 300 + 150, cy = ty * 300 + 150; if (!walkable_now(sim, cx, cy)) continue;
+            long d = (long)(cx - *x) * (cx - *x) + (long)(cy - *y) * (cy - *y);
+            if (best < 0 || d < best) { best = d; bx = cx; by = cy; }
+        }
+    if (best < 0) return 0;
+    *x = bx; *y = by; return 1;
+}
+int superfix_land(void *sim, int *x, int *y) { return split_land(sim, x, y); }   /* env.c: a respawn spot on water */
+static int on_map_blocked(void *sim, int x, int y) {   /* inside the map on a tile that blocks a walker (not the parking spot) */
+    void *m = sim ? PTR(sim, 0x68) : NULL; if (!m) return 0;
+    int tx = (int)floor(x / 300.0), ty = (int)floor(y / 300.0);
+    return tx >= 0 && ty >= 0 && tx < I32(m, 0xc4) && ty < I32(m, 0xc8) && !walkable_now(sim, x, y);
+}
+typedef int (*wow_t)(void *); static wow_t o_wow; static long g_split_wow, g_split_land;
+/* a head with living legs: he walks over water (my_wow; env.c also raycasts his joystick target past water with it) */
+int superfix_split_water(uint8_t *c) {
+    return o_wow && mode() && c && VTOF(c) == VT_CHAR && up_of(c) == 13 && hero_kind(c) && split_partner(c);
+}
+static int my_wow(void *c) {   /* canWalkOverWater 0xb51200: the data's CanWalkOverWater, or a split head (isSplit's meaning) */
+    if (o_wow(c) & 1) return 1;
+    if (!superfix_split_water(c)) return 0;
+    g_split_wow++; return 1;
+}
 typedef struct { uint8_t *ch; int id, amount, until; } SplitSpd;
 static SplitSpd g_ss[16]; static int g_nss;
 static void my_speed_buff(uint8_t *ch, int amount, int ticks, int flag) {   /* 0xb5901c(char, speed, ticks, flag): a stub */
@@ -411,22 +476,41 @@ static void my_split(uint8_t *ch) {   /* 0xb5c7b0(char) */
     int heal = card_value(((getp_t)B(0xb6a384))(legs), 3, 3); if (heal <= 0) heal = SPLIT_HEAL;
     heal *= P11_SCALE;
     retire(legs);
+    if (split_land(sim_of(ch), &x, &y)) g_split_land++;   /* the legs' spot is blocked for him (whole again: no water) */
     stop_mover(ch);
     ((void (*)(void *, int, int, int))B(0xb6a61c))(ch, x, y, 0);
     if (hp0 > 0) I32(ch, 0x3c4) = hp0 + heal < mhp ? hp0 + heal : mhp;
     g_split_rejoin++;
-    if (g_superfix_dbg) LOG("[superfix] split: rejoin char %d at legs %d (%d,%d), hp %d -> %d / %d\n", I32(ch, 8), I32(legs, 8), x, y,
-                            hp0, I32(ch, 0x3c4), mhp);
+    if (g_superfix_dbg) LOG("[superfix] split: rejoin char %d at legs %d (%d,%d -> %d,%d), hp %d -> %d / %d\n", I32(ch, 8), I32(legs, 8),
+                            I32(legs, 0x38), I32(legs, 0x3c), x, y, hp0, I32(ch, 0x3c4), mhp);
 }
 static long g_split_comp;
+static int g_was_split[16], g_nws, g_ws_tick; static void *g_ws_sim;   /* ids of heads that had living legs at their last
+                                                                        * tick; the battle (sim, last tick) they belong to */
+static void ws_drop(int id) { for (int k = 0; k < g_nws; k++) if (g_was_split[k] == id) { g_was_split[k] = g_was_split[--g_nws]; return; } }
+static void head_land(uint8_t *ch) {   /* the legs went: a head left standing on water goes to the nearest land */
+    int id = I32(ch, 8), k, split = split_partner(ch) != NULL; void *sim0 = sim_of(ch); int now = sim0 ? I32(sim0, 0x10) : 0;
+    if (sim0 != g_ws_sim || now < g_ws_tick) g_nws = 0;   /* a new battle */
+    g_ws_sim = sim0; g_ws_tick = now;
+    for (k = 0; k < g_nws && g_was_split[k] != id; k++) {}
+    if (split) { if (k == g_nws && g_nws < 16) g_was_split[g_nws++] = id; return; }
+    if (k == g_nws) return;
+    g_was_split[k] = g_was_split[--g_nws];
+    void *sim = sim_of(ch); int x = I32(ch, 0x38), y = I32(ch, 0x3c);
+    if (!on_map_blocked(sim, x, y) || !split_land(sim, &x, &y)) return;
+    stop_mover(ch); ((void (*)(void *, int, int, int))B(0xb6a61c))(ch, x, y, 0); stop_mover(ch); g_split_land++;
+    if (g_superfix_dbg) LOG("[superfix] split: head %d whole on a blocked tile, put on land at %d,%d\n", id, x, y);
+}
 static void split_tick(uint8_t *ch) {
-    if (I32(ch, 0x3c4) <= 0 || up_of(ch) != 13) return;
+    if (I32(ch, 0x3c4) <= 0) { if (g_nws) ws_drop(I32(ch, 8)); return; }   /* a dead head leaves the tracking */
+    if (up_of(ch) != 13) return;
     if (hero_kind(ch)) {   /* the head: run his Brawler_Splitter component's tick (vtable +0x40 = 0xb9c42c), which libg never
                             * calls (as Draco's MountUp tick, superfix_status.c): the weapon swap, the speed, the hypercharged
                             * circling projectiles and their removal */
         int nc = I32(ch, 0xa6c); void **c = PTR(ch, 0xa60);
         for (int i = 0; c && i < nc && i < 64; i++)
             if (c[i] && PTR(c[i], 8) == ch && (*(void ***)c[i])[0x40 / 8] == (void *)B(0xb9c42c)) { ((void (*)(void *))B(0xb9c42c))(c[i]); g_split_comp++; }
+        head_land(ch);
         return;
     }
     if (split_partner(ch)) return;   /* legs whose head is gone go too */
@@ -467,14 +551,17 @@ void superfix_moves_install(void) {
         *(uint32_t *)B(0xb5901c) == RET_INSN && *(uint32_t *)B(0xb5c7b0) == 0xd10483ff && *(uint32_t *)B(0xb9c4f8) == 0x97fef2c9) {   /* sub sp, sp, #0x120; bl 0xb5901c */
         hook_replace(g_libg, 0xb392d4, (void *)split_partner); hook_replace(g_libg, 0xb5901c, (void *)my_speed_buff);
         o_split = hook_replace(g_libg, 0xb5c7b0, (void *)my_split); g_split_on = 1; n |= 16;
+        if (*(uint32_t *)B(0xb51200) == 0xa9bd7bfd && *(uint32_t *)B(0xb51224) == 0x94002563) {   /* stp x29, x30, [sp, #-48]!; bl 0xb5a7b0 */
+            o_wow = (wow_t)hook_replace(g_libg, 0xb51200, (void *)my_wow); n |= 32;
+        } else LOG("[superfix] moves: 0xb51200 is not canWalkOverWater: R-T's head keeps off water\n");
     } else LOG("[superfix] moves: R-T's split sites differ: left out\n");
-    LOG("[superfix] moves installed:%s%s%s%s%s%s cross-slash\n", n & 1 ? " flyjump" : "", n & 2 ? " ww" : "", n & 4 ? " blink" : "", " change",
-        n & 8 ? " change-area" : "", n & 16 ? " split" : "");
+    LOG("[superfix] moves installed:%s%s%s%s%s%s%s cross-slash\n", n & 1 ? " flyjump" : "", n & 2 ? " ww" : "", n & 4 ? " blink" : "", " change",
+        n & 8 ? " change-area" : "", n & 16 ? " split" : "", n & 32 ? " split-water" : "");
 }
 void superfix_moves_status(void) {
     LOG("[superfix] moves: flyjump %ld starts, %ld landings (%ld fallback); ww %ld starts, %ld hits; blink %ld (%ld back), %ld hits; "
         "change character %ld (%ld left to battle_fix), with area %ld (%ld hits); cross slash %ld (%ld hits); split: rejoins %ld, "
-        "component ticks %ld, speed ticks %ld, legs retired without a head %ld\n", g_fj_start, g_fj_land,
+        "component ticks %ld, speed ticks %ld, legs retired without a head %ld, water walks %ld, put on land %ld\n", g_fj_start, g_fj_land,
         g_fj_fallback, g_ww_start, g_ww_hits, g_blink, g_blink_back, g_blink_hits, g_change, g_change_skip, g_change_area, g_change_hits,
-        g_slash_n, g_slash_hits, g_split_rejoin, g_split_comp, g_split_spd, g_split_orphan);
+        g_slash_n, g_slash_hits, g_split_rejoin, g_split_comp, g_split_spd, g_split_orphan, g_split_wow, g_split_land);
 }

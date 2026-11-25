@@ -104,7 +104,7 @@ static struct {
     int gas_j, gas_phase, gas_latched, gas_latches;   /* storm clock (phone fog-renderer latch, see gas_test_step) */
     struct { int n; int super[2]; double deg[2], dist[2]; } pf[NBE_MAXP];   /* attack commands of the last step (g_fire_delay) */
     long cl_moves, cl_attacks;
-    int resp_at[NBE_MAXP], resp_ai[NBE_MAXP], resp_n, resp_done, resp_wipe, resp_gas_noprot;   /* rl round: teammate respawn (tick it comes back, 0 = no) */
+    int resp_at[NBE_MAXP], resp_ai[NBE_MAXP], resp_n, resp_done, resp_wipe, resp_gas_noprot, resp_land;   /* rl round: teammate respawn (tick it comes back, 0 = no) */
     int seen[NBE_MAXP], elim[NBE_MAXP], erank[NBE_MAXP], etick[NBE_MAXP], egas[NBE_MAXP], eptr_n, total, order_n, end_req, winner, local_rank, alive;
     void *elim_ptr[NBE_MAXP];
     /* cubes: by character id */
@@ -131,7 +131,8 @@ static struct {
                                                                * inputs refused (stun / silence), moves re-sent on a change */
     long st_taunts, st_taunt_moves;   /* issue #19: policy steps and native moves steered by a taunt / fear */
     int st_key[NBE_MAXP];          /* issue #19: last status speed / stun state per player (a change re-sends the move) */
-    int in_own_call;    /* 1 = gas, 2 = bomb (our own calls to the damage root) */
+    int in_own_call;    /* 1 = gas, 2 = bomb, 3 = already scaled, 4 = R-T's linked hit (our own calls to the damage root) */
+    int split_hit;      /* R-T's linked hit on his head (split_link) is running: no damage modifiers, his one kill */
     int seed_applied;
 } E;
 
@@ -388,6 +389,7 @@ static int proj_pct(uint8_t *src) {
     int t = tr - ps; t = t > 0 ? (int)floor((double)(t < span ? t : span) * 1000 / span) : 0;
     return LERP(s0, e0, t);
 }
+int superfix_split_legs(uint8_t *c) __attribute__((weak));           /* superfix_moves.c: R-T's legs (split_link below) */
 static void record_event(uint8_t *victim, uint8_t *attacker, int before, int after) {
     int removed = before - after; if (removed <= 0) return;
     int vi = I32(victim, 0x80), known = attacker && VTOF(attacker) == VT_CHAR, ai = known ? I32(attacker, 0x80) : -999;
@@ -400,12 +402,17 @@ static void record_event(uint8_t *victim, uint8_t *attacker, int before, int aft
     if (E.in_own_call == 1) return;   /* storm: accounted from the storm's own records (gas_damage) like the agent */
     if (known && ai >= 0 && ai < NBE_MAXP && vi != ai) {
         if (vi < 0) E.boxd[ai] += removed;
-        else { E.dealt[ai] += removed; E.hits[ai]++; if (lethal) E.kills[ai]++; }
+        else if (E.split_hit) { E.dealt[ai] += removed; if (lethal) E.kills[ai]++; }   /* R-T's linked hit: his one kill, no hit */
+        else { E.dealt[ai] += removed; E.hits[ai]++; if (lethal && !(superfix_split_legs && superfix_split_legs(victim))) E.kills[ai]++; }
+        /* R-T's legs: the kill is counted on the head's linked hit (split_link), so one R-T is one kill even when a spread
+         * hits both parts, and none when the head lives on (a full block) */
     }
     if (vi >= 0 && vi < NBE_MAXP && known) E.taken[vi] += removed;
 }
 static int mech_pop(void *sim, uint8_t *c, int before);   /* Meg's mech at 0 HP: she ejects (below, after dig_ok) */
 static int just_popped(uint8_t *c);                       /* ... and takes no other hit in that tick */
+static uint8_t *split_link(void *sim, uint8_t *c, int before, void *atk, int a1, int *lost);   /* R-T's legs at 0 HP: the head goes too (below) */
+void superfix_split_drop(uint8_t *head) __attribute__((weak));   /* superfix_moves.c: a knocked-out R-T head's legs go */
 static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *attacker, void *src, int a7,
                         int s0, int s1, void *s2, int s3, int s4, int s5, int s6, int s7, int s8, int s9) {
     int mode3 = I32(g_libg->base, 0x12eefb4) == 3;
@@ -427,14 +434,14 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
         }
         E.charge_level = lvl;
     }
-    if (dmg > 0 && E.sim && attacker && victim) {   /* hypercharge round: +damage of a hypercharged attacker, shield of a hypercharged victim */
+    if (dmg > 0 && !E.split_hit && E.sim && attacker && victim) {   /* hypercharge round: +damage of a hypercharged attacker, shield of a hypercharged victim */
         int ai, vi; void *pa = owner_player(E.sim, attacker, &ai), *pv = owner_player(E.sim, victim, &vi);
         if ((pa && hyper_active(pa)) || (pv && hyper_active(pv))) {
             int nd = hyper_damage(pa, ai, pv, vi, dmg);
             if (nd != dmg) { if (a3 == dmg) a3 = nd; dmg = nd; E.hyper_dmg++; }
         }
     }
-    if (dmg > 0 && superfix_status_mods && E.sim && victim) {   /* issue #19: damage boost / reduce of the attacker's statuses,
+    if (dmg > 0 && !E.split_hit && superfix_status_mods && E.sim && victim) {   /* issue #19: damage boost / reduce of the attacker's statuses,
                                                                * damage received boost of the victim's (superfix_status_mods) */
         StMods ma, mv; int am = attacker && VTOF(attacker) == VT_CHAR && superfix_status_mods(attacker, &ma);
         int vm = VTOF(victim) == VT_CHAR && superfix_status_mods(victim, &mv);
@@ -443,7 +450,7 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
         if (vm && (mv.recv_bp || mv.recv_ba)) nd = nd * (100 + mv.recv_bp) / 100 + mv.recv_ba;
         if (nd != dmg) { if (a3 == dmg) a3 = (int)nd; dmg = (int)nd; E.st_dmg++; }
     }
-    if (dmg > 0 && mode3 && E.sim && victim) {   /* gear round (issue #51): LowHealthDamage of the attacker, then the victim's shield */
+    if (dmg > 0 && !E.split_hit && mode3 && E.sim && victim) {   /* gear round (issue #51): LowHealthDamage of the attacker, then the victim's shield */
         int ai, vi; void *pa = owner_player(E.sim, attacker, &ai), *pv = owner_player(E.sim, victim, &vi);
         if (pa || pv) {
             int nd = gear_damage(pa ? (uint8_t *)attacker : NULL, pa ? ai : -1, pv ? (uint8_t *)victim : NULL, pv ? vi : -1, dmg, E.in_own_call == 1);
@@ -468,7 +475,9 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
         }
         I32(victim, 0x874) = 0;
         I32(victim, 0x3c4) = I32(victim, 0x3c8); U8(victim, 0x469) = 0; I32(victim, 0x38) = PARK_X; I32(victim, 0x3c) = PARK_Y;
+        if (superfix_split_drop) superfix_split_drop(victim);   /* R-T knocked out: his legs go with him */
     }
+    if (vchar && mode3 && !pop) split_link(E.sim, victim, before, attacker, a1, NULL);
     E.charge_level = saved_level;
     return r;
 }
@@ -569,10 +578,15 @@ static void gas_hit(void *sim, uint8_t *victim, GasHit *g) {   /* applyGasDamage
     o_root(victim, -1, g->dmg, 0, 0, NULL, NULL, 1, I32(victim, 0x38), I32(victim, 0x3c), NULL, 0, 0, 0, 1, 0, 0, 0);
     E.in_own_call = 0;
     if (mech_pop(sim, victim, hp0)) { int pi = I32(victim, 0x80); if (pi >= 0 && pi < NBE_MAXP) E.gasd[pi] += hp0; return; }
+    int lost = 0; uint8_t *h = split_link(sim, victim, hp0, NULL, -1, &lost);   /* R-T's legs (split_gas): the head's death is a
+                                                                                  * storm death too, his HP lost storm damage */
+    if (h && I32(h, 0x3c4) <= 0) for (int i = 0; i < NBE_MAXP; i++) if (E.gas_lethal_id[i] == I32(h, 8) || E.gas_lethal_id[i] == 0) {
+        E.gas_lethal_id[i] = I32(h, 8); E.gas_lethal_tick[i] = tick; break; }
     int hp1 = I32(victim, 0x3c4);
     if (I32(victim, 0x7d8) != tick && hp1 > 0) I32(victim, 0x7d8) = tick;                /* gasBlockRegen belt and braces */
     int pi = I32(victim, 0x80);
-    if (pi >= 0 && pi < NBE_MAXP) E.gasd[pi] += hp0 - hp1;
+    if (pi >= 0 && pi < NBE_MAXP) E.gasd[pi] += hp0 - hp1 + lost;
+    if (superfix_split_legs && superfix_split_legs(victim)) return;   /* legs: not a player's elimination (16 slots a battle) */
     if (hp1 <= 0) for (int i = 0; i < NBE_MAXP; i++) if (E.gas_lethal_id[i] == g->id || E.gas_lethal_id[i] == 0) { E.gas_lethal_id[i] = g->id; E.gas_lethal_tick[i] = tick; break; }
 }
 
@@ -694,7 +708,9 @@ static void zone_tick(void *sim) {   /* pre-snapshot, once per tick */
                     o_root(c, z->owner, z->dmg, z->dmg, 0, atk, NULL, 1, z->x, z->y, NULL, 0, 0, 0, 1, 0, 0, 0);
                     if (pl_) I32(pl_, 0x54) = charge0;   /* a super's hits do not recharge that super */
                     int pz = mech_pop(sim, c, hp0);
-                    E.in_own_call = 0; record_event(c, atk, pz ? hp0 + 1 : hp0, pz ? 1 : I32(c, 0x3c4)); g_zone_hits++; v = objvec(sim, &n);
+                    E.in_own_call = 0; record_event(c, atk, pz ? hp0 + 1 : hp0, pz ? 1 : I32(c, 0x3c4)); g_zone_hits++;
+                    if (!pz) split_link(sim, c, hp0, atk, z->owner, NULL);
+                    v = objvec(sim, &n);
                 }
             } else if (!ally) {   /* EdgeCrossing */
                 int s; for (s = 0; s < z->nside && z->side_id[s] != cid; s++) {}
@@ -846,6 +862,7 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
              * not after a knock-out (the victim is parked or gone) */
             if (j->push > 0 && I32(c, 0x3c4) > 0) { KNOCKBACK(c, x, y, j->push, j->owner); g_charge_pushes++; }
             E.in_own_call = 0; record_event(c, ch, pc ? hp0 + 1 : hp0, pc ? 1 : I32(c, 0x3c4)); g_charge_hits++;
+            if (!pc) split_link(sim, c, hp0, ch, j->owner, NULL);
             v = objvec(sim, &n);
         }
     }
@@ -907,6 +924,62 @@ static int mech_pop(void *sim, uint8_t *c, int before) {
     LOG("[env] mech pop: player %d mech %d -> Meg %d hp %d/%d at %d,%d\n", ow, I32(c, 8), I32(nc, 8), I32(nc, 0x3c4), I32(nc, 0x3c8),
         I32(nc, 0x38), I32(nc, 0x3c));
     return 1;
+}
+/* R-T (Splitter): the server half around his legs that superfix_moves.c (split, rejoin, partner getter) does not do. In the
+ * game either part's death defeats him; the client only has the discarded partner lookups in the damage root's death paths
+ * (0xb44674 / 0xb44b64). Here:
+ *   - linked death (split_link, from every damage path mech_pop covers: my_root, gas_hit, zone_tick, charge_contact_tick,
+ *     sf_explode): legs at 0 HP with a living head (not one parked for a respawn) -> a lethal hit on the head through
+ *     my_root from the same attacker (or the root's owner index), so the kill credit, the duo / trio knock-out and the
+ *     elimination run as for any death. That hit skips the hypercharge, status and gear modifiers (split_hit; only the
+ *     root's full block, spawn protection, stops it) and is R-T's one kill: record_event counts no kill on the legs and
+ *     a kill but no hit on the head's linked hit (a bomb's stays in_own_call 2: bomb damage). The attacker's super and
+ *     hypercharge charge are put back (the legs' hit charged them). Nobody's hit (the storm, a meteor): gasNoKillCredit,
+ *     and gas_hit records the head as eliminated by the storm and counts his lost HP as storm damage. A head that a full
+ *     block keeps alive is put on land by superfix_moves.c (head_land) when he stands on water. The other way round, a
+ *     knocked-out head (parked at full HP) takes his legs with him (my_root -> superfix_split_drop);
+ *   - the storm hits the legs too (split_gas): each storm second, living legs on a storm tile get a GasHit of
+ *     SPLIT_GAS_PCT of their max HP (gas_hit; their damage counts in the owner's gas damage; legs are no elimination).
+ *   - a teammate respawning on a split head's spot on water goes to the nearest land (respawn_tick, superfix_land);
+ *   - the split head's joystick target is raycast past water (flag 0, as the client's 1 & ~0xb31e20 gives a split head),
+ *     so a move toward water reaches the mover, whose path then crosses it (superfix_moves.c my_wow).
+ * superfix_moves.c finds the parts (superfix_split_legs / superfix_split_head / superfix_split_water: its partner lookup). */
+#define SPLIT_LINK_X 4     /* [?] the head's hit: 4 x his max HP, past any damage reduction but a full block (the server's
+                            * way to defeat him is compiled out) */
+#define SPLIT_GAS_PCT 20   /* [?] storm hit on the legs each second, % of their max HP: a brawler's first-second 20 % without the
+                            * ramp (the ramp is kept per player); the research only says "in Showdown the gas limits" the split */
+uint8_t *superfix_split_head(uint8_t *legs) __attribute__((weak));
+int superfix_split_water(uint8_t *ch) __attribute__((weak));         /* ... a split head (joystick raycast past water) */
+static long g_split_links, g_split_gas; static int g_split_logs;
+static uint8_t *split_link(void *sim, uint8_t *c, int before, void *atk, int a1, int *lost) {   /* -> the head it hit, NULL = none;
+                                                          * a1: the root's owner index; *lost: the head's HP lost (knocked out: all) */
+    if (!sim || !c || before <= 0 || I32(c, 0x3c4) > 0 || !superfix_split_head || VTOF(c) != VT_CHAR) return NULL;
+    uint8_t *h = superfix_split_head(c);
+    int how = h ? brawler_owner(sim, h) : -1;
+    if (!h || I32(h, 0x3c4) <= 0 || waiting(how)) return NULL;   /* parked while he respawns: not his death again */
+    int ao = atk && VTOF(atk) == VT_CHAR ? I32(atk, 0x80) : a1, np; void **ps = players(sim, &np);
+    uint8_t *pa = ao >= 0 && ao < np ? ps[ao] : NULL; int c54 = pa ? I32(pa, 0x54) : 0, c98 = pa ? I32(pa, 0x98) : 0;
+    int hp0 = I32(h, 0x3c4), d = I32(h, 0x3c8) * SPLIT_LINK_X, own = E.in_own_call;
+    E.in_own_call = own == 2 ? 2 : 4; E.split_hit = 1;
+    if (!atk && ao < 0 && I32(h, 0xaa0) != -1) I32(h, 0xaa0) = -1;   /* nobody's (the storm, a meteor): no kill credit, as theirs */
+    my_root(h, ao, d, d, 0, atk, NULL, 1, I32(c, 0x38), I32(c, 0x3c), NULL, 0, 0, 0, 1, 0, 0, 0);
+    E.in_own_call = own; E.split_hit = 0;
+    if (pa) { I32(pa, 0x54) = c54; I32(pa, 0x98) = c98; }   /* the hit on the legs charged them already */
+    int hp1 = I32(h, 0x3c4);
+    if (lost) *lost = waiting(how) ? hp0 : hp0 - (hp1 > 0 ? hp1 : 0);
+    g_split_links++;
+    if (g_split_logs++ < 100) LOG("[env] rt legs down: player %d legs %d by player %d -> head %d hp %d -> %d%s (linked deaths %ld, storm hits on legs %ld)\n",
+        I32(c, 0x80), I32(c, 8), ao, I32(h, 8), hp0, hp1, waiting(how) ? " knocked out" : "", g_split_links, g_split_gas);
+    return h;
+}
+static void split_gas(void *sim) {   /* each storm second: living legs on a storm tile take SPLIT_GAS_PCT (gas_hit, split_link) */
+    int n; void **v = objvec(sim, &n); if (!v || n < 0 || n > MAXOBJ) return;
+    for (int i = 0; i < n; i++) {
+        uint8_t *c = v[i]; if (!c || VTOF(c) != VT_CHAR || I32(c, 0x3c4) <= 0 || !superfix_split_legs(c)) continue;
+        if (!in_gas_tile(sim, (int)floor(I32(c, 0x38) / 300.0), (int)floor(I32(c, 0x3c) / 300.0))) continue;
+        int mx = I32(c, 0x3c8), dmg = jround(mx * SPLIT_GAS_PCT / 100.0); if (dmg < 1) dmg = 1;
+        if (E.ngq < NBE_MAXP) { E.gq[E.ngq++] = (GasHit){I32(c, 8), dmg, SPLIT_GAS_PCT, 0, mx, 0, 0}; g_split_gas++; }
+    }
 }
 static long g_dig_changes, g_dig_surface;
 static uint64_t dig_change(uint8_t *old, void *nd, uint64_t a2, uint64_t a3) {
@@ -988,6 +1061,7 @@ static void sf_explode(void *sim, Bomb *b) {
         o_root(c, o, dmg, dmg, 0, alive ? atk : NULL, NULL, 1, b->x, b->y, NULL, 0, 0, 0, 1, 0, 0, 0);
         int pb = mech_pop(sim, c, hp0);
         record_event(c, alive ? atk : NULL, pb ? hp0 + 1 : hp0, pb ? 1 : I32(c, 0x3c4));
+        if (!pb) split_link(sim, c, hp0, alive ? atk : NULL, o, NULL);   /* in_own_call 2: the head's hit is a bomb hit too */
         E.in_own_call = 0;
         v = objvec(sim, &n);
     }
@@ -1251,6 +1325,7 @@ static void gas_tick(void *sim) {   /* the storm schedule (check every 20 ticks)
             { extern int g_sd_dbg; if (g_sd_dbg) LOG("[gas] hit player %d group %d tick %d secs %.2f pct %.1f max %d dmg %d\n", i, sd_group_size(i), tick, secs, pct, mx, dmg); }
         }
     }
+    if (E.gas_on && E.gas_count % 20 == 0 && superfix_split_legs) split_gas(sim);   /* R-T's legs */
 }
 /* issue #21: what showdown_mods.c (event modifiers) needs from env: the living, placed player brawlers, storm flags, the
  * battle's seed, the game's knockback and circle tile destroy */
@@ -1279,6 +1354,7 @@ static void apply_setup(void *sim) {   /* the phone test's debug_js_tick: park/f
         if ((g_setup.set_mask >> i) & 1) { sf_stop(c); I32(c, 0x38) = g_setup.set_x[i]; I32(c, 0x3c) = g_setup.set_y[i]; I32(c, 0x3c4) = I32(c, 0x3c8); sf_stop(c); }
     }
 }
+int superfix_land(void *sim, int *x, int *y) __attribute__((weak));   /* superfix_moves.c: blocked spot -> nearest walkable */
 static void respawn_tick(void *sim) {
     int np, tick = I32(sim, 0x10); void **ps = players(sim, &np);
     for (int i = 0; i < np && i < NBE_MAXP; i++) {
@@ -1294,6 +1370,8 @@ static void respawn_tick(void *sim) {
                 if (nc && nc != c) { c = nc; g_mech_remechs++; }
             }
             E.resp_at[i] = 0; E.resp_done++; I32(c, 0x38) = I32(m, 0x38); I32(c, 0x3c) = I32(m, 0x3c);
+            { int x = I32(c, 0x38), y = I32(c, 0x3c); if (superfix_land && superfix_land(sim, &x, &y)) { I32(c, 0x38) = x; I32(c, 0x3c) = y; E.resp_land++; } }
+            /* R-T's split head walks on water: a mate respawning on his spot goes to the nearest land */
             I32(c, 0x3c4) = I32(c, 0x3c8); U8(c, 0x469) = E.resp_ai[i]; sf_stop(c);
             /* showdown round: spawn protection (every character tick sets +0x431 = +0x4f0 > tick, 0xb3995c; the root blocks
              * damage while +0x431 is set, the storm's too). Trio: none when the respawn tile is in the gas ("teammates will
@@ -1584,8 +1662,12 @@ static void apply_actions(void *sim, const NbeCmd *c) {
         }
         if (client_intents(sim, i, ch, a)) continue;
         if (a->move_dir >= 0 && a->move_dir < 16) {
-            double r = a->move_dir * M_PI / 8; int tx, ty, cx, cy; client_pos(i, ch, &cx, &cy);
+            double r = a->move_dir * M_PI / 8; int tx, ty, cx, cy, jf = g_joy_flag_override; client_pos(i, ch, &cx, &cy);
+            /* R-T's split head: the client's flag is 1 & ~0xb31e20 (its canWalkOverWater: the data's, or a split head), 0 = the
+             * raycast passes water */
+            if (jf < 0 && superfix_split_water && superfix_split_water(ch)) g_joy_flag_override = 0;
             joy_target_at(sim, cx, cy, (float)cos(r), (float)sin(r), &tx, &ty);
+            g_joy_flag_override = jf;
             int far = !E.sent_valid[i] || (long)(tx - E.sent_x[i]) * (tx - E.sent_x[i]) + (long)(ty - E.sent_y[i]) * (ty - E.sent_y[i]) > 225L * 225;
             if (far || E.last_dir[i] != a->move_dir) { apply_input(sim, i, 2, tx, ty, NULL); E.sent_valid[i] = 1; E.sent_x[i] = tx; E.sent_y[i] = ty; }
             E.moving[i] = 1; E.last_dir[i] = a->move_dir;

@@ -167,6 +167,15 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   re-implements the compiled-out ones: damage below 50 % hp and the 900 shield (`env.c` my_root), speed in bushes
   (`env.c` rec_move), reload (`superfix_status.c`); `NB_GEARS=0` turns those off. `NbeResp` gear_* fields.
   `python -m gear_check`. Notes: `notes/issue51.md`.
+- `split_extras.patch` (issue #6, a diff on top of `gears.patch`): the rest of R-T's split. `env.c` `split_link`: when his
+  legs reach 0 HP in any damage path, his head dies too, hit by the same attacker through the damage root without the
+  damage modifiers (one kill credit, counted on the head's hit and never on the legs; the attacker's super charge is put
+  back; a storm death of the legs is the head's storm elimination); a knocked-out head (duo / trio) takes his legs with
+  him; `split_gas`: the storm hits the legs, 20 % of their max HP a second [?]. `superfix_moves.c`: the split head walks
+  over water (canWalkOverWater 0xb51200; `env.c` raycasts his joystick target past water). A rejoin onto a blocked spot, a
+  head left on water after his legs are gone, and a teammate respawning on a split head's water spot are moved to the
+  nearest walkable spot (100 u rings up to 900 u [?], then the nearest walkable tile of the map). `python -m charge_check`
+  scene 6 and its storm battle.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
