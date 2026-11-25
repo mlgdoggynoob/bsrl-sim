@@ -70,6 +70,12 @@
 * Gears (--gears 1, default 0 = off; issue #51, no observation change): every battle but the hard scenarios gives each
   player two gears its brawler may carry whose effect gear_check confirmed (env_v5.with_gears over gear_check.LIVE, drawn
   from MAEnv's rng after the star powers). The policy does not see them.
+* Imitation rows (issue #49, pro play from Brawl TV; format and writer: imitation.py; all default off): --imit-data PATH
+  (a folder of .npz shards or one) with --imit-updates N = N BC updates on those rows (each --epochs minibatches of
+  --imit-chunks windows of --seq target rows after up to --imit-burn context rows, zero GRU state at an episode start, loss
+  weighted by the rows' label quality) after the native-AI BC phase and before the KL anchor is frozen (resumed runs: at
+  the start), and --imit-w W = W x the same NLL on --imit-chunks fresh windows added to every PPO minibatch's loss.
+  progress.jsonl: imit_nll (PPO updates with --imit-w), imit_w (mean weight of the counted rows); pretraining prints.
 shortcut: no exploiters (a second learner trained only to beat this one); add them if b_rank flattens again with PFSP.
 """
 import argparse, glob, json, os, shutil, signal, sys, time
@@ -77,7 +83,7 @@ import numpy as np
 import torch
 from nbpc import diversity as D
 from nbpc.maenv import REWARD_W, TERMS
-import env_v5 as E, obs_v5 as O, scenarios as SC
+import env_v5 as E, obs_v5 as O, scenarios as SC, imitation as IM
 from model import Policy, HID, PRIV, NONACT, dist_logp_ent, masked_kl, act_stacked, aux_losses
 
 NS = O.N_S                       # s = cat[self, cond, intent] (obs v5.5)
@@ -509,6 +515,23 @@ def aux_readout(net, s, ent, grid, h):
             "b": [round(float(v), 3) for v in torch.sigmoid(o["bush"][0])]}
 
 
+def wmean(x, w):
+    """weighted mean of x (the BC loss's masked mean: w = 1 on trained rows, 0 on respawning ones)"""
+    return (x * w).sum() / w.sum().clamp(min=1)
+
+
+def imit_nll(net, b, dev):
+    """--imit-*: the BC loss on imitation windows (imitation.Dataset.batch: s / ent / grid / act (n, W, ...), w (n, W)) ->
+    (loss, {stat: value}). The same math as the BC update: net.seq from a zero GRU state, dist_logp_ent of the labels,
+    mean weighted by the label quality w (0 on context rows and on rows whose fire class the policy masks); no value term"""
+    t = lambda x, dt: torch.as_tensor(x, device=dev).to(dt)
+    s, ent, grid, act, w = t(b["s"], torch.float32), t(b["ent"], torch.float32), t(b["grid"], torch.uint8), t(b["act"], torch.long), t(b["w"], torch.float32)
+    lg, _ = net.seq(s, ent, grid, torch.zeros(len(s), HID, device=dev)); act = act.flatten(0, 1); w = w.flatten()
+    w = w * (lg[1].gather(1, act[:, 1:2])[:, 0] > -1e8)      # a masked fire class has logp -1e9: never imitated
+    lp, _, _ = dist_logp_ent(lg, act); nll = -wmean(lp, w)
+    return nll, {"imit_nll": nll.item(), "imit_w": w.sum().item() / max(1, (w > 0).sum().item())}
+
+
 def head_loss(net, xc, rf, X, a):
     """loss of the heads that never act on a minibatch (xc = cat[x, h] of its rows, rf = their buffer rows) -> (loss,
     {stat: value}); 0 with the flags off. --vlive: 0.5 x 0.5 MSE to the live lambda-return (as the critic's)"""
@@ -614,6 +637,16 @@ def _check():
     A = argparse.Namespace(eval_presets="", eval_episodes=2, evalb_episodes=1, eval_plan=1)
     assert [k for _, k, _ in eval_items(A)] == ["eval", "eval", "evalb", "evalp_plan", "evalp_plan"]
     assert "evalp_plan" not in [k for _, k, _ in eval_items(argparse.Namespace(**{**vars(A), "eval_plan": 0}))]
+    import tempfile                                      # --imit-*: imit_nll on a synthetic dataset
+    rng = np.random.default_rng(1); torch.manual_seed(1); net = P_()
+    with tempfile.TemporaryDirectory() as d:
+        IM.write_shard(os.path.join(d, "a.npz"), *IM.synthetic(rng, 2, 30)); ds = IM.load(d)
+        idx, tm = ds.sample(rng, 8, 4, 6); b = ds.batch(idx, tm); l0, st0 = imit_nll(net, b, "cpu")
+        assert l0.item() > 0 and st0["imit_nll"] == l0.item() and 0 < st0["imit_w"] <= 1
+        b2 = dict(b, w=np.zeros_like(b["w"])); assert imit_nll(net, b2, "cpu")[0].item() == 0.0           # all weights 0: no loss
+        o_ = torch.optim.Adam(net.parameters(), lr=1e-3)
+        for _ in range(10): l, _ = imit_nll(net, b, "cpu"); o_.zero_grad(); l.backward(); o_.step()      # fits a fixed batch
+        assert imit_nll(net, b, "cpu")[0].item() < l0.item()
     print("train_ppo helpers ok")
 
 
@@ -631,6 +664,10 @@ def main():
     ap.add_argument("--kmix", default="1,2,3,4,5"); ap.add_argument("--brawler", default="Sniper", help="Sniper = Piper")
     ap.add_argument("--loc", default=None, help="Showdown location (default: the first of env_v5.locations())")
     ap.add_argument("--slider-scale", type=float, default=0.0, help="weight of the slider rewards (stage 1: off)")
+    ap.add_argument("--imit-data", default="", help="imitation rows (imitation.py: a folder of .npz shards or one); empty = off")
+    ap.add_argument("--imit-updates", type=int, default=0, help="BC pretraining updates on --imit-data, after the native-AI BC phase and before PPO (each = --epochs minibatches of --imit-chunks windows)")
+    ap.add_argument("--imit-w", type=float, default=0.0, help="weight of the imitation NLL added to every PPO minibatch's loss (0 = off)")
+    ap.add_argument("--imit-chunks", type=int, default=64, help="imitation windows per minibatch"); ap.add_argument("--imit-burn", type=int, default=16, help="context rows before each window's --seq target rows")
     slider_flags(ap); head_flags(ap); scenario_flags(ap); intent_flags(ap)
     ap.add_argument("--noise", type=int, default=1, help="ObsV5 vision noise + latency")
     ap.add_argument("--eval-min", type=float, default=30.0); ap.add_argument("--eval-episodes", type=int, default=200)
@@ -683,6 +720,21 @@ def main():
         lnets[k].load_state_dict(torch.load(p, map_location=dev), strict=False); lname[k] = os.path.basename(p)
     if pool: [load_slot(k) for k in range(M)]
     bc = lambda: upd < a.bc_updates
+    ds_i = IM.load(a.imit_data) if a.imit_data else None; rng_i = np.random.default_rng(a.seed + 11)   # own stream: the others' draws stay the same
+    assert ds_i or not (a.imit_updates or a.imit_w), "--imit-updates / --imit-w need --imit-data"
+    if ds_i: print("imitation rows: %d in %d episodes (label weight sum %.0f)" % (ds_i.n, len(ds_i.eps), ds_i.w_sum), flush=True)
+    imit_batch = lambda: ds_i.batch(*ds_i.sample(rng_i, a.imit_chunks, a.seq, a.imit_burn))
+
+    def imit_pretrain():
+        """--imit-updates: BC on the imitation rows (lr --bc-lr, the main optimizer, grad clip 0.5 as in the update loop)"""
+        for pg_ in opt.param_groups: pg_["lr"] = a.bc_lr
+        for u in range(a.imit_updates):
+            st = []
+            for _ in range(a.epochs):
+                l, d = imit_nll(net, imit_batch(), dev); opt.zero_grad(set_to_none=True); l.backward()
+                torch.nn.utils.clip_grad_norm_(main_p, 0.5); opt.step(); st.append(d["imit_nll"])
+            print(json.dumps({"imit_pretrain": u + 1, "of": a.imit_updates, "imit_nll": round(float(np.mean(st)), 4)}), flush=True)
+    if a.imit_updates and not bc(): imit_pretrain()      # no BC phase (resumed): before the first collect
 
     def battle_fn(rng, i):
         cfg = battle_cfg(rng, i)                         # --gadgets: MAEnv's rng, so rng_b's draws stay the same
@@ -838,7 +890,7 @@ def main():
                     lg, v, *xc = net.seq(g["s"][r], g["ent"][r], g["grid"][r], g["h"][r[:, 0]], g["priv"][r], feats=bool(X))
                     lg = [x[mk] for x in lg]; v = v[mk]
                     lp, ent, _ = dist_logp_ent(lg, g["act"][rf]); vl = 0.5 * ((v - RET[rf]) ** 2).mean()
-                    lv = LIVE[rf]; lm = lambda x: (x * lv).sum() / lv.sum().clamp(min=1)
+                    lv = LIVE[rf]; lm = lambda x: wmean(x, lv)
                     if is_bc:
                         loss = -lm(lp) + 0.5 * vl; st = [-lm(lp).item(), vl.item(), ent.mean().item(), 0.0, 0.0]
                     else:
@@ -851,6 +903,8 @@ def main():
                         loss = pg - a.ent * lm(ent) + beta * kl + 0.5 * vl
                         st = [pg.item(), vl.item(), ent.mean().item(), kl.item(), ((ratio - 1).abs() > a.clip).float().mean().item()]
                     if X: hl, hs = head_loss(net, xc[0][mk], rf, X, a); loss = loss + hl; xst.append(hs)
+                    if a.imit_w and not is_bc:           # --imit-w: the BC loss on the imitation rows next to the PPO loss
+                        il, ist = imit_nll(net, imit_batch(), dev); loss = loss + a.imit_w * il; xst.append(ist)
                     opt.zero_grad(set_to_none=True); opt_x.zero_grad(set_to_none=True); loss.backward()
                     torch.nn.utils.clip_grad_norm_(main_p, 0.5); opt.step()
                     if X: torch.nn.utils.clip_grad_norm_(x_p, 0.5); opt_x.step()
@@ -860,6 +914,7 @@ def main():
             acts = buf.act[rows]; fired = acts[acts[:, 1] > 0]
             upd += 1
             if is_bc and not bc():                           # BC done: freeze the anchor, PPO starts with an eval
+                if a.imit_updates: imit_pretrain()           # the anchor is the policy after the imitation pretraining
                 ref = frozen(net.state_dict()); bnet = ref if bnet is None else bnet
                 env.record = False; save(os.path.join(out, "bc.pt")); start_eval()
             if not bc():                                     # league: a snapshot now and then, one opponent per update
