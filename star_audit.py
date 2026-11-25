@@ -19,7 +19,9 @@ Each card also gets "site", from a static scan of libg (lookup_sites): "sim" = a
 logic, "ui" = only in client code (it never runs in the sim-only battles training plays), "nosite" = no call at all (the
 reader is gone from this build).
 LIVE is the list of cards found "read" by the last probe (python -m star_audit, 2026-11-24): what
-env_v5.with_star_powers hands out. "asked" cards have a reader but its effect is unproven; they stay out until a per-card
+the cards libg's own readers still run. equipped() is what env_v5.with_star_powers hands out: LIVE plus star_check.LIVE, the cards
+the host re-implements (engine/native/loader/starfx.c, issue #47) or libg attaches itself (Traits at spawn) whose effect
+star_check confirmed in a live A/B. "asked" cards have a reader but its effect is unproven; they stay out until a per-card
 A/B check (issue #20 "How to verify") shows them working.
 
 python -m star_audit [--rounds 2] [--ticks 1600]      (one boot, about 25 battles; writes runs/star_audit/probe.json)
@@ -36,6 +38,13 @@ LIVE = frozenset({
     "Alternator_unique_2", "Blower_unique", "BowDude_unique_2", "Duelist_unique", "Duelist_unique_2", "FutureGirl_unique_2",
     "JetpackGirl_unique", "Leaper_unique_2", "Maisie_unique", "Mechanic_unique_2", "Meeple_unique", "Samurai_unique",
     "Speedy_unique_2", "Voodoo_unique", "Voodoo_unique_2"})
+
+def equipped():
+    """the card names env_v5.with_star_powers hands out (trainer --star-powers 1): LIVE (libg's own readers still run) plus
+    the cards the host re-implements (starfx.c, issue #47) that star_check confirmed live"""
+    import star_check
+    return LIVE | star_check.LIVE
+
 
 # the lookups (star.c) and the wrappers that tail-call them with the type in w1: a call site with a constant type is a reader
 LOOKUPS = (0xc34be0, 0xc34c6c, 0xc34d10, 0xc42838, 0xc42874, 0xc428b0, 0xb6a75c, 0xb6a7b0)
@@ -229,6 +238,7 @@ def _check():
     p = plan(rows, 3, per=2)
     assert sum(len(b) for b in p) == 15 and all(len({c[0] for c in b}) == len(b) for b in p)
     assert all(isinstance(n, str) for n in LIVE) and len(LIVE) == 15
+    import star_check; assert not (LIVE & star_check.LIVE) and equipped() == LIVE | star_check.LIVE   # a card is in one list only
     assert site_kind([0x52ccd4, 0xb30278]) == "sim" and site_kind([0x52ccd4]) == "ui" and site_kind([]) == "nosite"
     import numpy as np, tempfile                                   # a made-up code segment: two calls, one without a constant
     code = np.zeros(TEXT_END // 4, dtype="<u4"); at = 0xc00000 // 4

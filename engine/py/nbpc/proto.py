@@ -98,7 +98,12 @@ class Resp(C.Structure):
         # player: the two gear ids in its config, ConsumableShield hp left, counts [low-hp hits boosted, shield hp absorbed,
         # ForestSpeed moves, ReloadSpeed answers]
         ("gear_valid", C.c_int32), ("gear_id", (C.c_int32 * 2) * MAXP), ("gear_shield", C.c_int32 * MAXP),
-        ("gear_stat", (C.c_int32 * 4) * MAXP)]
+        ("gear_stat", (C.c_int32 * 4) * MAXP),
+        # star power round (bsrl-sim issue #47, appended): native/loader/starfx.c; all 0 (star_valid 0) with a host without it. Per
+        # player: the star power card in its config, the effect the host re-implements for it (0 = none), counts [hits taken
+        # reduced, hits dealt boosted, heals / reload answers, kills that fed the card]
+        ("star_valid", C.c_int32), ("star_card", C.c_int32 * MAXP), ("star_kind", C.c_int32 * MAXP),
+        ("star_stat", (C.c_int32 * 4) * MAXP)]
 
 
 GAD_NONE, GAD_DASH, GAD_HEAL, GAD_SHIELD, GAD_SPAWN, GAD_PROJECTILE, GAD_STATUS, GAD_SUPER = range(8)   # Resp.gad_kind (nbenv_proto.h NBE_GAD_*)

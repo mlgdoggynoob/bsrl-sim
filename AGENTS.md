@@ -14,8 +14,8 @@ the repo root and is run as `python -m <module>` from the root after `source env
 
 ## Checks
 - Self-checks, no battle (`obs_v5` / `env_v5` need the game files from `setup.sh`): `python -m obs_v5`, `python -m intent`, `python -m planner`, `python -m model`, `python -m fast_obs`, `python -m env_v5 --check`,
-  `python scorecard.py --check`, `python apply_noise.py --test`, `python -m super_audit --check`, `python -m star_audit --check`, `python -m gadget_check --check`, `python -m hyper_check --check`, `python -m charge_check --check`, `python -m export_policy --check`, `python -m showdown_check --check`, `python -m status_check --check`, `python -m gear_check --check`. Run the ones for the modules you touched.
-- Host checks (boot takes 60-90 s each, so batch your questions into one run): `python -m live_check`, `python -m showdown_check`, `python -m status_check`, `python -m star_audit`, `python -m gear_check`,
+  `python scorecard.py --check`, `python apply_noise.py --test`, `python -m super_audit --check`, `python -m star_audit --check`, `python -m star_check --check`, `python -m gadget_check --check`, `python -m hyper_check --check`, `python -m charge_check --check`, `python -m export_policy --check`, `python -m showdown_check --check`, `python -m status_check --check`, `python -m gear_check --check`. Run the ones for the modules you touched.
+- Host checks (boot takes 60-90 s each, so batch your questions into one run): `python -m live_check`, `python -m showdown_check`, `python -m status_check`, `python -m star_audit`, `python -m star_check`, `python -m gear_check`,
   `python -m test_fast` (fast paths must stay bit-equal to the reference paths), `python -m train_ppo --run t --smoke`.
 - Every new module gets an assert self-check (`python -m <module>` or `--check`), like the existing ones.
 

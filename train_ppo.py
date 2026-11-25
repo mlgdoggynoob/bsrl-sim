@@ -65,8 +65,8 @@
   hypercharge card (env_v5.with_hyper, no draw) and self 4 = env_v5.Env.hyper (the host's state: can activate now); the
   fire head's hypercharge class is allowed only then. Off: self 4 = 0, the class stays masked.
 * Star powers (--star-powers 1, default 0 = off; issue #20, no observation change): every battle but the hard scenarios
-  gives each player one of its brawler's star power cards that the star power probe found read by this build
-  (env_v5.with_star_powers over star_audit.LIVE, drawn from MAEnv's rng after the gadgets). The policy does not see it.
+  gives each player one of its brawler's star power cards that this build really runs: the ones the star power probe found read
+  plus the ones the host re-implements (issue #47) that star_check confirmed (env_v5.with_star_powers over star_audit.equipped(), drawn from MAEnv's rng after the gadgets). The policy does not see it.
 * Gears (--gears 1, default 0 = off; issue #51, no observation change): every battle but the hard scenarios gives each
   player two gears its brawler may carry whose effect gear_check confirmed (env_v5.with_gears over gear_check.LIVE, drawn
   from MAEnv's rng after the star powers). The policy does not see them.
@@ -646,7 +646,7 @@ def main():
     ap.add_argument("--opp-slots", type=int, default=3); ap.add_argument("--opp-hold", type=int, default=2)
     ap.add_argument("--pfsp-p", type=float, default=2.0)
     ap.add_argument("--gadgets", type=int, default=0, help="1 = players carry a gadget, the policy sees it ready (self 3) and may use it (obs v5.7, issue #3; needs a host that activates its kind)")
-    ap.add_argument("--star-powers", type=int, default=0, help="1 = players carry a star power card the probe found read by this build (star_audit.LIVE; issue #20; not in the observation)")
+    ap.add_argument("--star-powers", type=int, default=0, help="1 = players carry a star power card this build runs (libg reads it: star_audit.LIVE, or the host re-implements it: star_check.LIVE; issues #20, #47; not in the observation)")
     ap.add_argument("--gears", type=int, default=0, help="1 = players carry two gears of their brawler whose effect gear_check confirmed (gear_check.LIVE; issue #51; not in the observation)")
     ap.add_argument("--hyper", type=int, default=0, help="1 = players carry their hypercharge card, the policy sees it ready (self 4) and may activate it (obs v5.8, issue #4; needs a host with hyper.c)")
     a = ap.parse_args()

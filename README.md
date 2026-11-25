@@ -148,6 +148,7 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | `status_check.py` | One-boot check of status effects and movement (issue #19): walk speeds against the table, Max's super speeds him up, Spike's super slows its target, Frank's super stuns its target (no move, no attack, then free again), Draco's mount speeds him up and swaps his weapon, Leon's super hides him from a far enemy's observation (obs v5.9); in a second battle Ollie's super taunts and Glowy's fears their target, Starr Nova's super heals her by its damage and her hypercharged super speeds up her reload, Sandy's sandstorm hides her; in a third battle (hypercharged, teams of two) Max's drink charges a teammate's super, Edgar's hypercharged super speeds up his reload and super charge, Darryl's hypercharged roll shoots, Pam's turret heals 14 % of her max hp a second (#22) and her hypercharged turret heals, Angelo's super poisons his arrows; in a fourth Fang's sweep stuns only in line of sight, Meeple's RageQuit stuns and Damian's wall gadget builds walls. `python -m status_check`, `--check`, `--battles 3,4` |
 | `gadget_check.py` | One-boot check of gadget activation: the loadout reaches the host, each implemented kind's effect, uses and cooldown spent, fire 3 while not ready spends nothing, `Env.gadget` agrees with the host. `python -m gadget_check`, `--check` |
 | `star_audit.py` | Star power probe (issue #20): one boot, native-AI battles where every player carries a star power card, the host counting which card types libg looks up and which card answered each hit (`star.c`, `NB_STAR_PROBE=1`), plus a static scan of libg's lookup call sites; classes per card and `LIVE` (the cards found read, what `--star-powers 1` hands out). Results in `notes/issue20.md`. `python -m star_audit [--rounds 3] [--cards A,B]`, `--check` |
+| `star_check.py` | One-boot check of the star power cards the host re-implements or libg attaches itself (issue #47): the loadout reaches the host, then per card a small scripted battle with a carrier and a control of the same brawler (damage taken, damage dealt, reload, periodic heal, heal and damage after a kill, speed below an hp line, trait speed and super at spawn), each effect against the card's own Value columns; `LIVE` = what `--star-powers 1` hands out besides `star_audit.LIVE`. `python -m star_check [--only A,B]`, `--check` |
 | `hyper_check.py` | One-boot check of hypercharge: the card reaches the host, charging from hits, fire 4 activates only at a full charge with the card, +speed / +damage / shield while active, the end after 5 s and normal speed after it, `Env.hyper` agrees with the host. `python -m hyper_check`, `--check` |
 | `live_check.py` | One-boot check of the host round: team reward, area effects (radius, kind), teammate respawn, HUD mask, live map tiles, cubes lost at a knock-out. |
 | `showdown_check.py` | Showdown rules (issue #21), played by the native AI in solo / duo / trio: the battle ends when one team is left, death cube drops, spawn protection after a respawn, the storm's ramp and gas heal cut, and with `--mods 3,5` meteors and healing mushrooms. `--check` without the host. |
@@ -159,7 +160,7 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | `setup.sh` | One-command setup: host build, venv, game files (SETUP.md). Rebuilds the host when its sources changed. |
 | `update.sh` | Updates a checkout to the latest `main` (fast-forward, or a merge into your branch), then reruns `setup.sh`; `--check` runs the self-checks. |
 | `engine/` | nirkt's battle host and environment as one tree: `native/` (host sources, qemu patches), `py/` (`nbpc`, `models4.py`), `train/`, nirkt's vision-label tools; this project's changes applied. What came from where: `engine/NOTICE.md`. |
-| `engine/patches/` | Record of this project's changes to nirkt's host and camera rules (`training_round`, `fair_view`, `live_state`, `gadgets`, `charge`, `hypercharge`, `hypercharged_supers`, `hyper_supers_fix`, `area_gadgets`, `gadgets_batch2`, `showdown`, `showdown_leftovers`, `star_probe`, `star_card_hits`, `supers`, `status_movement`, `obs_invisibility`, `trio_respawn_gas`, `broken_supers`, `guessed_numbers`, `status_leftovers`, `meg_mech`, `split_and_paint`, `status_final`, `heal_scale`, `gears`; already applied in `engine/`). |
+| `engine/patches/` | Record of this project's changes to nirkt's host and camera rules (`training_round`, `fair_view`, `live_state`, `gadgets`, `charge`, `hypercharge`, `hypercharged_supers`, `hyper_supers_fix`, `area_gadgets`, `gadgets_batch2`, `showdown`, `showdown_leftovers`, `star_probe`, `star_card_hits`, `supers`, `status_movement`, `obs_invisibility`, `trio_respawn_gas`, `broken_supers`, `guessed_numbers`, `status_leftovers`, `meg_mech`, `split_and_paint`, `status_final`, `heal_scale`, `gears`, `star_powers2`; already applied in `engine/`). |
 | `notes/` | Working notes from the sessions behind each host change (libg offsets, measurements, guesses); index and dates in `notes/README.md`. |
 | `pro_strategies.md` | Community Showdown habits and what each means for the observation / reward. |
 
@@ -204,7 +205,7 @@ Before `update.sh` existed: `git pull` once, then `./update.sh`.
 Self-checks (no battle is booted; `obs_v5` / `env_v5` read the game's data tables, so they need the game files):
 
 ```bash
-python -m obs_v5 && python -m intent && python -m planner && python -m model && python -m fast_obs && python -m env_v5 --check && python -m train_ppo --check && python -m scenarios --check && python -m gadget_check --check && python -m hyper_check --check && python -m charge_check --check && python -m showdown_check --check && python -m status_check --check && python -m super_audit --check && python -m star_audit --check && python -m export_policy --check && python apply_noise.py --test
+python -m obs_v5 && python -m intent && python -m planner && python -m model && python -m fast_obs && python -m env_v5 --check && python -m train_ppo --check && python -m scenarios --check && python -m gadget_check --check && python -m hyper_check --check && python -m charge_check --check && python -m showdown_check --check && python -m status_check --check && python -m super_audit --check && python -m star_audit --check && python -m star_check --check && python -m export_policy --check && python apply_noise.py --test
 ```
 
 Live checks (boot the host; each boot takes about 60-90 s):
@@ -217,6 +218,7 @@ python -m charge_check                              # charge supers: walls, Dami
 python -m status_check                              # speed boosts, slows, stuns, Draco's mount, Leon unseen, taunt, fear, lifesteal, reload, smoke, hypercharge areas, LoS stun
 python -m showdown_check                            # team end, death cube drops, respawn protection, storm
 python -m star_audit                                # which star power cards libg still reads in battle
+python -m star_check                                # the star power cards the host re-implements (starfx.c): each effect against the card's Values
 python -m env_v5 --n 4 --minutes 2 --agents 10      # random-action benchmark
 ```
 
@@ -248,6 +250,14 @@ cd $SIM_WORK/runs && python -m http.server 8766      # dashboard: http://localho
   the seven `gear_check` confirmed: speed in bushes, health regen, damage below 50 % hp, the 900 shield, reload, super
   charge, gadget cooldown). They are not in the observation. `python -m gear_check` asserts each gear's effect in one
   battle, `--check` without the host; the gear list and what libg still reads: `notes/issue51.md`.
+- Star powers (issues #20, #47): `--star-powers 1` (off by default) gives every player one star power card of its brawler
+  (`env_v5.with_star_powers`) from the cards this build really runs: 15 that libg still reads (`star_audit.LIVE`), 11 more
+  that `star_check` confirmed (8 re-implemented in the host, `starfx.c`: damage taken -20 % / -30 % below 30 % hp / -50 %
+  at full hp, +50 % damage to a target at 30 % hp or less, double reload below 60 % hp, 15 % of the missing hp every 2 s,
+  20 % max hp back after a kill, +15 % damage for 12 s after a kill; Rico's +35 % speed below 40 % hp; and 2 trait cards libg
+  runs by itself: Colt's speed, Surge's full super at spawn), 26 of the 215 cards. The other 189 stay out: no reader, or an
+  effect that needs a number or state the host does not have (`notes/issue47.md`). Not in the observation.
+  `python -m star_check` asserts each effect in one boot, `--check` without the host.
 - Observation layout changes must be mirrored by anything that consumes exported policies. `obs_v5` carries the
   version (`obs_v5.OBS_VERSION`, now `v5.9`; saved in every checkpoint) that exported policies are checked against.
 

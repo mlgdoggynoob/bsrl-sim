@@ -50,7 +50,7 @@ main() {
     set +eu +o pipefail; source env.sh; set -eu -o pipefail   # env.sh is written for an interactive shell
     fail=0
     for m in "-m obs_v5" "-m intent" "-m planner" "-m model" "-m fast_obs" "-m env_v5 --check" "scorecard.py --check" \
-             "apply_noise.py --test" "-m super_audit --check" "-m gadget_check --check" "-m hyper_check --check" \
+             "apply_noise.py --test" "-m super_audit --check" "-m star_check --check" "-m gadget_check --check" "-m hyper_check --check" \
              "-m charge_check --check" "-m export_policy --check" "-m train_ppo --check" "-m scenarios --check" "-m showdown_check --check" "-m status_check --check"; do
       if out=$(python $m 2>&1); then echo "ok    python $m"; else echo "FAIL  python $m"; echo "$out" | tail -5; fail=1; fi
     done
