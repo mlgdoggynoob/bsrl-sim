@@ -477,13 +477,16 @@ def battles(inst, a, spots, info, fails, B):
         print("status_check: Darryl's hypercharged roll: projectiles %s" % sorted(kinds), flush=True)
         fails["Darryl BulletSpin"] = [] if "BarrelBotOverchargedProjectile" in kinds else ["Darryl's roll fired no BarrelBotOverchargedProjectile (%s)" % sorted(kinds)]
 
-        # 16. Pam (spot 3): turret at teammate 8 (400 u); enemy 9 (900 u on) shoots 8 after the landing, then 8 waits
+        # 16. Pam (spot 3): teammate 8 at 600 u, the turret thrown 300 u (between them); enemy 9 shoots 8 from 500 u to the
+        # side (a clear corridor of the spot, perpendicular), clear of the turret, after the turret's instant heal
         p, (dx, dy), d = at(3, 3); aim = float(np.degrees(np.arctan2(dy, dx)))
-        R.place({3: p, 8: (p[0] + dx * 400, p[1] + dy * 400), 9: (p[0] + dx * 1300, p[1] + dy * 1300)})
-        hyper_super(3, aim, min(1.0, 400 / SA.expected("MinigunDude", True)["range"]))
+        qx, qy = next(((u, v) for u, v in spots[3][2] if u * dx + v * dy == 0), (-dy, dx))
+        t8 = (p[0] + dx * 600, p[1] + dy * 600); R.place({3: p, 8: t8, 9: (t8[0] + qx * 500, t8[1] + qy * 500)})
+        hyper_super(3, aim, min(1.0, 300 / SA.expected("MinigunDude", True)["range"]))
         for _ in range(20): R.step()   # the turret lands, its instant heal is over
-        for _ in range(3):
-            R.step({9: (-1, 1, aim + 180, 0.0)}, 1)
+        aim9 = float(np.degrees(np.arctan2(-qy, -qx)))
+        for _ in range(2):
+            R.step({9: (-1, 1, aim9, 0.0)}, 1)
             for _ in range(3): r = R.step()
         hp0 = int(r.pl[8].hp)
         if a.verbose:

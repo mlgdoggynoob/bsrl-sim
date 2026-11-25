@@ -96,7 +96,7 @@ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind,
  * every hurt ally of the area's team that libg's target test reaches (the summon itself not) is healed through libg's heal
  * 0xb41554 by -Damage % of the summon's max HP (DamageScaleType 2: 10 % of 4200 = 420 for the hypercharged turret) or
  * -Damage. [?] the client has no rate or scale rule for it. */
-typedef struct { int ch_id, area_id; uint8_t *a; } SumArea;
+typedef struct { int ch_id, area_id; uint8_t *a; int next; } SumArea;
 #define SA_MAX 32
 static SumArea g_sa[SA_MAX]; static int g_nsa; static long g_nsum_area, g_nsum_end;
 void superfix_summon_area(uint8_t *ch) {
@@ -108,11 +108,11 @@ void superfix_summon_area(uint8_t *ch) {
     uint8_t *mgr = PTR(ch, 0x20); int n = I32(mgr, 0x34); void **v = PTR(mgr, 0x28);
     for (int i = 0; v && i < n && i < 4096; i++) {   /* one already there (a path this host does not know of): leave it */
         uint8_t *o = v[i], *od = o ? PTR(o, 0x10) : NULL;
-        if (od == ad && PTR(o, 0x108) == ch) { if (g_nsa < SA_MAX) g_sa[g_nsa++] = (SumArea){id, I32(o, 8), o}; return; }
+        if (od == ad && PTR(o, 0x108) == ch) { if (g_nsa < SA_MAX) g_sa[g_nsa++] = (SumArea){id, I32(o, 8), o, 0}; return; }
     }
     uint8_t *a = my_spawn_area(ch, 0, 0, ad, 2, 0, 0, 1, NULL, NULL, NULL, 1);
     if (g_nsa >= SA_MAX) g_nsa = 0;
-    g_sa[g_nsa++] = (SumArea){id, a ? I32(a, 8) : -1, a};
+    g_sa[g_nsa++] = (SumArea){id, a ? I32(a, 8) : -1, a, 0};
     if (a) g_nsum_area++;
     LOG("[superfix] summon area: ch %d (data %d) gets area %d type %d -> %p\n", id, I32(cd, 0x20), I32(ad, 0x20), I32(ad, 0x118), a);
 }
@@ -121,8 +121,9 @@ long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) __attribute__((weak
 static long g_nsum_hot;
 static void summon_area_end(uint8_t *a, uint8_t *sim) {   /* from the area tick: the summon gone -> the area ends now */
     for (int i = 0; i < g_nsa; i++) if (g_sa[i].a == a && g_sa[i].area_id == I32(a, 8)) {
-        uint8_t *d = PTR(a, 0x10), *own = PTR(a, 0x108); int now = I32(sim, 0x10), d0 = I32(a, 0xd0);
-        if (d && own && I32(d, 0x118) == 4 && now > d0 && (now - d0) % HOT_EVERY == 0 && now < I32(a, 0xd8) && I32(own, 0x3c4) > 0) {
+        uint8_t *d = PTR(a, 0x10), *own = PTR(a, 0x108); int now = I32(sim, 0x10);
+        if (d && own && I32(d, 0x118) == 4 && now >= g_sa[i].next && I32(own, 0x3c4) > 0) {
+            g_sa[i].next = now + HOT_EVERY;
             int amt = I32(d, 0x138) == 2 ? -I32(own, 0x3c8) * I32(d, 0x134) / 100 : -I32(d, 0x134);   /* DamageScaleType 2: % of max HP */
             void *h = PTR(sim, 0); int n = h ? I32(h, 0xc) : 0; void **v = h ? PTR(h, 0) : NULL; int team = ((geti_t)B(0xb6a820))(a);
             for (int k = 0; amt > 0 && v && k < n && k < 4096; k++) {
