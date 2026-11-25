@@ -21,3 +21,4 @@ docstrings and comments are the spec.
 | `issue19-final.md` | #19 final: Max's / Edgar's / Darryl's / Pam's hypercharge areas, Angelo, Meeple, Damian, stun line of sight | this branch |
 | `issue51.md` | #51 gears: the gear table, libg's readers, what the host re-implements, `gear_check` results | this branch |
 | `issue49.md` | #49 Brawl TV imitation rows, step 4 (trainer side) | this branch |
+| `issue47.md` | #47 star powers: what the host re-implements (`starfx.c`), the vtable hypothesis, per card what was done or why not, `star_check` results | this branch |
