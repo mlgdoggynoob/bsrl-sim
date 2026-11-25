@@ -1,5 +1,5 @@
 """Live check of gears (issue #51): one boot, one scripted battle (no gas, native AI off, spawn protection off) on
-Survival612 where each gear in LIVE has a carrier and a control of the same brawler without it. In order:
+Survival642 where each gear in LIVE has a carrier and a control of the same brawler without it. In order:
   1. the host publishes gear state (NbeResp gear_valid), each requested gear reached its player's config (gear_id), a gear
      the brawler may not carry is rejected (div_err bit), the ConsumableShield carrier starts with its 900 shield;
   2. LowHealthDamage (host, gear.c): at full hp the carrier's volley does what the control's does; below 50 % hp it does
@@ -10,7 +10,7 @@ Survival612 where each gear in LIVE has a carrier and a control of the same braw
   5. ForestSpeed (host): on a bush row the carrier walks (1 + 15 %) x the control's distance, on open ground the same;
   6. ReloadSpeed (host): after both emptied their ammo, the carrier (Surge) reloads (1 + 15 %) x the control's ammo;
   7. SuperChargeRate (libg, 0xb4f928): El Primo's punch charges the carrier's super (1 + 10 %) x the control's;
-  8. GadgetCooldown (libg, 0xc401e0 -> gadget.c): the carrier's gadget cooldown after a use is (1 - 15 %) x the control's.
+  8. GadgetCooldown (libg, 0xc401e0 -> gadget.c): Maisie's dash, the carrier's gadget cooldown after a use is (1 - 15 %) x the control's.
 LIVE (the gears env_v5.with_gears hands out, trainer --gears 1) is the list this check confirmed (2026-11-25, notes/issue51.md).
 python -m gear_check            python -m gear_check --check   (no game: the judging rules, the layout helpers)"""
 import argparse, sys, time, numpy as np
@@ -20,7 +20,7 @@ P = None   # nbpc.proto, imported in main (the self-check needs no host)
 LIVE = frozenset({"ForestSpeed", "HealthRegen", "LowHealthDamage", "ConsumableShield", "ReloadSpeed", "SuperChargeRate",
                   "GadgetCooldown"})
 
-MAP = "Survival612"
+MAP = "Survival642"
 TILE = 300
 TICKS = 2            # ticks per step
 DMG_TOL = 0.03       # relative: each pellet's damage is scaled and truncated on its own
@@ -87,15 +87,24 @@ def layout(location=MAP):
 
 def pick_runs(bush, walk, free=None):
     """bush / walk / free (H, W) bool: bush tiles, open ground, anything a brawler and a shot pass (open or bush): -> the
-    right end of the first 7-tile bush run, and the right ends of 8-tile open runs with free rows above and below"""
+    second tile from the right of the first 7-tile bush run with free rows above and below, and the right ends of 8-tile
+    open runs with free rows above and below"""
     free = walk if free is None else free
     c = lambda y, x: ((x + 0.5) * TILE, (y + 0.5) * TILE)
-    b = [(y, x) for y, x in runs(bush, 7) if 1 <= y < bush.shape[0] - 1]
+    b = [(y, x) for y, x in runs(bush, 7) if 1 <= y < bush.shape[0] - 1 and free[y - 1, x:x + 7].all() and free[y + 1, x:x + 7].all()]
     o = [(y, x) for y, x in runs(walk, 8) if 1 <= y < walk.shape[0] - 1 and free[y - 1, x:x + 8].all() and free[y + 1, x:x + 8].all()]
     picked = []   # open runs at least 6 tiles apart (vertically or horizontally), so the pairs stay out of each other's way
     for y, x in o:
         if all(abs(y - y2) >= 6 or abs(x - x2) >= 12 for y2, x2 in picked): picked.append((y, x))
-    return (c(b[0][0], b[0][1] + 6) if b else None), [c(y, x + 7) for y, x in picked]
+    return (c(b[0][0], b[0][1] + 5) if b else None), [c(y, x + 7) for y, x in picked]   # a tile in: no wall pushes it out
+
+
+def card_id(name):
+    """cards.csv data id of a card by name (ids count the named rows, as env_v5.gadget_cards)"""
+    from nbpc import diversity as D
+    import env_v5 as E
+    names = [r["Name"] for r in D._rows("cards.csv") if r[next(iter(r))]]
+    return E.T_CARD * 1000000 + names.index(name)
 
 
 def _check():
@@ -108,9 +117,10 @@ def _check():
     assert runs(m, 7) == [(2, 3), (4, 0)] and runs(m, 8) == [(2, 3)]
     w = np.ones((30, 30), bool); bu = np.zeros((30, 30), bool); bu[5, 10:17] = True; w[5, 10:17] = False
     bp, op = pick_runs(bu, w)
-    assert bp == ((16 + 0.5) * TILE, 5.5 * TILE) and len(op) >= 4 and all(np.hypot(a[0] - b[0], a[1] - b[1]) >= 6 * TILE
+    assert bp == ((15 + 0.5) * TILE, 5.5 * TILE) and len(op) >= 4 and all(np.hypot(a[0] - b[0], a[1] - b[1]) >= 6 * TILE
                                                                            for i, a in enumerate(op) for b in op[:i])
     import env_v5 as E
+    assert card_id("Maisie_Dash") in E.gadget_cards()["Maisie"]
     g = {r["name"]: r for r in E.gear_rows()}
     assert LIVE <= set(g) and all(g[n]["type"] in (0, 1, 2, 4, 5, 6, 17) for n in LIVE)
     print("gear_check self-check ok")
@@ -128,14 +138,14 @@ def main():
     import env_v5 as E
     P = proto
     G = {r["name"]: r["id"] for r in E.gear_rows()}
-    # players: 0 / 9 Surge (reload), 1 / 2 Shelly (low-hp damage, shield) with targets 5 / 6, 3 / 4 Shelly (regen, bush
-    # speed), 7 / 8 El Primo (super charge); 5 / 6 also the gadget cooldown pair; 6's gear is one Shelly may not carry
-    names = ["ElectroSniper", "ShotgunGirl", "ShotgunGirl", "ShotgunGirl", "ShotgunGirl", "ShotgunGirl", "ShotgunGirl",
+    # players: 0 / 9 Surge (reload), 1 / 2 Shelly (low-hp damage, shield) with targets 5 / 6 (Maisie: also the gadget
+    # cooldown pair; 6's gear is one Maisie may not carry), 3 / 4 Shelly (regen, bush speed), 7 / 8 El Primo (super charge)
+    names = ["ElectroSniper", "ShotgunGirl", "ShotgunGirl", "ShotgunGirl", "ShotgunGirl", "Maisie", "Maisie",
              "Luchador", "Luchador", "ElectroSniper"]
     gear = {0: [G["ReloadSpeed"]], 1: [G["LowHealthDamage"], G["ConsumableShield"]], 3: [G["ForestSpeed"], G["HealthRegen"]],
             5: [G["GadgetCooldown"]], 6: [G["SuperHealth"]], 7: [G["SuperChargeRate"]]}
     want_ids = {p: sorted(v) for p, v in gear.items() if p != 6}
-    gc = E.gadget_cards()["ShotgunGirl"]
+    dash = card_id("Maisie_Dash")   # a gadget kind the host implements (gadget.c DASH), cooldown 320 ticks
     bush_xy, opens = layout()
     if bush_xy is None or len(opens) < 6: raise SystemExit("%s: no bush row / not enough open rows for the layout" % MAP)
     fails, info = [], []
@@ -146,7 +156,7 @@ def main():
         (info if ok else fails).append(what); print(("ok   " if ok else "FAIL ") + what, flush=True)
 
     try:
-        div = D.make_div(location=MAP, chr=names); div["gear"] = gear; div["gadget"] = {5: gc[0], 6: gc[0]}
+        div = D.make_div(location=MAP, chr=names); div["gear"] = gear; div["gadget"] = {5: dash, 6: dash}
         inst.reset(7, gas=0, flags=P.F_STATE, native_mask=0, obs_mask=0, div=div)
         bi = inst.battle_info() or {}
         allp = list(range(10)); idle = {i: (-1, 0, 0.0, 0.0) for i in allp}
@@ -170,7 +180,7 @@ def main():
         need(all(got[p] == want_ids.get(p, []) for p in allp), "gears in the configs %s (want %s)" % (
             {p: v for p, v in got.items() if v}, want_ids))
         err = int(bi.get("err", 0))
-        need(err & (1 << 6) and not err & 0x3bf, "SuperHealth on Shelly rejected (div_err %#x)" % err)
+        need(err & (1 << 6) and not err & 0x3bf, "SuperHealth on Maisie rejected (div_err %#x)" % err)
         need(s[1]["shield"] == 900 and all(s[p]["shield"] == 0 for p in allp if p != 1), "shield 900 at the start (%d)" % s[1]["shield"])
         # 2. low-hp damage at full hp: 1 shoots 5, 2 shoots 6 (aim 0: to the right)
         def volley(shooters, aims, n=6):
@@ -211,10 +221,10 @@ def main():
         g3, g4 = h[k - 1, 0] - start[0] if k > 0 else 0, h[k - 1, 1] - start[1] if k > 0 else 0
         ok, txt = ratio_ok(g3, g4, 1.5, REGEN_TOL); need(ok, "HealthRegen: hp regained " + txt)
         # 5. bush speed: 3 then 4 walk left (move_dir 8) from the bush row's right end, then on open ground
-        def walk(p, xy, n=8):
-            inst.setup(positions={p: xy}); stp(k=1); x0 = S(p)["x"]
-            for _ in range(n): stp({p: (8, 0, 0.0, 0.0)})
-            stp({p: (-1, 0, 0.0, 0.0)}); return abs(S(p)["x"] - x0)
+        def walk(p, xy, n=8):   # -> the path length (a teleport can leave a short drift before the walk turns left)
+            inst.setup(positions={p: xy}); stp(k=1); pts = [(S(p)["x"], S(p)["y"])]
+            for _ in range(n): stp({p: (8, 0, 0.0, 0.0)}); pts.append((S(p)["x"], S(p)["y"]))
+            stp({p: (-1, 0, 0.0, 0.0)}); return float(np.hypot(*np.diff(np.array(pts), axis=0).T).sum())
         n0 = S(3)["stat"][2]
         b3, b4 = walk(3, bush_xy), walk(4, bush_xy)
         ok, txt = ratio_ok(b3, b4, 1.15, SPEED_TOL); need(ok and S(3)["stat"][2] > n0, "ForestSpeed in a bush: " + txt)
@@ -233,7 +243,7 @@ def main():
         c0 = (S(7)["sc"], S(8)["sc"]); volley((7, 8), {7: 0.0, 8: 180.0}, n=10)
         ok, txt = ratio_ok(S(7)["sc"] - c0[0], S(8)["sc"] - c0[1], 1.10, DMG_TOL); need(ok, "SuperChargeRate: super charge " + txt)
         # 8. gadget cooldown: 5 and 6 use their gadget (a dash away from each other)
-        k5, k6 = S(5)["kind"], S(6)["kind"]
+        k5 = S(5)["kind"]
         stp({5: (-1, 3, 0.0, 0.0), 6: (-1, 3, 180.0, 0.0)})
         c5, c6 = S(5), S(6)
         ok, txt = ratio_ok(c5["cd"], c6["cd"], 0.85, DMG_TOL)
