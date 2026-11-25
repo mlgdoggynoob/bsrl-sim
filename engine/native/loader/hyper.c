@@ -26,9 +26,10 @@
  * per-attack projectile, the Attack handler's summon) take the overcharged list here (hyper_proj_site, hyper_summon_bl),
  * a hypercharged brawler's Heal area heals here (oc_heal_areas), and the card-value stub 0xb5281c answers the hypercharge
  * card's values for the types in CARD_TYPES (Frank's and Glowy's full circle, Gene's 3 hands, Gale's 2 wider waves, Barley's
- * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value). Two hypercharges whose card Type
- * no libg call site asks for (code compiled out) are re-implemented: Lumi's side blasts (my_spawn) and Griff's extra notes
- * (hyper_chain_extra, from spawnfix.c). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
+ * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value). Three hypercharges whose card Type
+ * no libg call site asks for (code compiled out) are re-implemented: Lumi's side blasts (my_spawn), Griff's extra notes
+ * (hyper_chain_extra, from spawnfix.c) and Colette's spirit (hyper_spirit_damage, from env.c's charge contact); Tick's dead
+ * head gets its summoner for its mine chain (hyper_dead_pet_owner, from superfix_items.c). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
  * MechaDudeBig) have a separate super instead (characters.csv OverchargedUltimateSkill): the game builds it as the brawler's
  * third skill instance (char+0x458[2], 0xb34560) but what picks it for a super cast is compiled out; here instances 1
  * (the super) and 2 are swapped while hypercharged, so the game's own super code casts it, and swapped back once the
@@ -348,7 +349,33 @@ static int my_card_value(uint8_t *ch, int type, int idx) {
  *   DeathOverchargedAreaEffect (CharacterData +0xd0, count +0xdc) takes no damage buff: Tick's Value2 5 is the minimines
  *   his text names ("leaving behind 5 of his minimines"), not a damage percent. */
 #define PET_MAX 32
-static struct { uint8_t *ch; int id, dmg_pct, speed_pct; } g_pet[PET_MAX];
+static struct { uint8_t *ch; int id, dmg_pct, speed_pct, death_oc, owner_id, x, y; } g_pet[PET_MAX];
+void *env_obj_by_id(void *sim, int id);   /* env.c */
+/* A dead hypercharged pet's DeathOverchargedAreaEffect (Tick's ClusterBombPetOverchargedExplosion) has no owner (+0x108 NULL
+ * when it expires), so superfix_items.c's ChainAreaEffect (ClusterBombOverchargedExplosion, 6 ClusterOverchargedMine) had
+ * none to spawn with. hyper_pets_tick keeps each such pet's last position; hyper_dead_pet_owner gives the area expiring at
+ * (x, y) the summoner of the dead pet that stood nearest (within DEAD_PET_R), once per pet, and *wdmg = the summoner's main
+ * attack Damage (CharacterData +0x260, getter 0xb0dc14), the damage of "his minimines" (power 1: my_root scales it). */
+#define DEAD_PET_R 700   /* the pet can move a little in its last tick; the area spawns where it died */
+void hyper_pets_tick(void *sim) {
+    for (int k = 0; k < PET_MAX; k++) if (g_pet[k].death_oc) {
+        uint8_t *c = env_obj_by_id(sim, g_pet[k].id);
+        if (c && I32(c, 0x3c4) > 0) { g_pet[k].x = I32(c, 0x38); g_pet[k].y = I32(c, 0x3c); }
+    }
+}
+void *hyper_dead_pet_owner(void *sim, int x, int y, int *wdmg) {
+    int best = -1; long bd = (long)DEAD_PET_R * DEAD_PET_R;
+    for (int k = 0; k < PET_MAX; k++) if (g_pet[k].death_oc && g_pet[k].owner_id) {
+        uint8_t *c = env_obj_by_id(sim, g_pet[k].id); if (c && I32(c, 0x3c4) > 0) continue;   /* still alive */
+        long dx = g_pet[k].x - x, dy = g_pet[k].y - y; if (dx * dx + dy * dy <= bd) { bd = dx * dx + dy * dy; best = k; }
+    }
+    if (best < 0) return NULL;
+    g_pet[best].death_oc = 0;
+    uint8_t *o = env_obj_by_id(sim, g_pet[best].owner_id); if (!o) return NULL;
+    void *cd = ((void *(*)(void *))B(0xb6a384))(o), *wd = cd ? PTR(cd, 0x260) : NULL;
+    *wdmg = wd ? ((int (*)(void *))B(0xb0dc14))(wd) : 0;
+    return o;
+}
 static long g_npet_buff, g_npet_spawn;
 static int pet_slot(void *ch) {
     for (int k = 0; ch && k < PET_MAX; k++) if (g_pet[k].ch == ch && I32(ch, 8) == g_pet[k].id) return k;
@@ -362,6 +389,22 @@ int hyper_pet_speed(uint8_t *ch) {   /* 0 = unchanged */
     int k = pet_slot(ch); if (k < 0 || !g_pet[k].speed_pct) return 0;
     void *cd = ((void *(*)(void *))B(0xb6a384))(ch); int base = cd ? ((int (*)(void *))B(0xab31e0))(cd) : 0;
     return base > 0 ? base * (100 + g_pet[k].speed_pct) / 100 : 0;
+}
+/* overcharge_pet_charge (Colette, Percenter_overcharge 66: "Colette's spirit follows her during her dash, damaging enemies on
+ * the way"): no card-value reader in this build asks for type 180 (no 0xb5281c / 0xc427d8 call with w1 #0xb4), the
+ * spirit is server code. Here each enemy her dash hits while hypercharged (env.c charge_contact_tick: a charge of the super
+ * instance, char +0x6d8 2) takes the spirit's hit of Value % of the dash's hit d right after it. [?] that Value is that
+ * percent; the spirit (PercenterPet, Minion_Percenter) is not drawn and hits in the same tick as Colette. */
+#define CT_PET_CHARGE 180
+int hyper_spirit_damage(uint8_t *ch, int d) {
+    if (!ch || d <= 0 || I32(ch, 0x6d8) != 2 || !U8(ch, 0x68)) return 0;   /* +0x68: hypercharged now */
+    for (int i = 0; i < NBE_MAXP; i++)
+        if (g_card_ch[i] == ch && I32(ch, 8) == g_card_id[i] && g_card[i] && I32(g_card[i], 0x100) == CT_PET_CHARGE) {
+            int v = card_value(g_card[i], 1), sp = v > 0 ? d * v / 100 : 0;
+            static int nlog; if (sp > 0 && nlog++ < 20) LOG("[hyper] spirit hit: player %d, dash hit %d -> spirit %d (%d%%)\n", i, d, sp, v);
+            return sp;
+        }
+    return 0;
 }
 static void hyper_pets_clear(void) { memset(g_pet, 0, sizeof g_pet); memset(g_card, 0, sizeof g_card); memset(g_card_ch, 0, sizeof g_card_ch); }
 #define SNAP_MAX 1024
@@ -400,6 +443,8 @@ static void hyper_proj_spawn(uint8_t *pr) {
         uint8_t *pd = ((void *(*)(void *))B(0xb6a384))(c);
         int death_oc = pd && I32(pd, 0xdc) > 0;   /* DeathOverchargedAreaEffect (Tick's head): Value2 is its minimines, no damage */
         g_pet[s].ch = c; g_pet[s].id = I32(c, 8); g_pet[s].dmg_pct = dm > 0 && !death_oc ? dm : 0; g_pet[s].speed_pct = sp > 0 ? sp : 0;
+        { int pi = I32(c, 0x80); g_pet[s].death_oc = death_oc; g_pet[s].x = I32(c, 0x38); g_pet[s].y = I32(c, 0x3c);   /* summoner: the hypercharged brawler of its player */
+          g_pet[s].owner_id = pi >= 0 && pi < NBE_MAXP && g_card_ch[pi] ? g_card_id[pi] : 0; }
         U8(c, 0x68) = 1; U8(c, 0xaac) = 1; g_npet_buff++;
         static int nlog2; if (nlog2++ < 20) LOG("[hyper] pet %d (data %d): hp %d/%d, damage +%d%%, speed +%d%%%s\n", I32(c, 8), I32(pd, 0x20),
                                                 I32(c, 0x3c4), I32(c, 0x3c8), g_pet[s].dmg_pct, g_pet[s].speed_pct, death_oc ? ", overcharged death area" : "");

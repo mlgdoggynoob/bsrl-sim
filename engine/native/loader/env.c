@@ -184,6 +184,7 @@ void hyper_clear(void); void hyper_reset_player(int i, void *p); int hyper_activ
 int hyper_tick_player(int i, void *p, uint8_t *ch, int alive); int hyper_damage(void *pa, int ai, void *pv, int vi, int d);
 int hyper_speed(int i, void *p, uint8_t *ch); void hyper_publish(NbeResp *r, void **ps, int np);
 int hyper_pet_damage(void *attacker, int d); int hyper_pet_speed(uint8_t *ch);   /* hyper.c: pets of a hypercharged super */
+void hyper_pets_tick(void *sim); int hyper_spirit_damage(uint8_t *ch, int d);   /* hyper.c: Colette's spirit (overcharge_pet_charge) */
 /* gear round (bsrl-sim issue #51): gear.c */
 extern int32_t g_div_gear[NBE_MAXP][2]; void gear_clear(void); void gear_reset_player(int i, void *cfg); void gear_install(void);
 int gear_damage(uint8_t *ach, int ai, uint8_t *vch, int vi, int d, int storm); int gear_speed(int i, uint8_t *ch, int base, int bush);
@@ -858,6 +859,9 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
             int np_; void **ps_ = players(sim, &np_); uint8_t *pl_ = j->owner >= 0 && j->owner < np_ ? ps_[j->owner] : NULL;
             int charge0 = pl_ ? I32(pl_, 0x54) : 0;
             if (j->dmg > 0) o_root(c, j->owner, d, d, 0, ch, NULL, 1, x, y, NULL, 0, 0, 0, 1, 0, 0, 0);
+            /* Colette's hypercharged dash: her spirit's hit follows on the same enemy (hyper.c hyper_spirit_damage) */
+            int sp = j->dmg > 0 && j->ulti && I32(c, 0x3c4) > 0 && I32(c, 0x84) != I32(ch, 0x84) ? hyper_spirit_damage(ch, d) : 0;
+            if (sp > 0) o_root(c, j->owner, sp, sp, 0, ch, NULL, 1, x, y, NULL, 0, 0, 0, 1, 0, 0, 0);
             if (pl_ && j->ulti) I32(pl_, 0x54) = charge0;
             int pc = mech_pop(sim, c, hp0);
             /* ChargePushback (Bull / El Primo 130 -> 780 u, Darryl 70, Surge / Stu 100), away from the charger as at 0xb5afd4;
@@ -1336,6 +1340,7 @@ static void pre_snapshot(void *sim) {   /* 0xb63b0c, once per tick: storm hits, 
     if (g_ncj) charge_contact_tick(sim);   /* diversity round: env charge contact (only after a native charge start) */
     gadget_tick(sim, I32(sim, 0x10));      /* gadget round: heals over time */
     if (g_nzone) zone_tick(sim);
+    hyper_pets_tick(sim);                  /* hypercharge round: last positions of pets with an overcharged death area */
     int ntj = E.ntj; TickJob tj[64]; memcpy(tj, E.tj, ntj * sizeof *tj); E.ntj = 0;
     for (int i = 0; i < ntj; i++) {
         if (tj[i].kind == 1) sf_spawn_box(sim, tj[i].p, tj[i].a, tj[i].b, tj[i].c);

@@ -120,17 +120,22 @@ static void my_item_update(uint8_t *it, void *x1, void *x2, void *x3) {
 
 /* ---- area ChainAreaEffect */
 typedef long (*mkitem_t)(void *, int, int, int, int, int, int, int, int, int, void *, void *, void *, int);
+void *hyper_dead_pet_owner(void *sim, int x, int y, int *wdmg);   /* hyper.c */
 static void on_area_expire(uint64_t *c) {
     uint8_t *a = (uint8_t *)c[0]; uint8_t *d = a ? data_of(a) : NULL;
     if (!g_superfix || !g_superfix_items || !d || busy || !mode() || U8(a, 0xf4)) return;   /* +0xf4: already expired */
     uint8_t *chain = ((getp_t)B(0xa97c04))(d);
     if (!chain) return;
     if (now_of(a) < I32(a, 0xd8)) { g_nchain_early++; return; }   /* removed before its end tick (owner died, ...): no chain */
+    void *owner = PTR(a, 0x108); uint64_t dmg = U64(a, 0xe8); int wd = 0;
+    if (!owner) {   /* a dead hypercharged pet's death area (Tick's head): its summoner, his main attack's damage (hyper.c) */
+        owner = hyper_dead_pet_owner(((getp_t)B(0xb6a378))(a), I32(a, 0x38), I32(a, 0x3c), &wd);
+        if (owner && wd > 0) dmg = (uint32_t)wd | (uint64_t)(uint32_t)wd << 32;   /* the pair +0xe8 / +0xec */
+    }
     busy = 1;
-    uint8_t *a2 = spawn_area_at(a, chain, PTR(a, 0x108), I32(a, 0xf8), U8(a, 0x2d0), U64(a, 0xe8), a + 0x168);
+    uint8_t *a2 = spawn_area_at(a, chain, owner, I32(a, 0xf8), U8(a, 0x2d0), dmg, a + 0x168);
     void *idata = PTR(chain, 0x110); long it = 0;
-    if (a2 && idata && PTR(a, 0x108)) {   /* the chain's SpawnItem, as spawnfix.c make_item */
-        void *owner = PTR(a, 0x108);
+    if (a2 && idata && owner) {   /* the chain's SpawnItem, as spawnfix.c make_item */
         it = ((mkitem_t)B(0xb55684))(idata, I32(a2, 0x38), I32(a2, 0x3c), 1, 99, I32(a2, 0xe8), I32(a2, 0xec), I32(a2, 0x80), I32(a2, 0x84),
                                      I32(a2, 0x88), owner, a2, ((getp_t)B(0xb6a378))(owner), I32(a2, 0xf8));
         if (it) g_nchain_item++;
