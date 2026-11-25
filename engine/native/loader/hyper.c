@@ -99,14 +99,16 @@ static uint8_t *g_sw[NBE_MAXP];   /* player i's brawler whose skill instances 1 
 
 static int g_heal_seen[32], g_nheal_seen; static long g_oc_heals;   /* oc_heal_areas: area ids already applied */
 static void hyper_heal_clear(void) { memset(g_heal_seen, 0xff, sizeof g_heal_seen); g_nheal_seen = 0; }
-void hyper_clear(void) { memset(g_hyp, 0, sizeof g_hyp); memset(g_oc, 0, sizeof g_oc); memset(g_sw, 0, sizeof g_sw); hyper_heal_clear(); }
+static void hyper_pets_clear(void);
+void hyper_clear(void) { memset(g_hyp, 0, sizeof g_hyp); memset(g_oc, 0, sizeof g_oc); memset(g_sw, 0, sizeof g_sw); hyper_heal_clear(); hyper_pets_clear(); }
 
 /* Character::isOvercharged 0xb35bf0 (a bare `mov w0, wzr; ret` in this build): true for a brawler whose hypercharge is on.
  * Only the brawlers hyper_use activated answer true (not a read of char+0x68: some call sites may pass other objects). */
+static int pet_slot(void *ch);   /* below: a pet a hypercharged super spawned (hyper_proj_spawn), -1 if none */
 static int is_oc_char(void *ch) {
     if (!ch) return 0;
     for (int i = 0; i < NBE_MAXP; i++) if (g_oc[i] == ch && U8(ch, 0x68)) return 1;
-    return 0;
+    return pet_slot(ch) >= 0;
 }
 static int my_is_oc(void *ch) {
     int r = is_oc_char(ch);
@@ -241,6 +243,101 @@ static void oc_heal_areas(uint8_t *ch) {
     }
 }
 
+/* The hypercharge card's own values (cards.csv MetaType 6: Type, Value..Value6). The skill code asks the character's card
+ * through 0xb5281c(character, card type enum, value index 1..6) -> Value<index>, or -1 without such a card; in this build that
+ * function is a bare `mov w0, #-1; ret` (~55 call sites, ~20 card types). The Attack handler's summon reads it for
+ * overcharge_more_pets (Ash, 0xb7eeac..0xb7eee8, only for a skill instance whose +0x31 latch is set): NumSpawns + Value,
+ * MaxSpawns + Value2 (Knight_overcharge 5 / 10: "Little Helper spawns 5 more rats"). my_card_value answers it from the card of
+ * a brawler whose hypercharge is on (Type enum card +0x100, Value<i> 0xaa9568), for the types in CARD_TYPES only: the other
+ * types' call sites (overcharge_brock, _barkeep, _sniper, ...) are not checked here and keep the -1 they had. */
+#define CT_PROJ_SPAWN 177    /* overcharge_projectile_spawn (the `mov w8, #N` per Type string in the card loader 0xaa3000..) */
+#define CT_PET_BUFF 179      /* overcharge_pet_buff_stats */
+#define CT_MORE_PETS 274     /* overcharge_more_pets */
+static const int CARD_TYPES[] = {CT_MORE_PETS};
+static void *g_card[NBE_MAXP];   /* player i's hypercharge card (cfg +0x28), set at hyper_use */
+static int card_value(void *card, int idx) { return ((int (*)(void *, int))B(0xaa9568))(card, idx); }
+static int my_card_value(uint8_t *ch, int type, int idx) {
+    unsigned k = 0; while (k < sizeof CARD_TYPES / sizeof *CARD_TYPES && CARD_TYPES[k] != type) k++;
+    if (!ch || k == sizeof CARD_TYPES / sizeof *CARD_TYPES) return -1;
+    for (int i = 0; i < NBE_MAXP; i++)
+        if (g_oc[i] == ch && U8(ch, 0x68) && g_card[i] && I32(g_card[i], 0x100) == type) {
+            int v = card_value(g_card[i], idx);
+            static int nlog; if (nlog++ < 20) LOG("[hyper] card value: player %d type %d value%d = %d\n", i, type, idx, v);
+            return v;
+        }
+    return -1;
+}
+
+/* Pets of a hypercharged super. The projectile end 0xb75b24 calls 0xb77344(projectile), which spawns the projectile's
+ * character (+0x1c0: its SpawnCharacter or the skill's summon, Charlie's cocoon, Jessie's turret, Juju's Gris-Gris, Ash's
+ * rats) +0x3e8 times around it. Two hypercharge card types act on these summons in server code this build lacks (no reader
+ * of either type is left): overcharge_projectile_spawn (Charlie, Cocooner_overcharge 3: "Cocoon spawns 3 spiders that seek
+ * and attack the nearest enemies") and overcharge_pet_buff_stats (Jessie 50 / 20, Juju 20 / 20 / 250, Nita 20 / 0 / 150:
+ * "+Value% health, +Value2% damage, +Value3% speed", TID_*_OVERCHARGE_DESC). hyper_proj_spawn takes that call: for a
+ * projectile of the owner's ulti OverchargedProjectiles (the hypercharged super's) whose player holds such a card,
+ * - overcharge_projectile_spawn: after the normal spawn, the same spawn again with the owner's Pet (CharacterData +0x250,
+ *   CocoonerPet) x Value;
+ * - overcharge_pet_buff_stats: each character the spawn added gets max HP and HP x (100 + Value) / 100, and is kept here
+ *   (pet_slot): its damage dealt x (100 + Value2) / 100 (hyper_pet_damage, env.c my_root), its move speed x (100 + Value3)
+ *   / 100 (hyper_pet_speed, env.c rec_move), and isOvercharged answers true for it (char +0x68 = 1), so the game's own
+ *   code takes its OverchargedAutoAttackProjectile (Juju's "bigger needles", VoodooOverchargedPetSlowProjectile). */
+#define PET_MAX 32
+static struct { uint8_t *ch; int id, dmg_pct, speed_pct; } g_pet[PET_MAX];
+static long g_npet_buff, g_npet_spawn;
+static int pet_slot(void *ch) {
+    for (int k = 0; ch && k < PET_MAX; k++) if (g_pet[k].ch == ch && I32(ch, 8) == g_pet[k].id) return k;
+    return -1;
+}
+int hyper_pet_damage(void *attacker, int d) {
+    int k = d > 0 ? pet_slot(attacker) : -1;
+    return k >= 0 && g_pet[k].dmg_pct ? d * (100 + g_pet[k].dmg_pct) / 100 : d;
+}
+int hyper_pet_speed(uint8_t *ch) {   /* 0 = unchanged */
+    int k = pet_slot(ch); if (k < 0 || !g_pet[k].speed_pct) return 0;
+    void *cd = ((void *(*)(void *))B(0xb6a384))(ch); int base = cd ? ((int (*)(void *))B(0xab31e0))(cd) : 0;
+    return base > 0 ? base * (100 + g_pet[k].speed_pct) / 100 : 0;
+}
+static void hyper_pets_clear(void) { memset(g_pet, 0, sizeof g_pet); memset(g_card, 0, sizeof g_card); }
+#define SNAP_MAX 1024
+static int snap_chars(uint8_t *pr, void **out) {   /* the sim's character objects now */
+    void *sim = ((void *(*)(void *))B(0xb6a378))(pr), *h = sim ? PTR(sim, 0) : NULL;
+    int n = h ? I32(h, 0xc) : 0, m = 0; void **v = h ? PTR(h, 0) : NULL;
+    for (int i = 0; v && i < n && i < 4096 && m < SNAP_MAX; i++) if (v[i] && PTR(v[i], 0) == B(0x1209020)) out[m++] = v[i];
+    return m;
+}
+static void hyper_proj_spawn(uint8_t *pr) {
+    void (*spawn)(void *) = (void (*)(void *))B(0xb77344);
+    void *p = ((void *(*)(void *))B(0xb6a718))(pr), *cfg = p ? player_cfg(p) : NULL, *card = cfg ? PTR(cfg, 0x28) : NULL;
+    uint8_t *cd = p ? player_chardata(p) : NULL, *u = cd ? PTR(cd, 0x268) : NULL, *d = PTR(pr, 0x10);
+    int type = card ? I32(card, 0x100) : 0, oc = 0;
+    void **ol = u ? PTR(u, 0x68) : NULL; int nol = u ? I32(u, 0x74) : 0;
+    for (int k = 0; d && ol && k < nol && k < 8; k++) oc |= ol[k] == d;
+    if (!oc || (type != CT_PROJ_SPAWN && type != CT_PET_BUFF)) { spawn(pr); return; }
+    static void *before[SNAP_MAX], *after[SNAP_MAX];
+    int nb = snap_chars(pr, before);
+    spawn(pr);
+    uint8_t *pet = type == CT_PROJ_SPAWN ? PTR(cd, 0x250) : NULL; int npet = type == CT_PROJ_SPAWN ? card_value(card, 1) : 0;
+    if (pet && npet > 0 && npet <= 10) {
+        void *s0 = PTR(pr, 0x1c0); int s1 = I32(pr, 0x3e8);
+        PTR(pr, 0x1c0) = pet; I32(pr, 0x3e8) = npet; spawn(pr); PTR(pr, 0x1c0) = s0; I32(pr, 0x3e8) = s1;
+        g_npet_spawn += npet;
+    }
+    int na = snap_chars(pr, after), nnew = 0;
+    for (int j = 0; j < na; j++) {
+        int k = 0; while (k < nb && before[k] != after[j]) k++;
+        if (k < nb) continue;
+        uint8_t *c = after[j]; nnew++;
+        if (type != CT_PET_BUFF) continue;
+        int hp = card_value(card, 1), dm = card_value(card, 2), sp = card_value(card, 3);
+        if (hp > 0) { I32(c, 0x3c8) = I32(c, 0x3c8) * (100 + hp) / 100; I32(c, 0x3c4) = I32(c, 0x3c4) * (100 + hp) / 100; }
+        int s = (int)(g_npet_buff % PET_MAX);   /* round robin: a battle has far fewer living hypercharged pets than PET_MAX */
+        g_pet[s].ch = c; g_pet[s].id = I32(c, 8); g_pet[s].dmg_pct = dm > 0 ? dm : 0; g_pet[s].speed_pct = sp > 0 ? sp : 0;
+        U8(c, 0x68) = 1; g_npet_buff++;
+    }
+    static int nlog; if (nlog++ < 20) LOG("[hyper] hypercharged spawn: projectile data %d, card type %d: %d new characters%s\n",
+                                          I32(d, 0x20), type, nnew, type == CT_PET_BUFF ? " (pet buff)" : " (+ owner's pet)");
+}
+
 void hyper_install(void) {
     hook_enter(g_libg, 0xb709e4, on_travel);   /* homing projectiles (above) */
     uint32_t *f = (uint32_t *)B(0xb35bf0);
@@ -248,6 +345,12 @@ void hyper_install(void) {
         LOG("[hyper] isOvercharged 0xb35bf0: unexpected bytes %08x %08x, hypercharged skills off\n", f[0], f[1]); return;
     }
     hook_replace(g_libg, 0xb35bf0, (void *)my_is_oc);
+    uint32_t *cv = (uint32_t *)B(0xb5281c);
+    if (cv[0] == 0x12800000 && cv[1] == 0xd65f03c0) hook_replace(g_libg, 0xb5281c, (void *)my_card_value);   /* mov w0, #-1 ; ret */
+    else LOG("[hyper] 0xb5281c: unexpected bytes %08x %08x, hypercharge card values off\n", cv[0], cv[1]);
+    uint32_t *ps = (uint32_t *)B(0xb75b24);   /* bl 0xb77344 */
+    if ((*ps & 0xfc000000) == 0x94000000 && (uint8_t *)ps + (((int32_t)(*ps << 6)) >> 4) == B(0xb77344)) hook_bl(g_libg, 0xb75b24, (void *)hyper_proj_spawn);
+    else LOG("[hyper] 0xb75b24: unexpected bytes, hypercharged pets off\n");
     if (*(uint32_t *)B(0xb4b978) == 0xf9402f29) {   /* ldr x9, [x25, #88] */
         g_hyper_proj_next = (uint64_t)B(0xb4b97c); hook_replace(g_libg, 0xb4b978, (void *)hyper_proj_site);
     } else LOG("[hyper] 0xb4b978: unexpected bytes, AttackPattern 11 keeps the normal projectiles\n");
@@ -318,7 +421,7 @@ int hyper_use(int i, void *p, uint8_t *ch) {
     if (i < 0 || i >= NBE_MAXP || !p || !ch || !g_hyp[i].card || U8(p, 0xa0) || I32(p, 0x98) < I32(p, 0x9c)) return 0;
     ((void (*)(void *, void *))B(0xc42584))(p, ch);
     if (!U8(p, 0xa0)) return 0;   /* refused by the game's own checks (e.g. a state that forbids it) */
-    g_hyp[i].used++; g_oc[i] = ch;
+    g_hyp[i].used++; g_oc[i] = ch; { void *cfg = player_cfg(p); g_card[i] = cfg ? PTR(cfg, 0x28) : NULL; }
     if (has_oc_ulti(ch) && g_sw[i] != ch) { swap_ulti(ch); g_sw[i] = ch; }
     static int nlog; if (nlog++ < 40) LOG("[hyper] player %d activated (charge %d, drain %d/tick)\n", i, I32(p, 0x98), I32(p, 0xa4));
     return 1;

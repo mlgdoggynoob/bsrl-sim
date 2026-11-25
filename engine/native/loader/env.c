@@ -183,6 +183,7 @@ static int brawler_owner(void *sim, uint8_t *c) {   /* player index whose curren
 void hyper_clear(void); void hyper_reset_player(int i, void *p); int hyper_active(void *p); int hyper_use(int i, void *p, uint8_t *ch);
 int hyper_tick_player(int i, void *p, uint8_t *ch, int alive); int hyper_damage(void *pa, int ai, void *pv, int vi, int d);
 int hyper_speed(int i, void *p, uint8_t *ch); void hyper_publish(NbeResp *r, void **ps, int np);
+int hyper_pet_damage(void *attacker, int d); int hyper_pet_speed(uint8_t *ch);   /* hyper.c: pets of a hypercharged super */
 /* gear round (bsrl-sim issue #51): gear.c */
 extern int32_t g_div_gear[NBE_MAXP][2]; void gear_clear(void); void gear_reset_player(int i, void *cfg); void gear_install(void);
 int gear_damage(uint8_t *ach, int ai, uint8_t *vch, int vi, int d, int storm); int gear_speed(int i, uint8_t *ch, int base, int bush);
@@ -437,6 +438,8 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
             int nd = hyper_damage(pa, ai, pv, vi, dmg);
             if (nd != dmg) { if (a3 == dmg) a3 = nd; dmg = nd; E.hyper_dmg++; }
         }
+        int pd = hyper_pet_damage(attacker, dmg);   /* a pet of a hypercharged super (overcharge_pet_buff_stats) */
+        if (pd != dmg) { if (a3 == dmg) a3 = pd; dmg = pd; E.hyper_dmg++; }
     }
     if (dmg > 0 && superfix_status_mods && E.sim && victim) {   /* issue #19: damage boost / reduce of the attacker's statuses,
                                                                * damage received boost of the victim's (superfix_status_mods) */
@@ -1059,7 +1062,7 @@ static void rec_move(uint64_t *ctx) {
     rec_put(0, (uint8_t *)ctx[0], (int)ctx[1], (int)ctx[2], (int)ctx[6], 0);
     if ((int)ctx[3] == 0 && E.sim) {
         uint8_t *ch = (uint8_t *)ctx[0];
-        int i; void *p = owner_player(E.sim, ch, &i); int sp = p ? hyper_speed(i, p, ch) : 0;
+        int i; void *p = owner_player(E.sim, ch, &i); int sp = p ? hyper_speed(i, p, ch) : hyper_pet_speed(ch);
         if (sp > 0) { ctx[3] = 1; ctx[4] = (uint64_t)(uint32_t)sp; E.hyper_moves++; }
         if (p && VTOF(ch) == VT_CHAR && gear_has(i, 0)) {   /* gear round: ForestSpeed (LogicType 0) on a bush tile */
             int gs = gear_speed(i, ch, sp > 0 ? sp : base_speed(ch), bush_at(E.sim, I32(ch, 0x38), I32(ch, 0x3c)));
