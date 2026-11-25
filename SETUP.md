@@ -169,9 +169,11 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   (`env.c` rec_move), reload (`superfix_status.c`); `NB_GEARS=0` turns those off. `NbeResp` gear_* fields.
   `python -m gear_check`. Notes: `notes/issue51.md`.
 - `repeat_spin_off.patch` (issue #54, a diff on top of `gears.patch`): `gadget.c` no longer publishes the REPEAT / SPIN
-  kinds (repeat_shot / spin_shoot rows with a projectile: Fang's Mines, Dynamike, Piper, Leaper, Gene, Barley's HealPotion,
-  Bea, Darryl, Amber): they fired N copies of the main attack at full damage and range (Piper 5 x 1800), not the game's
-  numbers, so they publish kind NONE until redone from the game data (the code is kept under `#if 0`).
+  kinds (repeat_shot / spin_shoot rows with a projectile: Fang's Mines, Dynamike, Leaper, Gene, Barley's HealPotion,
+  Bea, Darryl, Amber): they fired N copies of the main attack at full damage and range, not the game's numbers, so they
+  publish kind NONE until redone from the game data (the code is kept under `#if 0`). Piper's Auto Aimer is redone as
+  the AUTO AIMER kind (PROJECTILE): one PiperHandgunProjectile at the nearest enemy within the row's Range (7 tiles),
+  main attack Damage x CustomValue1 % (90), refused with no enemy in range; the push is the projectile's own.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

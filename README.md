@@ -238,7 +238,7 @@ cd $SIM_WORK/runs && python -m http.server 8766      # dashboard: http://localho
 - Generated layouts (`--gen`) were made for the vision models' training data and are not used for RL; their
   generator is not in this repository.
 - The fire head is none / attack / super / gadget / hypercharge. The gadget class is masked unless the host activates
-  that gadget's kind (`gadget.c`: dashes, heals, areas, the gadget's own skill shot, items, R-T's super charge; 47 of the 213 gadgets; the repeat / spin extra shots are off, issue #54) and a use is left (`obs_v5` self 3). The hypercharge class is
+  that gadget's kind (`gadget.c`: dashes, heals, areas, the gadget's own skill shot, items, R-T's super charge, Piper's Auto Aimer; 48 of the 213 gadgets; the other repeat / spin extra shots are off, issue #54) and a use is left (`obs_v5` self 3). The hypercharge class is
   masked unless the brawler has its card, the charge is full and it is not active (`hyper.c`, `obs_v5` self 4); active,
   it gives the brawler's speed, damage and shield buffs for 5 s, and its skills are the hypercharged ones: the game's own
   skill code runs the tables' `Overcharged*` columns (the client build's "is hypercharged" check always said no), and the
