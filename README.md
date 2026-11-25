@@ -141,6 +141,7 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | `fast_obs.py`, `fast_act.py` | Batched, vectorised versions of the observation builder and the actor for the multi-process trainer (bit-equal to the reference paths). |
 | `model.py` | Policy: entity set + tile grid + conditioning -> GRU -> move (17) / fire (5: none, attack, super, gadget, hypercharge; each of the last three masked until ready) / aim (360, pointer over targets) / distance heads, critic with a privileged branch; heads that never act: a live value without the privileged input (`--vlive`) and aux predictions of the true state (enemy positions in 1 s, being hit, gas, hidden bush enemies; `--aux-w`). `python -m model` |
 | `train_ppo.py` | Behaviour cloning from the native AI, then PPO with a KL anchor, league / self-play, evals, replays; live value / aux head targets and readouts. `python -m train_ppo --check` |
+| `imitation.py` | Imitation rows for `train_ppo --imit-*` (issue #49, pro play as a training signal): the .npz shard format, writer, loader, sequence sampler. `python -m imitation` |
 | `train_fast.py` | Same trainer with environment collection split over worker processes (shared memory). |
 | `scorecard.py` | Skill metrics of a run from its logs: placement, win rate, trade, hit rate, aim lead, cube and gas stats; behaviour per slider preset (pass rules vs balanced) and per-slider effect slopes. `python scorecard.py --check` |
 | `super_audit.py` | Per-brawler super audit: fires every brawler's super at a target and records what happened (works / partial / unverified / no effect / not fired / crash); checklist in issue #6; `--hyper` audits the hypercharged supers (hypercharge first, expects the hypercharged super's own effects). `python -m super_audit [--n 2] [--only A,B] [--hyper]`, `--check` |
@@ -250,6 +251,10 @@ cd $SIM_WORK/runs && python -m http.server 8766      # dashboard: http://localho
   the seven `gear_check` confirmed: speed in bushes, health regen, damage below 50 % hp, the 900 shield, reload, super
   charge, gadget cooldown). They are not in the observation. `python -m gear_check` asserts each gear's effect in one
   battle, `--check` without the host; the gear list and what libg still reads: `notes/issue51.md`.
+- Imitation rows (issue #49): `--imit-data PATH` (a folder of shards, format in `imitation.py`) with `--imit-updates N`
+  (N behaviour-cloning updates on them after the native-AI BC phase, before the KL anchor is frozen) and / or
+  `--imit-w W` (W x the same log-likelihood loss added to every PPO minibatch); all off by default. What the recording
+  steps must produce: `notes/issue49.md`.
 - Observation layout changes must be mirrored by anything that consumes exported policies. `obs_v5` carries the
   version (`obs_v5.OBS_VERSION`, now `v5.9`; saved in every checkpoint) that exported policies are checked against.
 
