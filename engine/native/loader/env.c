@@ -182,7 +182,7 @@ int hyper_speed(int i, void *p, uint8_t *ch); void hyper_publish(NbeResp *r, voi
 /* gear round (bsrl-sim issue #51): gear.c */
 extern int32_t g_div_gear[NBE_MAXP][2]; void gear_clear(void); void gear_reset_player(int i, void *cfg); void gear_install(void);
 int gear_damage(uint8_t *ach, int ai, uint8_t *vch, int vi, int d, int storm); int gear_speed(int i, uint8_t *ch, int base, int bush);
-int gear_tick_player(int i, uint8_t *ch, int alive, int bush); void gear_publish(NbeResp *r);
+int gear_tick_player(int i, uint8_t *ch, int alive, int bush); void gear_publish(NbeResp *r); int gear_has(int i, int type);
 static int bush_at(void *sim, int x, int y);   /* the live tile map has a bush at world (x, y) (encoder map, below) */
 /* issue #19: status effects (superfix_status.c, mirrors its StMods) */
 typedef struct { int spd_bp, spd_ba, spd_rp, spd_ra, dmg_bp, dmg_rp, recv_bp, recv_ba; } StMods;
@@ -1046,7 +1046,7 @@ static void rec_move(uint64_t *ctx) {
         uint8_t *ch = (uint8_t *)ctx[0];
         int i; void *p = owner_player(E.sim, ch, &i); int sp = p ? hyper_speed(i, p, ch) : 0;
         if (sp > 0) { ctx[3] = 1; ctx[4] = (uint64_t)(uint32_t)sp; E.hyper_moves++; }
-        if (p && VTOF(ch) == VT_CHAR) {   /* gear round: ForestSpeed on a bush tile */
+        if (p && VTOF(ch) == VT_CHAR && gear_has(i, 0)) {   /* gear round: ForestSpeed (LogicType 0) on a bush tile */
             int gs = gear_speed(i, ch, sp > 0 ? sp : base_speed(ch), bush_at(E.sim, I32(ch, 0x38), I32(ch, 0x3c)));
             if (gs > 0) { sp = gs; ctx[3] = 1; ctx[4] = (uint64_t)(uint32_t)gs; }
         }
@@ -1375,7 +1375,7 @@ static void hyper_tick(void *sim) {   /* hypercharge round: drain / end (hyper.c
         if (hyper_active(ps[i]) && hyper_tick_player(i, ps[i], c, c && I32(c, 0x3c4) > 0 && !waiting(i))) E.sent_valid[i] = 0;
         hyper_unswap(i, c);   /* the normal super back after a hypercharged one (hyper.c) */
         int alive = c && I32(c, 0x3c4) > 0 && !waiting(i);   /* gear round: the shield's regeneration; a bush change re-sends the move */
-        if (gear_tick_player(i, c, alive, c && alive ? bush_at(sim, I32(c, 0x38), I32(c, 0x3c)) : 0)) E.sent_valid[i] = 0;
+        if (gear_tick_player(i, c, alive, c && alive && gear_has(i, 0) ? bush_at(sim, I32(c, 0x38), I32(c, 0x3c)) : 0)) E.sent_valid[i] = 0;
     }
 }
 void env_tick_leave(void *sim) {   /* after a completed outer tick: showdownTick + afterState */
