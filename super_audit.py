@@ -44,8 +44,7 @@ merged into an existing super_audit.json.
 --hyper (hypercharge round): every player gets its hypercharge card; each shooter's hypercharge is filled with its super and
 activated (fire 4) one tick before the super. The expected effects are the hypercharged super's (`hyper_skill`: characters.csv
 OverchargedUltimateSkill, else the UltimateSkill's OverchargedVersion, with the row's Overcharged* columns; a negative
-OverchargedChargePushback expects a pull, the target ending nearer the shooter; a projectile only teammates get, Max's drinks
-(TEAM_ONLY), is not expected in this solo battle), plus hyper_cast
+OverchargedChargePushback expects a pull, the target ending nearer the shooter), plus hyper_cast
 (the host reports a super cast while hypercharged, NbeResp hyp_supers / hyp_super_id, with the OverchargedUltimateSkill's data
 where there is one) and hyper (a projectile / summon / area / item only the hypercharged super has, when it has one).
 Output: super_audit_hyper.json / .md.
@@ -112,7 +111,6 @@ def skill_name(did):
 OC_COLS = (("Projectiles", "OverchargedProjectiles"), ("AreaEffectObject", "OverchargedAreaEffectObject"),
            ("AreaEffectObject2", "OverchargedAreaEffectObject2"), ("SummonedCharacters", "OverchargedSummonedCharacters"),
            ("SpawnedItem", "OverchargedSpawnedItem"), ("ChargePushback", "OverchargedChargePushback"))
-TEAM_ONLY = {"SpeedyOverchargedProjectile"}   # thrown only at teammates (Max's drinks, superfix.c max_drinks): none in a solo battle
 
 
 def hyper_skill(name):
@@ -200,9 +198,6 @@ def expected(name, hyper=False):
         names = lambda i: set(i["projectiles"]) | set(i["summons"]) | set(i["areas"]) | set(i["items"])
         out["hyper_names"] = sorted(names(out) - names(base)); out["own_skill"] = bool(ch.get("OverchargedUltimateSkill"))
         ex.append("hyper_cast")
-        if out["projectiles"] and set(out["projectiles"]) <= TEAM_ONLY:
-            ex.remove("projectile"); notes.append("its projectiles go to teammates only: none in this solo battle")
-            out["hyper_names"] = [n for n in out["hyper_names"] if n not in TEAM_ONLY]
         if out["hyper_names"]: ex.append("hyper")
         else: notes.append("hypercharged super: no projectile / summon / area / item of its own (its difference is not visible here)")
     return out
@@ -1221,9 +1216,8 @@ def _check():
         assert "MechaDudeBig" in inf and len(env_v5.forms()) == 9 and "MechaDudeBig" not in env_v5.heroes()   # forms audited, never picked
         assert display("BullDude") == "Bull" and data_name(16000000 + list(_tables()["char"]).index("BullDude")) == "BullDude"
         hy = {h: expected(h, hyper=True) for h in ("Jester", "Beamer", "Twins", "Skater", "Domain", "Dancer", "MechaDudeBig", "ShotgunGirl", "PowerLeveler")}
-        lh, mx = expected("Luchador", hyper=True), expected("Speedy", hyper=True)   # El Primo pulls, Max's drinks need teammates
+        lh = expected("Luchador", hyper=True)   # El Primo's hypercharged landing pulls
         assert "pull" in lh["expect"] and "push" not in lh["expect"] and "push" in inf["Luchador"]["expect"], lh["expect"]
-        assert "projectile" not in mx["expect"] and "area" in mx["expect"], mx["expect"]
         assert hy["Jester"]["skill"] == "JesterOverchargedUlti" and "ChesterOverchargedUltiProjectile" in hy["Jester"]["hyper_names"]
         assert {"TwinsHCUltiProjectile", "TwinsPetHyper"} <= set(hy["Twins"]["hyper_names"]) and hy["Twins"]["own_skill"]
         assert hy["Skater"]["hyper_names"] == ["SkaterUltiLandingOvercharged"] and "hyper" in hy["Skater"]["expect"]
