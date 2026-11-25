@@ -72,3 +72,46 @@ Readers in the battle logic (static scan of the calls with a constant type, and 
 
 Type 0 and 4 instances are still serialised in the snapshot (0xb6a998, a stub nirkt's `element_writer` replaces: a flag
 and, for type 4, the value), but nothing in the sim reads them.
+
+## What this branch does (gears.patch)
+
+- Equip: RESET `div.gear` (two ids per player) -> `offline.c my_player_ctor` -> `gear.c gear_equip`: config +0x18 /
+  +0x20 when the id is in table 62 and 0xae2aa4 allows it for the character (and the second is not the same gear),
+  else `div_err` bit. `battle_fix.c ensure()` now builds the char+0xd68 instances for LogicType 0-18.
+- Re-implemented in `gear.c` (the four compiled-out ones with a plain stat effect): ForestSpeed (move speed x 1.15 while
+  the brawler's tile is a bush, at each move send; a bush change re-sends the move), LowHealthDamage (damage x 1.15 while
+  the attacker is below 50 % hp, in `env.c my_root`), ConsumableShield (900 in front of the hp, after every other damage
+  modifier, not for the storm; full at the start and again after 200 ticks at full hp with no hit; [?] whether a hit on
+  the shield alone restarts the 10 s in the real game), ReloadSpeed (+15 to libg's reload aggregate, T x 100 / 115).
+  `NB_GEARS=0` turns these four off.
+- State: `NbeResp gear_valid / gear_id / gear_shield / gear_stat` (low-hp hits boosted, shield hp absorbed, bush moves,
+  reload answers). Python: `env_v5.gear_rows / gear_ok / gear_cards / with_gears`, `make_battle_fn(gears=True)`, trainer
+  `--gears 1` (`train_ppo`, `train_fast`; off by default; not in the observation, no `OBS_VERSION` change).
+
+## Live check (`python -m gear_check`, 2026-11-25, Survival642, one battle, native AI off)
+
+| Gear | Where | Result |
+|---|---|---|
+| (equip) | host | 7 requested gears in the configs, SuperHealth on Maisie rejected (div_err 0x40), shield 900 at the start |
+| LowHealthDamage | host | full hp 3000 / 3000; below 50 % 3450 / 3000 = 1.150 |
+| ConsumableShield | host | first volley: hp lost 2100 vs control 3000, shield 900 -> 0; full hp at tick 300, shield back at 500 |
+| HealthRegen | libg | hp regained 1521 / 1014 = 1.500 |
+| ForestSpeed | host | bush path 723 / 626 = 1.154; open ground 643 / 643 = 1.000 |
+| ReloadSpeed | host | Surge's ammo regained 492 / 420 = 1.171 (want 1.15; T truncates to whole ms) |
+| SuperChargeRate | libg | El Primo's punches: super charge 1884 / 1712 = 1.100 |
+| GadgetCooldown | libg | Maisie's dash: cooldown 270 / 318 = 0.849 |
+
+These seven are `gear_check.LIVE`, what `--gears 1` hands out. Every brawler gets two of them (the six Rare ones are for
+everyone; ReloadSpeed and SuperChargeRate only for their listed heroes).
+
+## Not done
+
+- Vision (3): its effect is on what the damaged enemy's observers see (shown in bushes for 2 s). The bush rule lives in
+  three places (`env.c` emulate_client_flags, `nbpc.fair`, `fast_obs`), per observer; doing it means a per-observer
+  reveal state from the host into the observation path, which issue #51 keeps out of scope. Not handed out.
+- PetrolSlows (13, Amber) and SuperTurret (16, Pam): no reader in libg; Amber's oil has no slow to scale and Pam's
+  turret heal is `superfix.c` TURRET_HEAL_PCT (+20 % would be one line there, but there is no measurement to check it
+  against). Not handed out.
+- SuperHealth (7), SuperRange (8), SuperShield (12), PetDamage (14), ExtraSpawnling (15): libg's readers exist and run
+  once the instance is there (above), but no live A/B was done, so they stay out of `LIVE`.
+- PoisonDamage, SlowIncrease, SmokeDuration, SuperBulletSpeed: every listed hero is HeroDeprecated; no brawler can carry them.

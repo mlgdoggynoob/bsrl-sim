@@ -19,3 +19,4 @@ docstrings and comments are the spec.
 | `issue19-leftovers.md` | #19 leftovers: reload speed, lifesteal, taunt / fear, dropped area types | this branch |
 | `issue6-leftovers.md` | #6 R-T's split, Bonnie's hypercharged launch (checked); #5 Berry's paint numbers, dash heal | this branch |
 | `issue19-final.md` | #19 final: Max's / Edgar's / Darryl's / Pam's hypercharge areas, Angelo, Meeple, Damian, stun line of sight | this branch |
+| `issue51.md` | #51 gears: the gear table, libg's readers, what the host re-implements, `gear_check` results | this branch |

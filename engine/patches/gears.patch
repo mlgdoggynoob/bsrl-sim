@@ -1,0 +1,429 @@
+# issue #51 gears (bsrl-sim), a diff on top of the other patches (on top of heal_scale.patch).
+# Two gears per player (gear_boosts.csv, data type 62) in the player config (+0x18 / +0x20), where libg looks for them.
+# nbenv_proto.h / py/nbpc: NbeDiv.gear[16][2] (RESET), NbeResp gear_valid / gear_id / gear_shield / gear_stat (every
+# response); instance.set_div takes div "gear". offline.c my_player_ctor -> gear.c gear_equip (table 62, allowed for the
+# character by libg's 0xae2aa4, not two of a kind; else div_err). battle_fix.c ensure() builds libg's gear instances
+# (char+0xd68) for every LogicType 0-18 (was 0 / 1), so libg's own readers run: HealthRegen, SuperChargeRate,
+# GadgetCooldown (and SuperHealth, SuperRange, SuperShield, PetDamage, ExtraSpawnling, unverified). gear.c re-implements
+# what is compiled out: LowHealthDamage and ConsumableShield (env.c my_root), ForestSpeed (env.c rec_move, a bush change
+# re-sends the move), ReloadSpeed (superfix_status.c my_reload_pct); NB_GEARS=0 turns those four off. build.sh: gear.c.
+# Notes: notes/issue51.md. Paths relative to engine/.
+diff --git a/native/loader/battle_fix.c b/native/loader/battle_fix.c
+index 62e2eee..4cb05c6 100644
+--- a/native/loader/battle_fix.c
++++ b/native/loader/battle_fix.c
+@@ -65,7 +65,7 @@ static void ensure(uint8_t *ch) {
+     if (PTR(cfg, 0x20)) want[nw++] = PTR(cfg, 0x20);
+     int n = I32(ch, 0xd74), cap = I32(ch, 0xd70);
+     if (n || !nw || n < 0 || cap < 0 || cap > 128) return;
+-    for (int i = 0; i < nw; i++) { int k = ((int (*)(void *))B(0xb6a994))(want[i]); if (k != 0 && k != 1) return; }
++    for (int i = 0; i < nw; i++) { int k = ((int (*)(void *))B(0xb6a994))(want[i]); if (k < 0 || k > 18) return; }   /* bsrl-sim #51: every gear_boosts LogicType (was 0 / 1) */
+     void *fresh[2];
+     for (int i = 0; i < nw; i++) {
+         fresh[i] = ((void *(*)(unsigned long))B(0x11a4d90))(0x20); memset(fresh[i], 0, 0x20);
+diff --git a/native/loader/build.sh b/native/loader/build.sh
+index d5b8bd7..d09f608 100755
+--- a/native/loader/build.sh
++++ b/native/loader/build.sh
+@@ -10,5 +10,5 @@
+ set -e
+ cd "$(dirname "$0")"
+ aarch64-linux-gnu-gcc -O2 -g -ffp-contract=off -fno-omit-frame-pointer -static -D_GNU_SOURCE -Wall -Wno-unused-function -Wno-incompatible-pointer-types \
+-  -Wno-int-conversion -fno-strict-aliasing -Iinc -o nbhost_spawnfix2.tmp main.c elfload.c bionic_shim.c android_shim.c jni_fake.c boot.c hook.c offline.c battle_fix.c env.c prof.c encode.c heapcheck.c bar_fix.c gl_client.c gl_client_gen.c spawnfix.c superfix.c superfix_items.c superfix_moves.c superfix_status.c superfix_cc.c gadget.c hyper.c star.c showdown_mods.c trace.c thunk.S -lm -lpthread
++  -Wno-int-conversion -fno-strict-aliasing -Iinc -o nbhost_spawnfix2.tmp main.c elfload.c bionic_shim.c android_shim.c jni_fake.c boot.c hook.c offline.c battle_fix.c env.c prof.c encode.c heapcheck.c bar_fix.c gl_client.c gl_client_gen.c spawnfix.c superfix.c superfix_items.c superfix_moves.c superfix_status.c superfix_cc.c gadget.c hyper.c gear.c star.c showdown_mods.c trace.c thunk.S -lm -lpthread
+ mv -f nbhost_spawnfix2.tmp nbhost_spawnfix2 && echo "built native/loader/nbhost_spawnfix2"
+diff --git a/native/loader/env.c b/native/loader/env.c
+index 0a8ea40..cc3f66f 100644
+--- a/native/loader/env.c
++++ b/native/loader/env.c
+@@ -179,6 +179,11 @@ static int brawler_owner(void *sim, uint8_t *c) {   /* player index whose curren
+ void hyper_clear(void); void hyper_reset_player(int i, void *p); int hyper_active(void *p); int hyper_use(int i, void *p, uint8_t *ch);
+ int hyper_tick_player(int i, void *p, uint8_t *ch, int alive); int hyper_damage(void *pa, int ai, void *pv, int vi, int d);
+ int hyper_speed(int i, void *p, uint8_t *ch); void hyper_publish(NbeResp *r, void **ps, int np);
++/* gear round (bsrl-sim issue #51): gear.c */
++extern int32_t g_div_gear[NBE_MAXP][2]; void gear_clear(void); void gear_reset_player(int i, void *cfg); void gear_install(void);
++int gear_damage(uint8_t *ach, int ai, uint8_t *vch, int vi, int d, int storm); int gear_speed(int i, uint8_t *ch, int base, int bush);
++int gear_tick_player(int i, uint8_t *ch, int alive, int bush); void gear_publish(NbeResp *r);
++static int bush_at(void *sim, int x, int y);   /* the live tile map has a bush at world (x, y) (encoder map, below) */
+ /* issue #19: status effects (superfix_status.c, mirrors its StMods) */
+ typedef struct { int spd_bp, spd_ba, spd_rp, spd_ra, dmg_bp, dmg_rp, recv_bp, recv_ba; } StMods;
+ int superfix_status_speed(uint8_t *ch, int base) __attribute__((weak));
+@@ -438,6 +443,13 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
+         if (vm && (mv.recv_bp || mv.recv_ba)) nd = nd * (100 + mv.recv_bp) / 100 + mv.recv_ba;
+         if (nd != dmg) { if (a3 == dmg) a3 = (int)nd; dmg = (int)nd; E.st_dmg++; }
+     }
++    if (dmg > 0 && mode3 && E.sim && victim) {   /* gear round (issue #51): LowHealthDamage of the attacker, then the victim's shield */
++        int ai, vi; void *pa = owner_player(E.sim, attacker, &ai), *pv = owner_player(E.sim, victim, &vi);
++        if (pa || pv) {
++            int nd = gear_damage(pa ? (uint8_t *)attacker : NULL, pa ? ai : -1, pv ? (uint8_t *)victim : NULL, pv ? vi : -1, dmg, E.in_own_call == 1);
++            if (nd != dmg) { if (a3 == dmg) a3 = nd; dmg = nd; }
++        }
++    }
+     int vchar = victim && VTOF(victim) == VT_CHAR, before = vchar ? I32(victim, 0x3c4) : 0;
+     if (vchar && mode3 && just_popped(victim)) { E.charge_level = saved_level; return 0; }
+     int ow = vchar && mode3 && resp_on() && E.sim ? brawler_owner(E.sim, victim) : -1;
+@@ -1034,6 +1046,10 @@ static void rec_move(uint64_t *ctx) {
+         uint8_t *ch = (uint8_t *)ctx[0];
+         int i; void *p = owner_player(E.sim, ch, &i); int sp = p ? hyper_speed(i, p, ch) : 0;
+         if (sp > 0) { ctx[3] = 1; ctx[4] = (uint64_t)(uint32_t)sp; E.hyper_moves++; }
++        if (p && VTOF(ch) == VT_CHAR) {   /* gear round: ForestSpeed on a bush tile */
++            int gs = gear_speed(i, ch, sp > 0 ? sp : base_speed(ch), bush_at(E.sim, I32(ch, 0x38), I32(ch, 0x3c)));
++            if (gs > 0) { sp = gs; ctx[3] = 1; ctx[4] = (uint64_t)(uint32_t)gs; }
++        }
+         if (VTOF(ch) == VT_CHAR) { int tx, ty; if (taunt_target(ch, &tx, &ty)) {   /* issue #19: the native AI's moves too */
+             ctx[1] = (uint64_t)(uint32_t)tx; ctx[2] = (uint64_t)(uint32_t)ty; E.st_taunt_moves++; } }
+         if (superfix_status_speed && VTOF(ch) == VT_CHAR) {
+@@ -1358,6 +1374,8 @@ static void hyper_tick(void *sim) {   /* hypercharge round: drain / end (hyper.c
+         uint8_t *c = obj_by_id(sim, player_char_id(ps[i])); if (c && VTOF(c) != VT_CHAR) c = NULL;
+         if (hyper_active(ps[i]) && hyper_tick_player(i, ps[i], c, c && I32(c, 0x3c4) > 0 && !waiting(i))) E.sent_valid[i] = 0;
+         hyper_unswap(i, c);   /* the normal super back after a hypercharged one (hyper.c) */
++        int alive = c && I32(c, 0x3c4) > 0 && !waiting(i);   /* gear round: the shield's regeneration; a bush change re-sends the move */
++        if (gear_tick_player(i, c, alive, c && alive ? bush_at(sim, I32(c, 0x38), I32(c, 0x3c)) : 0)) E.sent_valid[i] = 0;
+     }
+ }
+ void env_tick_leave(void *sim) {   /* after a completed outer tick: showdownTick + afterState */
+@@ -1725,7 +1743,8 @@ static void div_reset(const NbeCmd *c) {   /* a RESET was accepted: set up the n
+     g_div_hyper = c->div.hyper_mask;   /* hypercharge round: offline.c my_player_ctor */
+     g_div_map_loc = c->div.reserved[1] ? div_data(c->div.reserved[1]) : NULL;
+     if (c->div.reserved[1] && (!g_div_map_loc || c->div.reserved[1] / 1000000 != 15)) { g_div_err |= 1 << 30; g_div_map_loc = NULL; }
+-    for (int i = 0; i < NBE_MAXP; i++) { g_div_char[i] = c->div.chr[i]; g_div_skin[i] = c->div.skin[i]; g_div_gadget[i] = c->div.gadget[i]; g_div_star[i] = c->div.star[i]; }
++    for (int i = 0; i < NBE_MAXP; i++) { g_div_char[i] = c->div.chr[i]; g_div_skin[i] = c->div.skin[i]; g_div_gadget[i] = c->div.gadget[i]; g_div_star[i] = c->div.star[i];
++                                    g_div_gear[i][0] = c->div.gear[i][0]; g_div_gear[i][1] = c->div.gear[i][1]; }   /* gear round */
+     static int nlog; if ((c->div.location || c->div.theme) && nlog++ < 20)
+         LOG("[div] reset: location %d -> %p, theme %d (err %#x)\n", c->div.location, loc, c->div.theme, (unsigned)g_div_err);
+ }
+@@ -1744,7 +1763,7 @@ static void div_publish(void *sim) {   /* RESET response: read the battle back f
+     R->div_variation = I32(sim, 0x104);
+     R->div_reserved[0] = U8(sim, 0x134);   /* the builder's "cards" flag (global 0x12eefd4): 0 = player configs get no star power /
+                                               gadget / overcharge cards (0xc27d64) */
+-    int np; void **ps = players(sim, &np); gadget_clear(); hyper_clear(); mech_reset();
++    int np; void **ps = players(sim, &np); gadget_clear(); hyper_clear(); mech_reset(); gear_clear();
+     for (int i = 0; i < NBE_MAXP; i++) {
+         R->pl_char[i] = R->pl_skin[i] = 0;
+         if (i >= np || !ps[i]) continue;
+@@ -1754,6 +1773,7 @@ static void div_publish(void *sim) {   /* RESET response: read the battle back f
+         if (PTR(ps[i], 0x190)) R->div_reserved[1] |= 1 << i;
+         gadget_reset_player(i, PTR(ps[i], 0x190));   /* gadget round: the player's accessory object (NULL = no gadget) */
+         hyper_reset_player(i, ps[i]);                         /* hypercharge round */
++        gear_reset_player(i, ((void *(*)(void *))B(0xc41460))(ps[i]));   /* gear round: the config the battle reads (player+0x348, else the loadout's) */
+         if (ld && ld[1] && PTR(ld[1], 0x08)) R->div_reserved[2] |= 1 << i;
+     }
+ }
+@@ -1822,6 +1842,14 @@ static void enc_map_update(void *sim) {
+     int wh[2]; uint32_t h = snap_map(sim, g_maptmp, NBE_MAP_CAP, wh);
+     if (h != g_emap_hash) { enc_map_build(&g_emap, g_maptmp, wh[0], wh[1]); g_emap_hash = h; }
+ }
++int env_char_owner(void *ch) { return E.sim && ch && VTOF(ch) == VT_CHAR ? brawler_owner(E.sim, ch) : -1; }   /* gear round: player index of a brawler, -1 */
++static int bush_at(void *sim, int x, int y) {   /* gear round: a bush tile (300 units) at world (x, y) on the live map */
++    static void *last_sim; static int last_tick = -1;
++    if (!sim) return 0;
++    if (sim != last_sim || I32(sim, 0x10) != last_tick) { enc_map_update(sim); last_sim = sim; last_tick = I32(sim, 0x10); }   /* once per tick */
++    int tx = x / 300, ty = y / 300;
++    return g_emap.bush && x >= 0 && y >= 0 && tx < g_emap.W && ty < g_emap.H && g_emap.bush[ty * g_emap.W + tx];
++}
+ /* Sim-only mode has no client, so state2's 'client' flags (presence in the client's object list = what the viewer sees;
+  * the encoder's enemy 'visible' feature r[19]) would all be -1 (= not visible: bc3p then ranked 6.84 on the PC vs 5.85 on
+  * the phone). Emulation fitted to the phone (T6, runs/t6/_vis_fit.py: 10,632 enemy rows of 7 phone episodes, 98.7 %
+@@ -1923,6 +1951,7 @@ static void publish(void *sim, uint32_t seq, int status, const char *err) {
+     if (E.cur.type == NBE_CMD_RESET) div_publish(sim);   /* diversity round (before gadget_publish: it sets up the gadgets) */
+     gadget_publish(R, I32(sim, 0x10));                   /* gadget round */
+     { int np; void **ps = players(sim, &np); hyper_publish(R, ps, np); }   /* hypercharge round */
++    gear_publish(R);                                                        /* gear round */
+     R->njumps = 0; for (int i = 0; i < E.njobs && i < NBE_MAXP; i++) { int *j = R->jumps[R->njumps++]; j[0] = E.jobs[i].id; j[1] = E.jobs[i].t; j[2] = E.jobs[i].T; j[3] = E.jobs[i].x1; j[4] = E.jobs[i].y1; }
+     R->ncubes = 0; for (int i = 0; i < E.ncube && i < NBE_MAXP; i++) { R->cubes[R->ncubes][0] = E.cube_id[i]; R->cubes[R->ncubes++][1] = E.cube_n[i]; }
+     R->cam_valid = 0;
+@@ -2596,6 +2625,7 @@ void env_install(void) {
+     o_alive = hook_replace(g_libg, 0xc42ae8, my_alive);
+     o_dispatch = hook_replace(g_libg, 0xb47084, my_dispatch);
+     hyper_install();   /* hypercharge round: Character::isOvercharged (hyper.c) */
++    gear_install();    /* gear round (issue #51): NB_GEARS */
+     if (!g_env_simonly) {
+         /* client-mode crash fix (T4/T5): 0xdc1ec0 walks a slot table of weak pointers (x19+0xd0); when lock() 0x11a51c0 fails
+          * for an entry that was not yet marked expired (freed concurrently, seen during a reset's loading screen: SIGSEGV
+diff --git a/native/loader/gear.c b/native/loader/gear.c
+new file mode 100644
+index 0000000..ad521f1
+--- /dev/null
++++ b/native/loader/gear.c
+@@ -0,0 +1,152 @@
++/* gears (bsrl-sim issue #51): the two gears of a power-11 brawler, gear_boosts.csv (data type 62, global ids 62xxxxxx).
++ *
++ * What the shipped libg v68.279 still has (notes/issue51.md): the player config holds the two gears at +0x18 / +0x20
++ * (GearBoostData), a character keeps gear instances in char+0xd68 (count +0xd74; ctor 0xb6a8ec: +0 data, +8 LogicType),
++ * and the battle logic reads them through 0xb565b8(char, LogicType) (the instance when 0xae2aa4 allows the gear for the
++ * character) or the config lookups 0xc34ebc / 0xc34fc8. Live readers: HealthRegen 1 (0xb46900: regen x (100 + v) / 100),
++ * SuperChargeRate 6 (0xb4f928), SuperHealth 7, SuperRange 8, SuperShield 12, PetDamage 14 (0xb565b8 callers),
++ * ExtraSpawnling 15 and GadgetCooldown 17 (config: the accessory's cooldown +0xc4 x (100 - v) / 100 at 0xc401e0, which
++ * gadget.c then uses). The server code that fills char+0xd68 is compiled out: nirkt's battle_fix.c ensure() fills it from
++ * the config at character init, for every LogicType here (it took only 0 and 1 before).
++ *
++ * Compiled out, re-implemented here (no reader in the battle logic):
++ *   ForestSpeed 0       +v % move speed while the brawler stands on a bush tile (env.c rec_move; a bush change re-sends the
++ *                       move, gear_tick)
++ *   LowHealthDamage 2   +v % damage dealt while the attacker's hp is below 50 % of its max (env.c my_root)
++ *   ConsumableShield 4  a v hp shield (900) in front of the hp: damage from another object takes the shield first (env.c
++ *                       my_root, after every other modifier; the storm skips it); full at the start, and back to full once
++ *                       the brawler has been at full hp, untouched, for SHIELD_REGEN ticks (10 s, the TID text) [?] whether a
++ *                       hit on the shield alone restarts the 10 s in the real game: here it does
++ *   ReloadSpeed 5       +v to the reload aggregate superfix_status.c my_reload_pct returns (libg: T x 100 / (100 + r)), so
++ *                       the reload takes 100 / 115 of the time
++ * Not done: Vision 3 (an effect on what each observer sees: per-observer reveal state in the encoder, nbpc.fair and
++ * fast_obs, an observation change), PetrolSlows 13 (Amber's oil spills: no slow area to attach to), SuperTurret 16 (Pam's
++ * turret heal: superfix.c TURRET_HEAL_PCT would take it, not measured). Gears 9 / 10 / 11 / 18 reach no brawler (every
++ * hero of theirs is HeroDeprecated).
++ *
++ * Equip: offline.c my_player_ctor calls gear_equip(slot, cfg, chardata) with the RESET's div.gear[slot] (two ids, 0 =
++ * none); a gear must be in table 62 and allowed for that character (libg's 0xae2aa4), else the slot is rejected
++ * (NbeResp.div_err). State per player in NbeResp gear_* (every response). NB_GEARS=0: no host re-implementation (the
++ * cards still reach the config; libg's own readers still run). */
++#include "nbhost.h"
++#include "nbenv_proto.h"
++#include <string.h>
++#include <stdlib.h>
++
++#define I32(p, o) (*(int32_t *)((uint8_t *)(p) + (o)))
++#define PTR(p, o) (*(void **)((uint8_t *)(p) + (o)))
++extern Module *g_libg;
++#define B(off) ((uint8_t *)g_libg->base + (off))
++void *div_data(int id); void div_reject(int i);
++
++#define T_GEAR 62             /* gear_boosts.csv data type (libg registers the table with 0x3e at 0xb05020) */
++#define SHIELD_REGEN 200      /* ticks at full hp before the shield is back (TID_GEAR_SHIELD_INFO: 10 s at 20 ticks/s) */
++#define LOW_HP_PCT 50         /* LowHealthDamage: below 50 % of max hp (TID_GEAR_LOW_HEALTH_DAMAGE_INFO) */
++enum { G_FOREST = 0, G_REGEN = 1, G_LOWHP = 2, G_VISION = 3, G_SHIELD = 4, G_RELOAD = 5 };
++
++int32_t g_div_gear[NBE_MAXP][2];   /* RESET div.gear (env.c div_reset) */
++typedef struct {
++    int id[2], type[2], val[2];     /* data id, LogicType, ModifierValue per gear slot (0 / -1 / 0 = none) */
++    int shield, full_ticks;         /* ConsumableShield: hp left, ticks at full hp since the last hit */
++    int bush;                       /* ForestSpeed: on a bush at the last move */
++    int st[4];                      /* effect counts: low-hp hits boosted, shield hp absorbed, moves sped up, reload answers */
++} Gear;
++static Gear g_g[NBE_MAXP];
++static int g_on = 1;
++
++static int gtype(void *g) { return ((int (*)(void *))B(0xae2b14))(g); }
++static int gval(void *g) { return ((int (*)(void *))B(0xae2b24))(g); }
++static int gval_of(int i, int type) {   /* the ModifierValue of player i's gear of that LogicType, 0 if it has none */
++    if (i < 0 || i >= NBE_MAXP) return 0;
++    for (int k = 0; k < 2; k++) if (g_g[i].id[k] && g_g[i].type[k] == type) return g_g[i].val[k];
++    return 0;
++}
++
++/* offline.c my_player_ctor: the RESET's two gears for this slot into the player's config (+0x18, +0x20) */
++void gear_equip(int slot, void *cfg, void *chardata) {
++    if (slot < 0 || slot >= NBE_MAXP || !cfg) return;
++    for (int k = 0; k < 2; k++) {
++        int id = g_div_gear[slot][k]; if (!id) continue;
++        void *g = id / 1000000 == T_GEAR ? div_data(id) : NULL;
++        int ok = g && ((int (*)(void *, void *))B(0xae2aa4))(g, chardata) & 1;
++        if (ok && k == 1 && PTR(cfg, 0x18) && gtype(PTR(cfg, 0x18)) == gtype(g)) ok = 0;   /* two of one kind: the second is refused */
++        if (ok) PTR(cfg, 0x18 + 8 * k) = g;
++        else { div_reject(slot); LOG("[gear] slot %d gear %d rejected (not a gear, or not for character %d)\n", slot, id, chardata ? I32(chardata, 0x20) : 0); }
++    }
++}
++
++void gear_clear(void) { memset(g_g, 0, sizeof g_g); }
++/* RESET response (env.c div_publish): what the config holds, the shield full */
++void gear_reset_player(int i, void *cfg) {
++    if (i < 0 || i >= NBE_MAXP) return;
++    Gear *G = &g_g[i]; memset(G, 0, sizeof *G);
++    for (int k = 0; k < 2; k++) {
++        void *g = cfg ? PTR(cfg, 0x18 + 8 * k) : NULL; G->type[k] = -1;
++        if (!g) continue;
++        G->id[k] = I32(g, 0x20); G->type[k] = gtype(g); G->val[k] = gval(g);
++    }
++    G->shield = gval_of(i, G_SHIELD);
++    static int nlog; if ((G->id[0] || G->id[1]) && nlog++ < 40)
++        LOG("[gear] player %d: gear %d (type %d, value %d), gear %d (type %d, value %d)\n", i, G->id[0], G->type[0], G->val[0],
++            G->id[1], G->type[1], G->val[1]);
++}
++
++/* damage d > 0 through the root 0xb422d0 from player ai's brawler to player vi's (-1 = not a player's brawler), after the
++ * other modifiers; storm = the storm's own hit */
++int gear_damage(uint8_t *ach, int ai, uint8_t *vch, int vi, int d, int storm) {
++    if (!g_on || d <= 0) return d;
++    int v = ach && ai != vi ? gval_of(ai, G_LOWHP) : 0;
++    if (v && I32(ach, 0x3c4) * 100 < I32(ach, 0x3c8) * LOW_HP_PCT) { d = d * (100 + v) / 100; g_g[ai].st[0]++; }
++    if (vi >= 0 && vi < NBE_MAXP && vch && !storm && ai != vi && gval_of(vi, G_SHIELD)) {
++        Gear *G = &g_g[vi]; G->full_ticks = 0;
++        int a = d < G->shield ? d : G->shield;
++        if (a > 0) { G->shield -= a; d -= a; G->st[1] += a; }
++    }
++    return d;
++}
++
++/* the move speed (units/s) for player i's brawler ch from base (the speed it would move with), 0 = unchanged; bush = it
++ * stands on a bush tile */
++int gear_speed(int i, uint8_t *ch, int base, int bush) {
++    if (!g_on || i < 0 || i >= NBE_MAXP || !ch || base <= 0) return 0;
++    int v = gval_of(i, G_FOREST); if (!v) return 0;
++    g_g[i].bush = bush;
++    if (!bush) return 0;
++    g_g[i].st[2]++;
++    return base * (100 + v) / 100;
++}
++
++/* superfix_status.c my_reload_pct: the gear's part of the reload aggregate r for player i's brawler (0 = none) */
++int gear_reload_pct(int i) {
++    if (!g_on) return 0;
++    int v = gval_of(i, G_RELOAD); if (v > 0) g_g[i].st[3]++;
++    return v;
++}
++
++/* after every tick, per player i (ch = its brawler or NULL, alive): the shield's regeneration; -> 1 if the move should be
++ * re-sent (the bush state of a ForestSpeed brawler changed) */
++int gear_tick_player(int i, uint8_t *ch, int alive, int bush) {
++    if (!g_on || i < 0 || i >= NBE_MAXP) return 0;
++    Gear *G = &g_g[i]; int sv = gval_of(i, G_SHIELD), resend = 0;
++    if (sv && ch && alive) {
++        if (I32(ch, 0x3c4) >= I32(ch, 0x3c8)) { if (G->shield < sv && ++G->full_ticks >= SHIELD_REGEN) { G->shield = sv; G->full_ticks = 0; } }
++        else G->full_ticks = 0;
++    }
++    if (gval_of(i, G_FOREST) && ch && alive && bush != G->bush) { G->bush = bush; resend = 1; }
++    return resend;
++}
++int gear_has(int i, int type) { return gval_of(i, type) != 0; }
++
++void gear_publish(NbeResp *r) {   /* every response */
++    r->gear_valid = 1;
++    for (int i = 0; i < NBE_MAXP; i++) {
++        const Gear *G = &g_g[i];
++        for (int k = 0; k < 2; k++) r->gear_id[i][k] = G->id[k];
++        r->gear_shield[i] = G->shield;
++        for (int k = 0; k < 4; k++) r->gear_stat[i][k] = G->st[k];
++    }
++}
++void gear_install(void) {
++    const char *e = getenv("NB_GEARS"); g_on = !e || atoi(e) != 0;
++    LOG("[gear] gears: config +0x18 / +0x20, host effects %s (ForestSpeed, LowHealthDamage, ConsumableShield, ReloadSpeed)\n", g_on ? "on" : "off");
++}
+diff --git a/native/loader/nbenv_proto.h b/native/loader/nbenv_proto.h
+index 3180610..ac6aa43 100644
+--- a/native/loader/nbenv_proto.h
++++ b/native/loader/nbenv_proto.h
+@@ -51,6 +51,9 @@ typedef struct {          /* diversity round: NbeCmd.div (RESET) */
+     /* hypercharge round (bsrl-sim issue #4, appended): bit i = put player i's brawler's hypercharge card (cards.csv MetaType 6)
+      * in its config (+0x28), so NbeAction.fire 4 can activate it (hyper.c); 0 = none (as before). A brawler without one gets none */
+     uint32_t hyper_mask;
++    /* gear round (bsrl-sim issue #51, appended): per player index two gear_boosts.csv 62xxxxxx ids -> config +0x18 / +0x20
++     * (gear.c); 0 = none. A gear not allowed for the character (libg 0xae2aa4) or a second of one kind is rejected */
++    int32_t gear[NBE_MAXP][2];
+ } NbeDiv;
+ #define NBE_DIV_MAGIC 0x31564944u   /* 'DIV1' in NbeHdr.reserved[0]: this game host understands NbeCmd.div / NbeResp.div_* */
+ 
+@@ -159,6 +162,13 @@ typedef struct {
+     /* hypercharged supers (appended): supers cast while hypercharged so far, and the SkillData data id the last one used
+      * (the brawler's OverchargedUltimateSkill where characters.csv has one, else its UltimateSkill) */
+     int32_t hyp_supers[NBE_MAXP], hyp_super_id[NBE_MAXP];
++    /* gear round (bsrl-sim issue #51, appended): the gears in each player's config and the host's gear state (gear.c); all 0
++     * (gear_valid 0) with a host without it. gear_stat per player, counts this battle: [0] hits boosted by LowHealthDamage,
++     * [1] hp the ConsumableShield absorbed, [2] moves sped up by ForestSpeed, [3] reload queries ReloadSpeed answered */
++    int32_t gear_valid;
++    int32_t gear_id[NBE_MAXP][2];     /* gear_boosts.csv data ids in config +0x18 / +0x20 (0 = none) */
++    int32_t gear_shield[NBE_MAXP];    /* ConsumableShield hp left (0 without the gear) */
++    int32_t gear_stat[NBE_MAXP][4];
+ } NbeResp;
+ /* NbeResp.gad_kind: what an activation does (one re-implementation per kind, from the gadget's own data rows) */
+ #define NBE_GAD_NONE 0
+diff --git a/native/loader/offline.c b/native/loader/offline.c
+index 72153a1..c5e547a 100644
+--- a/native/loader/offline.c
++++ b/native/loader/offline.c
+@@ -183,6 +183,8 @@ static void my_player_ctor(uint64_t *ctx) {
+         if (hc) *(void **)((uint8_t *)cfg + 0x28) = hc;
+         static int nlog; if (nlog++ < 40) LOG("[battle] roster: slot %d hypercharge card %d\n", slot, hc ? *(int32_t *)((uint8_t *)hc + 0x20) : 0);
+     }
++    /* gear round (bsrl-sim issue #51): the RESET's div.gear[slot] into config +0x18 / +0x20 (gear.c checks each) */
++    { extern void gear_equip(int slot, void *cfg, void *chardata); gear_equip(slot, cfg, d); }
+     ctx[2] = (uint64_t)d; ctx[3] = (uint64_t)cfg; *(void **)((uint8_t *)ctx + 160 + 8) = skin;
+     if (g_pinned++ < 10 || ((ci || si) && g_pinned < 400)) LOG("[battle] roster: slot %d -> %s (data id %d, skin %d)\n", slot, ci ? "div" : g_roster,
+         *(int32_t *)((uint8_t *)d + 0x20), *(int32_t *)((uint8_t *)skin + 0x20));
+diff --git a/native/loader/superfix_status.c b/native/loader/superfix_status.c
+index e6d0d67..6974881 100644
+--- a/native/loader/superfix_status.c
++++ b/native/loader/superfix_status.c
+@@ -26,7 +26,8 @@
+  *   others and the stun counter +0xe1c). libg's own "can't act" 0xb38b54 (mover and fire abort) reads +0x984, +0x987 and
+  *   +0xe1c; the silence getter 0xb38dec reads +0x988. Stuns from projectiles, areas and Bo's trap: superfix_cc.c.
+  *   Stacking statuses sum once per source (DragonRiderUltiSpeed is re-added every tick), others take the max.
+- *   Issue #19 leftovers: DecreaseReloadTimePercent +0x124 through libg's compiled-out reload query 0xb38e04 (my_reload_pct),
++ *   Issue #19 leftovers: DecreaseReloadTimePercent +0x124 through libg's compiled-out reload query 0xb38e04 (my_reload_pct; plus
++ *   the ReloadSpeed gear's percent, gear.c, issue #51),
+  *   LifeSteal +0x10c / SourceLifeSteal +0x110 through the damage root's compiled-out lifesteal query 0xba3258
+  *   (my_lifesteal_pct), Taunt +0x132 / Fear +0x133 for env.c (superfix_status_taunt), and the area types the area apply
+  *   drops (area_extra: SmokeScreen, DamageBoost, Heal, HealRegen, Cleanse, super charge areas; issue #19 final: ChargeSuper,
+@@ -362,14 +363,16 @@ static int st_field(uint8_t *ch, int off, uint8_t *src) {
+  * super 90, Nita's and Surge's buddy statuses) shortens T to T * (100 - p) / 100, so r = 100 p / (100 - p); p is capped at
+  * 95 (r 1900, a 20x faster reload) so T never reaches 0. */
+ static long g_nreload, g_nsteal;
++int gear_reload_pct(int i); int env_char_owner(void *ch);   /* gear.c (bsrl-sim #51): ReloadSpeed's r; env.c: the brawler's player */
+ static int my_reload_pct(uint8_t *ch) {
+     if (!g_superfix || !mode() || !is_char(ch)) return 0;
++    int g = gear_reload_pct(env_char_owner(ch));   /* gear round: ReloadSpeed adds its percent to the aggregate */
+     int p = st_field(ch, SE_RELOAD, NULL), z = zone_get(ch, ZN_RELOAD, now_tick(ch));   /* z: Edgar's area, already r */
+-    if (p <= 0 && z <= 0) return 0;
++    if (p <= 0 && z <= 0) return g;
+     if (p > 95) p = 95;
+     g_nreload++;
+     int r = p > 0 ? 100 * p / (100 - p) : 0;
+-    return r > z ? r : z;
++    return (r > z ? r : z) + g;
+ }
+ /* issue #19: lifesteal. The damage root heals the attacker by damage x pct / 100 at 0xb439c4 (0xb41554 with the attacker's
+  * CharacterData, kind 4) when pct = 0xba3258(victim +0x890, attacker) >= 1, a manager query compiled out (`mov w0, wzr;
+diff --git a/py/nbpc/instance.py b/py/nbpc/instance.py
+index 2d8e225..7b0cecd 100644
+--- a/py/nbpc/instance.py
++++ b/py/nbpc/instance.py
+@@ -25,8 +25,8 @@ class InstanceDead(RuntimeError):
+ 
+ 
+ def set_div(d, div):
+-    """fill a proto.Div from {"location", "theme", "chr", "skin", "gadget", "star", "hyper", ...} (chr / skin / gadget / star:
+-    {player index: id} or a list by index; hyper: player indices, or a bit mask)"""
++    """fill a proto.Div from {"location", "theme", "chr", "skin", "gadget", "star", "hyper", "gear", ...} (chr / skin / gadget /
++    star: {player index: id} or a list by index; hyper: player indices, or a bit mask; gear: per player up to two ids)"""
+     div = div or {}
+     d.location = int(div.get("location") or 0); d.theme = int(div.get("theme") or 0)
+     for f in ("chr", "skin", "gadget", "star"):
+@@ -43,6 +43,11 @@ def set_div(d, div):
+     g = div.get("team_groups")   # rl round: group id 0-7 per player (0 = alone); players of one group share a team
+     if g: d.reserved[0] = ((1 << 31) | sum((int(x) & 7) << (3 * i) for i, x in enumerate(list(g)[:10]))) - (1 << 32)
+     d.reserved[1] = int(div.get("map_location") or 0)   # RESET: a location (any mode) whose map layout is used (needs native/loader/nbhost_maps)
++    gv = div.get("gear") or {}   # gear round: {player index: (id, id)} or a list by index (needs native/loader/gear.c)
++    for i in range(P.MAXP): d.gear[i][0] = d.gear[i][1] = 0
++    for i, ids in (gv.items() if isinstance(gv, dict) else enumerate(gv)):
++        if 0 <= int(i) < P.MAXP:
++            for k, x in enumerate(list(ids or ())[:2]): d.gear[int(i)][k] = int(x or 0)
+     hm = div.get("hyper") or ()   # hypercharge round: player indices whose brawler gets its hypercharge card (needs native/loader/hyper.c)
+     d.hyper_mask = int(hm) & 0xffffffff if isinstance(hm, int) else sum(1 << int(i) for i in hm if 0 <= int(i) < P.MAXP)
+ 
+diff --git a/py/nbpc/proto.py b/py/nbpc/proto.py
+index d5db388..fcafb33 100644
+--- a/py/nbpc/proto.py
++++ b/py/nbpc/proto.py
+@@ -37,7 +37,8 @@ class Div(C.Structure):
+                 ("setup_super_mask", C.c_uint32),                            # SETUP: bit i = fill player i's super
+                 ("setup_unprotect_mask", C.c_uint32),                        # SETUP: bit i = clear player i's spawn protection
+                 ("reserved", C.c_int32 * 2),
+-                ("hyper_mask", C.c_uint32)]   # hypercharge round (bsrl-sim issue #4): bit i = equip player i's hypercharge card
++                ("hyper_mask", C.c_uint32),   # hypercharge round (bsrl-sim issue #4): bit i = equip player i's hypercharge card
++                ("gear", (C.c_int32 * 2) * MAXP)]   # gear round (bsrl-sim issue #51): per player two gear_boosts.csv 62xxxxxx ids (0 = none)
+ 
+ 
+ DIV_MAGIC = 0x31564944   # Hdr.reserved[0] of a game host that understands Cmd.div / Resp.div_*
+@@ -92,7 +93,12 @@ class Resp(C.Structure):
+         ("hyp_valid", C.c_int32), ("hyp_card", C.c_int32 * MAXP), ("hyp_left", C.c_int32 * MAXP), ("hyp_used", C.c_int32 * MAXP),
+         ("hyp_damage_pct", C.c_int32 * MAXP), ("hyp_speed_pct", C.c_int32 * MAXP), ("hyp_shield_pct", C.c_int32 * MAXP),
+         # hypercharged supers (appended): supers cast while hypercharged so far, the SkillData data id the last one used
+-        ("hyp_supers", C.c_int32 * MAXP), ("hyp_super_id", C.c_int32 * MAXP)]
++        ("hyp_supers", C.c_int32 * MAXP), ("hyp_super_id", C.c_int32 * MAXP),
++        # gear round (bsrl-sim issue #51, appended): native/loader/gear.c; all 0 (gear_valid 0) with a host without it. Per
++        # player: the two gear ids in its config, ConsumableShield hp left, counts [low-hp hits boosted, shield hp absorbed,
++        # ForestSpeed moves, ReloadSpeed answers]
++        ("gear_valid", C.c_int32), ("gear_id", (C.c_int32 * 2) * MAXP), ("gear_shield", C.c_int32 * MAXP),
++        ("gear_stat", (C.c_int32 * 4) * MAXP)]
+ 
+ 
+ GAD_NONE, GAD_DASH, GAD_HEAL, GAD_SHIELD, GAD_SPAWN, GAD_PROJECTILE, GAD_STATUS, GAD_SUPER = range(8)   # Resp.gad_kind (nbenv_proto.h NBE_GAD_*)
