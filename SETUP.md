@@ -150,6 +150,12 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   heal, 8-Bit's booster, ...), which no client code spawns. `spawnfix.c`: Meeple's and Damian's wall areas. `gadget.c`: Fang's
   sweep, Painter's push and Meeple's RageQuit are AREA gadgets. `env.c`: Edgar's super charge percent. `python -m status_check`
   scenes 12-20.
+- `heal_scale.patch` (issue #22, a diff on top of `status_final.patch`): heals at power 11, like damage (the owner's clip:
+  Pam's turret +1400 a second at 10000 hp). `nbhost.h`: `P11_SCALE` 2. `env.c` hooks the area create 0xb2aefc: a heal
+  word from power-1 numbers is x2 (not DamageScaleType 2 of a brawler, already a percent of power-11 hp; `NB_HEAL_SCALE=0`
+  off). `superfix.c`: Pam's turrets heal 14 % of Pam's max hp a second (the clip; the data's 10 % of the turret's own hp
+  gave 304), Poco's super heal x2. `superfix_status.c`: status Healing x2. `superfix_moves.c`: R-T's rejoin heal x2.
+  `python -m status_check` scene 16. Notes: `notes/issue22.md`.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

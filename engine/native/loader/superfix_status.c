@@ -12,7 +12,8 @@
  *   expiry (DurationTicks +0x98, until = add tick + duration; a non-Stacking re-add (+0xac) refreshes the end tick),
  *   Damage +0xb8 / Healing +0xf0 every TriggerRate +0xa0 ticks (TriggerOnFirstTick +0xab: also at the add; TriggerRate 0:
  *   once) through the damage root 0xb422d0 (env.c's hook on it applies the env's damage model and events, as for its own
- *   calls) and the heal 0xb41554(ch, source player, amount, 1, NULL, 0, 0, 0, 0, 0) (the argument pattern of 0xb43ae8),
+ *   calls) and the heal 0xb41554(ch, source player, amount x P11_SCALE, 1, NULL, 0, 0, 0, 0, 0) (the argument pattern of
+ *   0xb43ae8; Healing is a power-1 number, issue #22),
  *   then the aggregates: char +0x954 = max ShieldPercent +0xf4 (the damage root 0xb422d0 reads it at 0xb428fc:
  *   pct = max(skill shield, +0x954), damage * (100 - pct) / 100), char +0x97c = max Invisibility +0x12c (0 none ..
  *   3 full; libg's reader 0xb3931c and the char update). Pulsating effects (+0xb0 on / +0xb4 off ticks) count only in
@@ -170,7 +171,7 @@ static int pulse_on(const St *s, int t) {
 }
 static void trigger(St *s, int t) {
     uint8_t *ch = s->ch, *src = s->src_id >= 0 ? by_id(ch, s->src_id) : NULL;
-    int dmg = I32(s->data, SE_DMG), heal = I32(s->data, SE_HEAL), hp0 = I32(ch, 0x3c4);
+    int dmg = I32(s->data, SE_DMG), heal = I32(s->data, SE_HEAL) * P11_SCALE, hp0 = I32(ch, 0x3c4);   /* Healing: power 1 (#22) */
     if (dmg > 0) {   /* the argument pattern of env.c's own root calls (charge contact, leap bombs) */
         ((uint64_t (*)(void *, int, int, int, int, void *, void *, int, int, int, void *, int, int, int, int, int, int, int))B(0xb422d0))(
             ch, s->src_player, dmg, dmg, 0, src, NULL, 1, I32(ch, 0x38), I32(ch, 0x3c), NULL, 0, 0, 0, 1, 0, 0, 0);

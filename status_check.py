@@ -34,8 +34,10 @@ A third battle (issue #19 final; NAMES3, every player has its hypercharge card, 
  14. Edgar's hypercharged super (EnragerOverchargedUlti, EnragerOverchargeSuper CustomValue 50 / CustomValue2 150): his ammo
      refills >= EDGAR_RELOAD times as fast and his hits on a target charge his super >= EDGAR_CHARGE times as much as before it;
  15. Darryl's hypercharged roll (BarrelBotOverchargeChargeArea, BulletSpin): he fires BarrelBotOverchargedProjectile shots;
- 16. Pam's hypercharged turret (MinigunOverchargedHealingStationHeal, HotAndOverheals as Hot): her teammate, shot after
-     the turret landed, gains >= TURRET_HEAL HP within 30 ticks (the turret's heal, before regeneration starts);
+ 16. Pam's turret (HealingStationHeal, issue #22): her teammate, shot first, gains TURRET_PCT % of Pam's max HP per heal,
+     TURRET_EVERY ticks apart (the owner's clip: power 11, 10000 HP, +1400 a second); then her hypercharged turret
+     (MinigunOverchargedHealingStationHeal, HotAndOverheals as Hot): the teammate, shot after the turret landed, gains
+     >= TURRET_HEAL HP within 30 ticks (the turret's heal, before regeneration starts);
  17. Angelo's super (InsectManUltiSwitchSkillArea, SwitchSkill) at his feet: his attack inside fires another projectile
      (InsectManWeaponPoison's) than before.
 A fourth battle (gadgets):
@@ -69,7 +71,8 @@ DRINK_MIN = 900           # super charge from Max's drink (ChargeSuper CustomVal
 GIVE_MIN = 250            # super charge from one GiveUlti area (Damage 300)
 EDGAR_RELOAD = 1.3        # ammo refill after / before his hypercharged super (CustomValue 50 %: 1.5x)
 EDGAR_CHARGE = 1.8        # super charge per damage dealt after / before (CustomValue2 150 %: 2.5x)
-TURRET_HEAL = 300         # HP in 30 ticks from the turret's Hot (10 % of the turret's max HP a second [?] the scale; >= 420)
+TURRET_HEAL = 300         # HP in 30 ticks from the hypercharged turret's Hot (one heal of 1400 at least, with room)
+TURRET_PCT, TURRET_EVERY = 14, 20   # Pam's turret: % of her max HP per heal, ticks between heals (the owner's clip, #22)
 GLAD_WALL = 27000000 + 69 # tiles.csv row of GladiatorWallDefault (DynamicCode 26) as a tile data id (checked in _check)
 TARGET = SA.FILLER
 SPEED = {"Speedy": 820, "DragonRider": 720, "ShotgunGirl": 770}   # characters.csv Speed (u/s)
@@ -157,6 +160,15 @@ def judge_ratio(a, b, need, what):
 def judge_kinds(k0, k1, what):
     if not k0 or not k1: return ["%s: nothing fired (before %s, after %s)" % (what, sorted(k0), sorted(k1))]
     return [] if not (k0 & k1) else ["%s: the same projectile before and after (%s / %s)" % (what, sorted(k0), sorted(k1))]
+
+
+def judge_turret(gains, pam_max):
+    """gains: [(tick, hp gained)] of the teammate beside Pam's turret; >= 2 heals of TURRET_PCT % of pam_max (regeneration
+    and the cap give other sizes), consecutive ones TURRET_EVERY ticks apart"""
+    want = pam_max * TURRET_PCT // 100; ts = [t for t, g in gains if abs(g - want) <= 1]
+    if len(ts) < 2: return ["Pam's turret: heals %s, want 2+ of %d (%d %% of %d)" % (gains, want, TURRET_PCT, pam_max)]
+    gaps = sorted({b - a for a, b in zip(ts, ts[1:])})
+    return [] if gaps == [TURRET_EVERY] else ["Pam's turret: heals of %d at ticks %s, want %d apart" % (want, ts, TURRET_EVERY)]
 
 
 def judge_los(open_moved, wall_moved):
@@ -478,10 +490,22 @@ def battles(inst, a, spots, info, fails, B):
         fails["Darryl BulletSpin"] = [] if "BarrelBotOverchargedProjectile" in kinds else ["Darryl's roll fired no BarrelBotOverchargedProjectile (%s)" % sorted(kinds)]
 
         # 16. Pam (spot 3): teammate 8 at 600 u, the turret thrown 300 u (between them); enemy 9 shoots 8 from 500 u to the
-        # side (a clear corridor of the spot, perpendicular), clear of the turret, after the turret's instant heal
+        # side (a clear corridor of the spot, perpendicular), clear of the turret. First her normal turret, after one shot
         p, (dx, dy), d = at(3, 3); aim = float(np.degrees(np.arctan2(dy, dx)))
         qx, qy = next(((u, v) for u, v in spots[3][2] if u * dx + v * dy == 0), (-dy, dx))
-        t8 = (p[0] + dx * 600, p[1] + dy * 600); R.place({3: p, 8: t8, 9: (t8[0] + qx * 500, t8[1] + qy * 500)})
+        t8 = (p[0] + dx * 600, p[1] + dy * 600); r = R.place({3: p, 8: t8, 9: (t8[0] + qx * 500, t8[1] + qy * 500)})
+        aim9 = float(np.degrees(np.arctan2(-qy, -qx))); R.step({9: (-1, 1, aim9, 0.0)}, 1)
+        for _ in range(4): r = R.step()
+        pam_max = int(r.pl[3].max_hp)
+        R.fire(3, aim, min(1.0, 300 / SA.expected("MinigunDude")["range"])); last, gains = int(r.pl[8].hp), []
+        for _ in range(70):
+            r = R.step(ticks=1); h = int(r.pl[8].hp)
+            if h > last: gains.append((int(r.tick), h - last))
+            last = h
+        print("status_check: Pam's turret: teammate gains %s (Pam max hp %d)" % (gains, pam_max), flush=True)
+        fails["Pam turret heal 14 %"] = judge_turret(gains, pam_max)
+        # then her hypercharged turret, the enemy's shots after its instant heal
+        R.place({3: p, 8: t8, 9: (t8[0] + qx * 500, t8[1] + qy * 500)})
         hyper_super(3, aim, min(1.0, 300 / SA.expected("MinigunDude", True)["range"]))
         for _ in range(20): R.step()   # the turret lands, its instant heal is over
         aim9 = float(np.degrees(np.arctan2(-qy, -qx)))
@@ -572,6 +596,9 @@ def _check():
     assert not judge_ratio(150, 100, 1.3, "x") and judge_ratio(110, 100, 1.3, "x") and judge_ratio(100, 0, 1.3, "x")
     assert not judge_kinds({"a"}, {"b"}, "x") and judge_kinds({"a"}, {"a"}, "x") and judge_kinds(set(), {"b"}, "x")
     assert not judge_los(20, 400) and judge_los(300, 400) and judge_los(20, 50)
+    assert not judge_turret([(238, 1400), (258, 1400), (271, 1014), (278, 200)], 10000)
+    assert judge_turret([(238, 304), (258, 304)], 10000) and judge_turret([(238, 1400), (268, 1400)], 10000)
+    assert judge_turret([(238, 1400)], 10000)
     from nbpc import diversity as D
     assert D.table("tiles.csv")["GladiatorWallDefault"][0] == GLAD_WALL
     ws = wall_spot(); assert ws is not None and ws[0][1] == ws[1][1] == ws[2][1] and ws[2][0] - ws[1][0] == 4 * TILE

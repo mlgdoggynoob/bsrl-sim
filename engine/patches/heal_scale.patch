@@ -1,0 +1,179 @@
+# issue #22 heal scale (bsrl-sim), a diff on top of the other patches (on top of status_final.patch).
+# Heals at power 11 like damage (the owner's clip: Pam at power 11, 10000 hp, her turret +1400 a second).
+# nbhost.h: P11_SCALE 2. env.c: the area create 0xb2aefc hooked (my_mkarea): a heal word (+0xe8 / +0xec < 0) from power-1
+# numbers x2, not DamageScaleType 2 of a brawler owner; NB_HEAL_SCALE=0 off. superfix.c: a summon Hot area of
+# DamageScaleType 2 (Pam's turrets) heals TURRET_HEAL_PCT 14 % of the summoner's max hp, else x2; Poco's super heal x2.
+# superfix_status.c: status Healing x2. superfix_moves.c: R-T's rejoin heal x2.
+# Paths relative to engine/.
+diff --git a/native/loader/env.c b/native/loader/env.c
+index 5fb5756..294b06a 100644
+--- a/native/loader/env.c
++++ b/native/loader/env.c
+@@ -7,7 +7,7 @@
+  *     the phone's drain applied them; k ticks per step, several steps per client frame; any player index.
+  *   - Showdown rules: storm damage (20 %/s of max HP, +5 %/s after 5 s, applied before the snapshot of the tick after
+  *     the check, through the damage root 0xb422d0), no regen in gas, elimination tracker / Brawlers left / native
+- *     end at <= 1 alive or one team left (duo / trio), power cubes (+400 HP, +10 % damage incl. the popup), damage model (P11 x2 + travel curve),
++ *     end at <= 1 alive or one team left (duo / trio), power cubes (+400 HP, +10 % damage incl. the popup), damage model (P11 x2 + travel curve; heal areas x2, #22),
+  *     super-charge fix, Piper's leap re-implementation + BoxOfBombs + bomb damage, skill block in the air, client
+  *     guard, alive guard, bot 'hold'/native control, local_ai.
+  *   - soft reset: StartLoading clone re-injected through 0x816ff8 with the seed (+ the B3 determinism patch).
+@@ -460,6 +460,25 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
+     E.charge_level = saved_level;
+     return r;
+ }
++/* heal areas at power 11 (issue #22, heal_scale.patch). The area create 0xb2aefc(data, owner, x, y, z, kind, extra) writes
++ * the heal word (+0xe8 / +0xec, negative for a heal) from power-1 numbers: Damage (DamageScaleType none / 0), a percent of
++ * the owner's weapon or ulti Damage (1 / 3) or of the extra (4), the level scale (5, the identity), or a percent of the
++ * owner's max HP (2), a power-11 number only for a brawler owner (a summon keeps its data HP). Every other heal word is
++ * multiplied by P11_SCALE, so libg's Hot body and hyper.c's heal on deploy heal power-11 amounts. Damage words (positive)
++ * are left to my_root. NB_HEAL_SCALE=0: off. */
++typedef void *(*fn_mkarea)(void *, void *, int, int, int, int, int);
++static fn_mkarea o_mkarea;
++int g_heal_scale = 1; static long g_heal_areas;
++static void *my_mkarea(void *data, void *owner, int x, int y, int z, int kind, int extra) {
++    uint8_t *a = o_mkarea(data, owner, x, y, z, kind, extra);
++    if (!g_heal_scale || !a || I32(g_libg->base, 0x12eefb4) != 3 || (I32(a, 0xe8) >= 0 && I32(a, 0xec) >= 0)) return a;
++    uint8_t *d = PTR(a, 0x10);
++    if (d && I32(d, 0x138) == 2 && owner && (((int (*)(void *))B(0xb34de4))(owner) & 1)) return a;   /* % of a brawler's max HP */
++    if (I32(a, 0xe8) < 0) I32(a, 0xe8) *= P11_SCALE;
++    if (I32(a, 0xec) < 0) I32(a, 0xec) *= P11_SCALE;
++    g_heal_areas++;
++    return a;
++}
+ /* super charge 0xc420d8(player, damage, ...): the root's calls charge for the level-scaled damage; the real game's
+  * charge does not depend on the power level: divide by it (agent: only from the root's call sites). Issue #19 final: the
+  * hitter's EnragerOverchargeSuper percent (Edgar, superfix_status_charge_pct) is added to those calls' damage. */
+@@ -2564,6 +2583,8 @@ void env_install(void) {
+     hook_enter(g_libg, 0xb4103c, rec_stop);
+     hook_enter(g_libg, 0x863d88, my_joy_enter);
+     o_root = hook_replace(g_libg, 0xb422d0, my_root);
++    o_mkarea = hook_replace(g_libg, 0xb2aefc, my_mkarea);   /* issue #22: heal areas at power 11 */
++    if (getenv("NB_HEAL_SCALE")) g_heal_scale = atoi(getenv("NB_HEAL_SCALE"));
+     o_charge = hook_replace(g_libg, 0xc420d8, my_charge);
+     o_b29350 = hook_replace(g_libg, 0xb29350, my_b29350);   /* diversity round: null-owner guard */
+     o_alive = hook_replace(g_libg, 0xc42ae8, my_alive);
+diff --git a/native/loader/nbhost.h b/native/loader/nbhost.h
+index 6b34baa..16e25eb 100644
+--- a/native/loader/nbhost.h
++++ b/native/loader/nbhost.h
+@@ -26,6 +26,10 @@ extern int g_nmods;
+ /* logging */
+ extern int g_verbose;
+ extern FILE *g_log;
++/* power 11 (issue #22): the sim's brawlers have their power-11 HP (libg's level table: Pam 10000 = 2 x Hitpoints 5000), the
++ * level scale 0xb565a8 is the identity (server code), so damage (env.c my_root) and heals from power-1 data numbers are
++ * multiplied by this; heals that are a percent of a brawler's max HP or of dealt damage are already power-11 numbers */
++#define P11_SCALE 2
+ #define LOG(...) do { fprintf(g_log, __VA_ARGS__); fflush(g_log); } while (0)
+ #define VLOG(...) do { if (g_verbose) { fprintf(g_log, __VA_ARGS__); fflush(g_log); } } while (0)
+ 
+diff --git a/native/loader/superfix.c b/native/loader/superfix.c
+index 4c3f857..c3d2155 100644
+--- a/native/loader/superfix.c
++++ b/native/loader/superfix.c
+@@ -21,8 +21,8 @@
+  * Ally / own heal of a super projectile (HealOwnPercent, data +0x1f0; Poco's DeadMariachiUltiProjectile): the attack
+  * execute calls the getter 0xafaa10 at 0xb4de50 and drops the result (the server block that used it is compiled out),
+  * so the projectile's ally-heal amount +0x10c (the hit code 0xb754b8..0xb754f4 heals same-team characters it touches
+- * through 0xb41554 when it is >= 1) is never set. The `bl` is redirected: +0x10c = projectile damage (+0xd4) x percent
+- * / 100, and the owner is healed the same amount once per attack (DamageOnlyWithOneProj, getter 0xafaa08), only for the
++ * through 0xb41554 when it is >= 1) is never set. The `bl` is redirected: +0x10c = projectile damage (+0xd4, a power-1
++ * number: my_root scales the damage later) x percent / 100 x P11_SCALE (issue #22), and the owner is healed the same amount once per attack (DamageOnlyWithOneProj, getter 0xafaa08), only for the
+  * owner's super (attack slot [sp+256] == 2 at that point).
+  * Max's hypercharged super throws its drinks from here (max_drinks, issue #19 final), and a summon gets its own
+  * CharacterData AreaEffect (superfix_summon_area: Pam's turrets' heal, 8-Bit's booster, ...).
+@@ -94,8 +94,10 @@ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind,
+  * summon's Hot area (Pam's turrets; HotAndOverheals is Hot by then, superfix_status.c) heals nobody through libg's apply here
+  * (a live run: the teammate stayed at 6600 / 7800 beside the turret): every HOT_EVERY ticks while it and its summon live,
+  * every hurt ally of the area's team that libg's target test reaches (the summon itself not) is healed through libg's heal
+- * 0xb41554 by -Damage % of the summon's max HP (DamageScaleType 2: 10 % of 4200 = 420 for the hypercharged turret) or
+- * -Damage. [?] the client has no rate or scale rule for it. */
++ * 0xb41554. DamageScaleType 2 (Pam's two turrets, the only summon heals): TURRET_HEAL_PCT % of the summoner's max HP (the
++ * brawler of the summon's player; the wiki: "12% of Pam's maximum health each second"); the data's -Damage % of the turret's
++ * own max HP gave 304 a second (10 % of 3040: summons keep their power-1 HP here). Without a living summoner, and for other
++ * scale types, -Damage % of the summon's max HP or -Damage, x P11_SCALE (power-1 numbers, issue #22). */
+ typedef struct { int ch_id, area_id; uint8_t *a; int next; } SumArea;
+ #define SA_MAX 32
+ static SumArea g_sa[SA_MAX]; static int g_nsa; static long g_nsum_area, g_nsum_end;
+@@ -116,7 +118,9 @@ void superfix_summon_area(uint8_t *ch) {
+     if (a) g_nsum_area++;
+     LOG("[superfix] summon area: ch %d (data %d) gets area %d type %d -> %p\n", id, I32(cd, 0x20), I32(ad, 0x20), I32(ad, 0x118), a);
+ }
+-#define HOT_EVERY 20   /* ticks between a summon's Hot area heals [?]: the client has no rate; the turret heals per second */
++#define HOT_EVERY 20   /* ticks between a summon's Hot area heals: the owner's clip (#22), Pam's turret ticks 1.0 s apart */
++#define TURRET_HEAL_PCT 14   /* the owner's clip (#22, training cave): Pam at power 11 (10000 HP) +1400 a tick (8000 -> 9400 ->
++                              * 10000 capped, 1 s apart); the v68.279 row says -10 (wiki: 12 %), the live game heals 14 % */
+ long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) __attribute__((weak));   /* superfix_cc.c: libg's target test */
+ static long g_nsum_hot;
+ static void summon_area_end(uint8_t *a, uint8_t *sim) {   /* from the area tick: the summon gone -> the area ends now */
+@@ -124,8 +128,15 @@ static void summon_area_end(uint8_t *a, uint8_t *sim) {   /* from the area tick:
+         uint8_t *d = PTR(a, 0x10), *own = PTR(a, 0x108); int now = I32(sim, 0x10);
+         if (d && own && I32(d, 0x118) == 4 && now >= g_sa[i].next && I32(own, 0x3c4) > 0) {
+             g_sa[i].next = now + HOT_EVERY;
+-            int amt = I32(d, 0x138) == 2 ? -I32(own, 0x3c8) * I32(d, 0x134) / 100 : -I32(d, 0x134);   /* DamageScaleType 2: % of max HP */
+             void *h = PTR(sim, 0); int n = h ? I32(h, 0xc) : 0; void **v = h ? PTR(h, 0) : NULL; int team = ((geti_t)B(0xb6a820))(a);
++            uint8_t *boss = NULL;   /* the summoner: the living brawler of the summon's player */
++            for (int k = 0; v && k < n && k < 4096 && !boss; k++) {
++                uint8_t *c = v[k];
++                if (c && c != own && (int)((uint8_t *)PTR(c, 0) - g_libg->base) == 0x1209020 && I32(c, 0x80) == I32(own, 0x80) &&
++                    I32(c, 0x3c4) > 0 && (((geti_t)B(0xb34de4))(c) & 1)) boss = c;
++            }
++            int amt = I32(d, 0x138) == 2 && boss ? I32(boss, 0x3c8) * TURRET_HEAL_PCT / 100
++                    : P11_SCALE * (I32(d, 0x138) == 2 ? -I32(own, 0x3c8) * I32(d, 0x134) / 100 : -I32(d, 0x134));
+             for (int k = 0; amt > 0 && v && k < n && k < 4096; k++) {
+                 uint8_t *c = v[k];
+                 if (!c || (int)((uint8_t *)PTR(c, 0) - g_libg->base) != 0x1209020 || I32(c, 0x3c4) <= 0 || c == own) continue;
+@@ -186,7 +197,7 @@ static long g_nheal, g_nheal_self;
+ int superfix_heal_own(void *pdata, uint8_t *p, uint8_t *owner, int slot) {   /* in place of `bl 0xafaa10` at 0xb4de50 */
+     int pct = ((geti_t)B(0xafaa10))(pdata);
+     if (!g_superfix || !mode() || pct <= 0 || !p || slot != 2) return pct;
+-    int amount = (int)((long)I32(p, 0xd4) * pct / 100);
++    int amount = (int)((long)I32(p, 0xd4) * pct / 100) * P11_SCALE;   /* issue #22: power 11 */
+     if (amount < 1) return pct;
+     if (I32(p, 0x10c) == 0) { I32(p, 0x10c) = amount; g_nheal++; }
+     static void *last_owner; static int last_tick = -1;
+diff --git a/native/loader/superfix_moves.c b/native/loader/superfix_moves.c
+index b078a36..860759d 100644
+--- a/native/loader/superfix_moves.c
++++ b/native/loader/superfix_moves.c
+@@ -371,7 +371,7 @@ void superfix_moves_area(uint8_t *a) {
+ 
+ /* ======================= Split (R-T) */
+ #define SPLIT_HEAL 1000    /* fallback heal at the rejoin: Value3 of SplitterLegs_ulti (cards.csv, the heal icon), read from
+-                            * the card when it is there; not scaled by the power level (the env's heals are not) */
++                            * the card when it is there; x P11_SCALE at the rejoin (power 1, issue #22) */
+ static long g_split_rejoin, g_split_spd, g_split_orphan; static int g_split_on;
+ static int up_of(void *c) { void *d = c ? ((getp_t)B(0xb6a384))(c) : NULL; return d ? ((geti_t)B(0xab3d04))(d) : -1; }
+ static int hero_kind(void *c) { return ((geti_t)B(0xb34de4))(c) & 1; }   /* +1064 or the data's type in {0, 26} (0xab2fd0) */
+@@ -409,6 +409,7 @@ static void my_split(uint8_t *ch) {   /* 0xb5c7b0(char) */
+     if (!legs) { o_split(ch); return; }
+     int x = I32(legs, 0x38), y = I32(legs, 0x3c), hp0 = I32(ch, 0x3c4), mhp = I32(ch, 0x3c8);
+     int heal = card_value(((getp_t)B(0xb6a384))(legs), 3, 3); if (heal <= 0) heal = SPLIT_HEAL;
++    heal *= P11_SCALE;
+     retire(legs);
+     stop_mover(ch);
+     ((void (*)(void *, int, int, int))B(0xb6a61c))(ch, x, y, 0);
+diff --git a/native/loader/superfix_status.c b/native/loader/superfix_status.c
+index 877bdd3..e6d0d67 100644
+--- a/native/loader/superfix_status.c
++++ b/native/loader/superfix_status.c
+@@ -12,7 +12,8 @@
+  *   expiry (DurationTicks +0x98, until = add tick + duration; a non-Stacking re-add (+0xac) refreshes the end tick),
+  *   Damage +0xb8 / Healing +0xf0 every TriggerRate +0xa0 ticks (TriggerOnFirstTick +0xab: also at the add; TriggerRate 0:
+  *   once) through the damage root 0xb422d0 (env.c's hook on it applies the env's damage model and events, as for its own
+- *   calls) and the heal 0xb41554(ch, source player, amount, 1, NULL, 0, 0, 0, 0, 0) (the argument pattern of 0xb43ae8),
++ *   calls) and the heal 0xb41554(ch, source player, amount x P11_SCALE, 1, NULL, 0, 0, 0, 0, 0) (the argument pattern of
++ *   0xb43ae8; Healing is a power-1 number, issue #22),
+  *   then the aggregates: char +0x954 = max ShieldPercent +0xf4 (the damage root 0xb422d0 reads it at 0xb428fc:
+  *   pct = max(skill shield, +0x954), damage * (100 - pct) / 100), char +0x97c = max Invisibility +0x12c (0 none ..
+  *   3 full; libg's reader 0xb3931c and the char update). Pulsating effects (+0xb0 on / +0xb4 off ticks) count only in
+@@ -170,7 +171,7 @@ static int pulse_on(const St *s, int t) {
+ }
+ static void trigger(St *s, int t) {
+     uint8_t *ch = s->ch, *src = s->src_id >= 0 ? by_id(ch, s->src_id) : NULL;
+-    int dmg = I32(s->data, SE_DMG), heal = I32(s->data, SE_HEAL), hp0 = I32(ch, 0x3c4);
++    int dmg = I32(s->data, SE_DMG), heal = I32(s->data, SE_HEAL) * P11_SCALE, hp0 = I32(ch, 0x3c4);   /* Healing: power 1 (#22) */
+     if (dmg > 0) {   /* the argument pattern of env.c's own root calls (charge contact, leap bombs) */
+         ((uint64_t (*)(void *, int, int, int, int, void *, void *, int, int, int, void *, int, int, int, int, int, int, int))B(0xb422d0))(
+             ch, s->src_player, dmg, dmg, 0, src, NULL, 1, I32(ch, 0x38), I32(ch, 0x3c), NULL, 0, 0, 0, 1, 0, 0, 0);

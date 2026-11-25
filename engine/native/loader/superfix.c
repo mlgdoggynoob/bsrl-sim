@@ -21,8 +21,8 @@
  * Ally / own heal of a super projectile (HealOwnPercent, data +0x1f0; Poco's DeadMariachiUltiProjectile): the attack
  * execute calls the getter 0xafaa10 at 0xb4de50 and drops the result (the server block that used it is compiled out),
  * so the projectile's ally-heal amount +0x10c (the hit code 0xb754b8..0xb754f4 heals same-team characters it touches
- * through 0xb41554 when it is >= 1) is never set. The `bl` is redirected: +0x10c = projectile damage (+0xd4) x percent
- * / 100, and the owner is healed the same amount once per attack (DamageOnlyWithOneProj, getter 0xafaa08), only for the
+ * through 0xb41554 when it is >= 1) is never set. The `bl` is redirected: +0x10c = projectile damage (+0xd4, a power-1
+ * number: my_root scales the damage later) x percent / 100 x P11_SCALE (issue #22), and the owner is healed the same amount once per attack (DamageOnlyWithOneProj, getter 0xafaa08), only for the
  * owner's super (attack slot [sp+256] == 2 at that point).
  * Max's hypercharged super throws its drinks from here (max_drinks, issue #19 final), and a summon gets its own
  * CharacterData AreaEffect (superfix_summon_area: Pam's turrets' heal, 8-Bit's booster, ...).
@@ -94,8 +94,10 @@ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind,
  * summon's Hot area (Pam's turrets; HotAndOverheals is Hot by then, superfix_status.c) heals nobody through libg's apply here
  * (a live run: the teammate stayed at 6600 / 7800 beside the turret): every HOT_EVERY ticks while it and its summon live,
  * every hurt ally of the area's team that libg's target test reaches (the summon itself not) is healed through libg's heal
- * 0xb41554 by -Damage % of the summon's max HP (DamageScaleType 2: 10 % of 4200 = 420 for the hypercharged turret) or
- * -Damage. [?] the client has no rate or scale rule for it. */
+ * 0xb41554. DamageScaleType 2 (Pam's two turrets, the only summon heals): TURRET_HEAL_PCT % of the summoner's max HP (the
+ * brawler of the summon's player; the wiki: "12% of Pam's maximum health each second"); the data's -Damage % of the turret's
+ * own max HP gave 304 a second (10 % of 3040: summons keep their power-1 HP here). Without a living summoner, and for other
+ * scale types, -Damage % of the summon's max HP or -Damage, x P11_SCALE (power-1 numbers, issue #22). */
 typedef struct { int ch_id, area_id; uint8_t *a; int next; } SumArea;
 #define SA_MAX 32
 static SumArea g_sa[SA_MAX]; static int g_nsa; static long g_nsum_area, g_nsum_end;
@@ -116,7 +118,9 @@ void superfix_summon_area(uint8_t *ch) {
     if (a) g_nsum_area++;
     LOG("[superfix] summon area: ch %d (data %d) gets area %d type %d -> %p\n", id, I32(cd, 0x20), I32(ad, 0x20), I32(ad, 0x118), a);
 }
-#define HOT_EVERY 20   /* ticks between a summon's Hot area heals [?]: the client has no rate; the turret heals per second */
+#define HOT_EVERY 20   /* ticks between a summon's Hot area heals: the owner's clip (#22), Pam's turret ticks 1.0 s apart */
+#define TURRET_HEAL_PCT 14   /* the owner's clip (#22, training cave): Pam at power 11 (10000 HP) +1400 a tick (8000 -> 9400 ->
+                              * 10000 capped, 1 s apart); the v68.279 row says -10 (wiki: 12 %), the live game heals 14 % */
 long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) __attribute__((weak));   /* superfix_cc.c: libg's target test */
 static long g_nsum_hot;
 static void summon_area_end(uint8_t *a, uint8_t *sim) {   /* from the area tick: the summon gone -> the area ends now */
@@ -124,8 +128,15 @@ static void summon_area_end(uint8_t *a, uint8_t *sim) {   /* from the area tick:
         uint8_t *d = PTR(a, 0x10), *own = PTR(a, 0x108); int now = I32(sim, 0x10);
         if (d && own && I32(d, 0x118) == 4 && now >= g_sa[i].next && I32(own, 0x3c4) > 0) {
             g_sa[i].next = now + HOT_EVERY;
-            int amt = I32(d, 0x138) == 2 ? -I32(own, 0x3c8) * I32(d, 0x134) / 100 : -I32(d, 0x134);   /* DamageScaleType 2: % of max HP */
             void *h = PTR(sim, 0); int n = h ? I32(h, 0xc) : 0; void **v = h ? PTR(h, 0) : NULL; int team = ((geti_t)B(0xb6a820))(a);
+            uint8_t *boss = NULL;   /* the summoner: the living brawler of the summon's player */
+            for (int k = 0; v && k < n && k < 4096 && !boss; k++) {
+                uint8_t *c = v[k];
+                if (c && c != own && (int)((uint8_t *)PTR(c, 0) - g_libg->base) == 0x1209020 && I32(c, 0x80) == I32(own, 0x80) &&
+                    I32(c, 0x3c4) > 0 && (((geti_t)B(0xb34de4))(c) & 1)) boss = c;
+            }
+            int amt = I32(d, 0x138) == 2 && boss ? I32(boss, 0x3c8) * TURRET_HEAL_PCT / 100
+                    : P11_SCALE * (I32(d, 0x138) == 2 ? -I32(own, 0x3c8) * I32(d, 0x134) / 100 : -I32(d, 0x134));
             for (int k = 0; amt > 0 && v && k < n && k < 4096; k++) {
                 uint8_t *c = v[k];
                 if (!c || (int)((uint8_t *)PTR(c, 0) - g_libg->base) != 0x1209020 || I32(c, 0x3c4) <= 0 || c == own) continue;
@@ -186,7 +197,7 @@ static long g_nheal, g_nheal_self;
 int superfix_heal_own(void *pdata, uint8_t *p, uint8_t *owner, int slot) {   /* in place of `bl 0xafaa10` at 0xb4de50 */
     int pct = ((geti_t)B(0xafaa10))(pdata);
     if (!g_superfix || !mode() || pct <= 0 || !p || slot != 2) return pct;
-    int amount = (int)((long)I32(p, 0xd4) * pct / 100);
+    int amount = (int)((long)I32(p, 0xd4) * pct / 100) * P11_SCALE;   /* issue #22: power 11 */
     if (amount < 1) return pct;
     if (I32(p, 0x10c) == 0) { I32(p, 0x10c) = amount; g_nheal++; }
     static void *last_owner; static int last_tick = -1;

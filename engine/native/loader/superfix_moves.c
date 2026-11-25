@@ -371,7 +371,7 @@ void superfix_moves_area(uint8_t *a) {
 
 /* ======================= Split (R-T) */
 #define SPLIT_HEAL 1000    /* fallback heal at the rejoin: Value3 of SplitterLegs_ulti (cards.csv, the heal icon), read from
-                            * the card when it is there; not scaled by the power level (the env's heals are not) */
+                            * the card when it is there; x P11_SCALE at the rejoin (power 1, issue #22) */
 static long g_split_rejoin, g_split_spd, g_split_orphan; static int g_split_on;
 static int up_of(void *c) { void *d = c ? ((getp_t)B(0xb6a384))(c) : NULL; return d ? ((geti_t)B(0xab3d04))(d) : -1; }
 static int hero_kind(void *c) { return ((geti_t)B(0xb34de4))(c) & 1; }   /* +1064 or the data's type in {0, 26} (0xab2fd0) */
@@ -409,6 +409,7 @@ static void my_split(uint8_t *ch) {   /* 0xb5c7b0(char) */
     if (!legs) { o_split(ch); return; }
     int x = I32(legs, 0x38), y = I32(legs, 0x3c), hp0 = I32(ch, 0x3c4), mhp = I32(ch, 0x3c8);
     int heal = card_value(((getp_t)B(0xb6a384))(legs), 3, 3); if (heal <= 0) heal = SPLIT_HEAL;
+    heal *= P11_SCALE;
     retire(legs);
     stop_mover(ch);
     ((void (*)(void *, int, int, int))B(0xb6a61c))(ch, x, y, 0);

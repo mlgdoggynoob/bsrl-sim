@@ -76,5 +76,5 @@ HP 2440 -> 3440; knocked out while split: the legs go. Weapon swap log: mount ->
 - The second split of a battle spawned legs at 4454 / 7800 HP (the first at 7800): client code in the summon (0xb57804..);
   not traced.
 - Not checked against the game: whether the legs go when R-T is knocked out, whether the split speed is +100 absolute
-  (only the stub's other callers suggest it), and the 1000 heal at power 11 (the env's heals are not scaled).
+  (only the stub's other callers suggest it), and the rejoin heal at power 11 (2000 since heal_scale.patch, #22: Value3 1000 x2).
 - `super_audit` keeps R-T as unverified: the split is charge_check's.

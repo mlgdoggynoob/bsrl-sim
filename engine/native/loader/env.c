@@ -7,7 +7,7 @@
  *     the phone's drain applied them; k ticks per step, several steps per client frame; any player index.
  *   - Showdown rules: storm damage (20 %/s of max HP, +5 %/s after 5 s, applied before the snapshot of the tick after
  *     the check, through the damage root 0xb422d0), no regen in gas, elimination tracker / Brawlers left / native
- *     end at <= 1 alive or one team left (duo / trio), power cubes (+400 HP, +10 % damage incl. the popup), damage model (P11 x2 + travel curve),
+ *     end at <= 1 alive or one team left (duo / trio), power cubes (+400 HP, +10 % damage incl. the popup), damage model (P11 x2 + travel curve; heal areas x2, #22),
  *     super-charge fix, Piper's leap re-implementation + BoxOfBombs + bomb damage, skill block in the air, client
  *     guard, alive guard, bot 'hold'/native control, local_ai.
  *   - soft reset: StartLoading clone re-injected through 0x816ff8 with the seed (+ the B3 determinism patch).
@@ -459,6 +459,25 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
     }
     E.charge_level = saved_level;
     return r;
+}
+/* heal areas at power 11 (issue #22, heal_scale.patch). The area create 0xb2aefc(data, owner, x, y, z, kind, extra) writes
+ * the heal word (+0xe8 / +0xec, negative for a heal) from power-1 numbers: Damage (DamageScaleType none / 0), a percent of
+ * the owner's weapon or ulti Damage (1 / 3) or of the extra (4), the level scale (5, the identity), or a percent of the
+ * owner's max HP (2), a power-11 number only for a brawler owner (a summon keeps its data HP). Every other heal word is
+ * multiplied by P11_SCALE, so libg's Hot body and hyper.c's heal on deploy heal power-11 amounts. Damage words (positive)
+ * are left to my_root. NB_HEAL_SCALE=0: off. */
+typedef void *(*fn_mkarea)(void *, void *, int, int, int, int, int);
+static fn_mkarea o_mkarea;
+int g_heal_scale = 1; static long g_heal_areas;
+static void *my_mkarea(void *data, void *owner, int x, int y, int z, int kind, int extra) {
+    uint8_t *a = o_mkarea(data, owner, x, y, z, kind, extra);
+    if (!g_heal_scale || !a || I32(g_libg->base, 0x12eefb4) != 3 || (I32(a, 0xe8) >= 0 && I32(a, 0xec) >= 0)) return a;
+    uint8_t *d = PTR(a, 0x10);
+    if (d && I32(d, 0x138) == 2 && owner && (((int (*)(void *))B(0xb34de4))(owner) & 1)) return a;   /* % of a brawler's max HP */
+    if (I32(a, 0xe8) < 0) I32(a, 0xe8) *= P11_SCALE;
+    if (I32(a, 0xec) < 0) I32(a, 0xec) *= P11_SCALE;
+    g_heal_areas++;
+    return a;
 }
 /* super charge 0xc420d8(player, damage, ...): the root's calls charge for the level-scaled damage; the real game's
  * charge does not depend on the power level: divide by it (agent: only from the root's call sites). Issue #19 final: the
@@ -2564,6 +2583,8 @@ void env_install(void) {
     hook_enter(g_libg, 0xb4103c, rec_stop);
     hook_enter(g_libg, 0x863d88, my_joy_enter);
     o_root = hook_replace(g_libg, 0xb422d0, my_root);
+    o_mkarea = hook_replace(g_libg, 0xb2aefc, my_mkarea);   /* issue #22: heal areas at power 11 */
+    if (getenv("NB_HEAL_SCALE")) g_heal_scale = atoi(getenv("NB_HEAL_SCALE"));
     o_charge = hook_replace(g_libg, 0xc420d8, my_charge);
     o_b29350 = hook_replace(g_libg, 0xb29350, my_b29350);   /* diversity round: null-owner guard */
     o_alive = hook_replace(g_libg, 0xc42ae8, my_alive);
