@@ -183,6 +183,8 @@ static void my_player_ctor(uint64_t *ctx) {
         if (hc) *(void **)((uint8_t *)cfg + 0x28) = hc;
         static int nlog; if (nlog++ < 40) LOG("[battle] roster: slot %d hypercharge card %d\n", slot, hc ? *(int32_t *)((uint8_t *)hc + 0x20) : 0);
     }
+    /* gear round (bsrl-sim issue #51): the RESET's div.gear[slot] into config +0x18 / +0x20 (gear.c checks each) */
+    { extern void gear_equip(int slot, void *cfg, void *chardata); gear_equip(slot, cfg, d); }
     ctx[2] = (uint64_t)d; ctx[3] = (uint64_t)cfg; *(void **)((uint8_t *)ctx + 160 + 8) = skin;
     if (g_pinned++ < 10 || ((ci || si) && g_pinned < 400)) LOG("[battle] roster: slot %d -> %s (data id %d, skin %d)\n", slot, ci ? "div" : g_roster,
         *(int32_t *)((uint8_t *)d + 0x20), *(int32_t *)((uint8_t *)skin + 0x20));

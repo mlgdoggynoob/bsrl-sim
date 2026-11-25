@@ -26,7 +26,8 @@
  *   others and the stun counter +0xe1c). libg's own "can't act" 0xb38b54 (mover and fire abort) reads +0x984, +0x987 and
  *   +0xe1c; the silence getter 0xb38dec reads +0x988. Stuns from projectiles, areas and Bo's trap: superfix_cc.c.
  *   Stacking statuses sum once per source (DragonRiderUltiSpeed is re-added every tick), others take the max.
- *   Issue #19 leftovers: DecreaseReloadTimePercent +0x124 through libg's compiled-out reload query 0xb38e04 (my_reload_pct),
+ *   Issue #19 leftovers: DecreaseReloadTimePercent +0x124 through libg's compiled-out reload query 0xb38e04 (my_reload_pct; plus
+ *   the ReloadSpeed gear's percent, gear.c, issue #51),
  *   LifeSteal +0x10c / SourceLifeSteal +0x110 through the damage root's compiled-out lifesteal query 0xba3258
  *   (my_lifesteal_pct), Taunt +0x132 / Fear +0x133 for env.c (superfix_status_taunt), and the area types the area apply
  *   drops (area_extra: SmokeScreen, DamageBoost, Heal, HealRegen, Cleanse, super charge areas; issue #19 final: ChargeSuper,
@@ -362,14 +363,16 @@ static int st_field(uint8_t *ch, int off, uint8_t *src) {
  * super 90, Nita's and Surge's buddy statuses) shortens T to T * (100 - p) / 100, so r = 100 p / (100 - p); p is capped at
  * 95 (r 1900, a 20x faster reload) so T never reaches 0. */
 static long g_nreload, g_nsteal;
+int gear_reload_pct(int i); int env_char_owner(void *ch);   /* gear.c (bsrl-sim #51): ReloadSpeed's r; env.c: the brawler's player */
 static int my_reload_pct(uint8_t *ch) {
     if (!g_superfix || !mode() || !is_char(ch)) return 0;
+    int g = gear_reload_pct(env_char_owner(ch));   /* gear round: ReloadSpeed adds its percent to the aggregate */
     int p = st_field(ch, SE_RELOAD, NULL), z = zone_get(ch, ZN_RELOAD, now_tick(ch));   /* z: Edgar's area, already r */
-    if (p <= 0 && z <= 0) return 0;
+    if (p <= 0 && z <= 0) return g;
     if (p > 95) p = 95;
     g_nreload++;
     int r = p > 0 ? 100 * p / (100 - p) : 0;
-    return r > z ? r : z;
+    return (r > z ? r : z) + g;
 }
 /* issue #19: lifesteal. The damage root heals the attacker by damage x pct / 100 at 0xb439c4 (0xb41554 with the attacker's
  * CharacterData, kind 4) when pct = 0xba3258(victim +0x890, attacker) >= 1, a manager query compiled out (`mov w0, wzr;
