@@ -30,7 +30,7 @@
  * third skill instance (char+0x458[2], 0xb34560) but what picks it for a super cast is compiled out; here instances 1
  * (the super) and 2 are swapped while hypercharged, so the game's own super code casts it, and swapped back once the
  * hypercharge ended and that super is idle (hyper_unswap). Meg's mech (MechaDudeBig, what MechaDude's super turns into)
- * takes Meg's card. A character change hands a running hypercharge to the new form (hyper_char_changed). NbeResp hyp_supers / hyp_super_id count the supers cast while hypercharged and name the SkillData of
+ * takes Meg's card, Kaze's other form (GeishaTransformed, Geisha's Pet) Kaze's. A character change hands a running hypercharge to the new form (hyper_char_changed). NbeResp hyp_supers / hyp_super_id count the supers cast while hypercharged and name the SkillData of
  * the last one (hyper_super_data, from env.c fire_input_now).
  * The visual effects (client side) are whatever the client draws from +0xa0 and the overcharged skill data.
  * Also here: the steering of homing projectiles (on_travel), which Belle's and Hank's hypercharged supers need; it applies
@@ -88,6 +88,16 @@ void *hyper_card_for(void *chardata) {
         uint8_t *t = I32(card, 0x108) == 6 ? *(uint8_t **)(card + 0xd8) : NULL, *u = t ? PTR(t, 0x268) : NULL;
         void **sc = u ? PTR(u, 0x80) : NULL; int nsc = u ? I32(u, 0x8c) : 0;
         for (int k = 0; sc && k < nsc && k < 8; k++) if (sc[k] == chardata) { found = card; break; }
+    }
+    /* a form the brawler switches to (Kaze, GeishaTransformed: Geisha's Pet, reached by her change_character trait gadget;
+     * Geisha_overcharge's text covers both forms' supers): the card of the brawler whose Pet (CharacterData +0x250, getter
+     * 0xab3da4) it is. Only player brawlers ask (offline.c), so the other Pets (Tick's head, ...) never get here. */
+    for (int idx = 0, miss = 0; !found && idx < 20000 && miss < 64; idx++) {
+        uint8_t *card = div_data(23000000 + idx);
+        if (!card) { miss++; continue; }
+        miss = 0;
+        uint8_t *t = I32(card, 0x108) == 6 ? *(uint8_t **)(card + 0xd8) : NULL;
+        if (t && PTR(t, 0x250) == chardata) found = card;
     }
     if (n < 128) { cache[n].d = chardata; cache[n].card = found; n++; }
     return found;
