@@ -50,16 +50,16 @@
  *         it. No enemy in range: refused (RequireEnemyInRange; no use, no cooldown). The push on hit is the projectile's own
  *         PushbackStrength, applied by libg's projectile hit (0xb7816c -> knockback 0xb49834). Not applied: ActiveTicks (5)
  *         and CustomValue2 (5).
- *   ITEM  spawn rows whose CustomObject is an items.csv row (Belle's trap; SPAWN; Gale's wind wall is masked): the item at the
- *         brawler through the item factory 0xb55684, with the main attack's Damage x CustomValue1 % as its damage.
+ *   ITEM  spawn rows whose CustomObject is an items.csv row (Belle's trap, Gale's Twister; SPAWN): the item at the brawler
+ *         through the item factory 0xb55684, with the main attack's Damage x CustomValue1 % as its damage; Gale's WindWall
+ *         also gets env's repel zone (env_repel_zone), which this libg lacks.
  *   SUPER charge_ulti (R-T; published SUPER): the super charge to CustomValue1 % of its maximum.
  *   HEAL_NOW  heal_attached_and_self (Kit) and heal_damage_taken (Kenji) (HEAL): an instant heal through libg's heal 0xb41554.
- * Every other gadget publishes kind NONE (not usable): repeat_shot and spin_shoot rows with a CustomObject projectile
- * other than Piper's Auto Aimer (issue #54: the re-implementation fired N copies of the main attack at its full damage and
- * range, not the game's numbers; the code is kept under `#if 0` until each row is redone from the game data: Fang's
- * KickerDude_Mines, Dynamike, Leaper, Gene, Barley's HealPotion, Bea, Darryl, Amber), next_attack_change, summons /
- * turrets, status buffs, shields, Nori's fish heal (needs his fish count), the Charge skills (Brock's jump, Max's dash,
- * ...), ... Each player gets GAD_USES uses per battle (unlimited by default, as in the live game since February 2025) and
+ *   REPEAT  repeat_shot and spin_shoot rows with a CustomObject projectile other than Piper's Auto Aimer (published PROJECTILE;
+ *         issue #54 redo from the game data, see the REPEAT / SPIN block): Dynamike (spin), Gene, Mico, Barley's potion
+ *         (repeat). Darryl, Fang's popcorn, Bea and Amber run the same code but stay in g_masked: no hit seen live.
+ * Every other gadget publishes kind NONE (not usable): next_attack_change, summons / turrets, status buffs, shields, Nori's
+ * fish heal (needs his fish count), the Charge skills (Brock's jump, Max's dash, ...), ... Each player gets GAD_USES uses per battle (unlimited by default, as in the live game since February 2025) and
  * the accessory's cooldown between uses. The accessory's Type parses to the int at +0x24 (0xb2731c:
  * spin_shoot 3, spawn 9, repeat_shot 13, heal_attached_and_self 50, charge_ulti 56, heal_damage_taken 58).
  *
@@ -85,6 +85,7 @@ int env_dash_start(uint8_t *ch, int tx, int ty, int speed);   /* env.c: -> path 
                            * used "an unlimited amount of times in a match" (Supercell release notes, Feb 2025); the
                            * cooldown is the accessory's (accessories.csv Cooldown, e.g. Bibi 400 ticks = the 20 s of the
                            * Feb 2026 notes). NB_GAD_USES=3 restores the old 3 uses per battle (issue #22). */
+#define REP_MAX 20        /* REPEAT / SPIN: shots per use at most (Gene 100 / 5) */
 #define TICKS_PER_S 20    /* 50 ms ticks */
 enum { ACC_PLAIN = 0, ACC_DASH = 2, ACC_SPIN = 3, ACC_HEAL = 8, ACC_SPAWN = 9, ACC_REPEAT = 13, ACC_HEAL_SELF = 50,
        ACC_CHARGE_ULTI = 56, ACC_HEAL_TAKEN = 58 };   /* the `mov w8, #N` per Type string in 0xb2731c (spin_shoot 3, ...) */   /* accessory +0x24 type enum (0xb2731c's Type parser; 0 = empty Type) */
@@ -113,14 +114,17 @@ struct Gad {
     int area_id, area_at;                                  /* area: char id, tick to spawn at (0 = none pending) */
     void *area_data; int area_x, area_y, area_here;        /* the area to spawn (NULL = the accessory's AreaEffect) and where
                                                             * (area_here 1 = at the brawler when it spawns, 0 = area_x / y) */
-    int spin_id, spin_next, spin_end, spin_ang;            /* spin_shoot: char id, next volley tick, end tick, volley angle */
+    int rep_id, rep_n, rep_i, rep_next, rep_gap, rep_dmg, rep_rng, rep_cnt, rep_tgt[REP_MAX];   /* REPEAT / SPIN: char id,
+                                                            * shots, next shot, its tick, ticks between, damage, range,
+                                                            * projectiles per shot, target char per shot (0 = by angle) */
+    double rep_ang, rep_spread;                            /* first shot's angle, a shot's spread */
     int burst_id, burst_left, burst_next, burst_gap, burst_deg;   /* SHOT waves after the first (g_waves): char id, volleys
                                                                    * still to fire, next tick, ticks between, angle */
     double dist;                                           /* the fire's super_dist (0, 1] (0 = full range): thrown shots
                                                             * and AimableArea areas land this share of CastingRange out */
     int hp_prev, hp_lost[100];                        /* damage taken per tick (ring by tick % 100), for HEAL_TAKEN */
 };
-static Gad g_gad[NBE_MAXP];
+static Gad g_gad[NBE_MAXP]; static int g_rep_log;
 static long g_fired[8], g_areas, g_areas_lost;
 
 /* ---- DASH */
@@ -347,47 +351,104 @@ static int auto_aim_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
     return shoot(sim, ch, custom_proj(g->ad), a, range, auto_aim_dmg(ch, g->ad));
 }
 
-#if 0   /* issue #54: REPEAT and SPIN are off (kind NONE): N copies of the main attack at full damage and range */
-/* ---- REPEAT: repeat_shot, CustomObject = the projectile, CustomValue1 of them over CustomValue2 degrees (Leaper 5 / 25,
- * Bea 4 / 75, Gene 5 / 80: read as count / spread; a negative spread is taken as its size) at the brawler's main attack
- * range, each with the main attack's damage (the projectile rows have no Damage of their own). The real game's timing
- * (CustomValue3, ActiveTicks) and homing are the projectile's own or not applied. */
-static int repeat_classify(void *ad, int type) { return type == ACC_REPEAT && custom_proj(ad) && ad_get(ad, AD_CV1) > 0; }
+/* ---- REPEAT / SPIN (issue #54 redo, from the game data): repeat_shot and spin_shoot rows with a CustomObject projectile.
+ * The numbers are those the game's own card text shows: libg's value-code formatter (0x90d548, jump table 0x1fc2e0, index
+ * code - 1) reads code 19 ("Bea unleashes <VALUE1> bees") as ActiveTicks / CustomValue1, codes 50 / 51 / 54 as WeaponSkill
+ * Damage x CustomValue1 / 2 / 3 %, code 59 as Hitpoints x CustomValue2 %, code 3 as |CustomValue3|. So a row fires
+ * ActiveTicks / CustomValue1 shots, one every CustomValue1 ticks (Piper 5 / 5 = the one Auto Aimer shot, Bea 16 / 4 = 4 bees).
+ * [?] the rest is this reading of the rows (the activation is compiled out of the client):
+ *   SPIN (Dynamike, Darryl, Fang's popcorn): each shot turns CustomValue2 degrees from the aim (Darryl 15 x 25, Fang 7 x 50:
+ *     one turn), flies CustomValue4 units, damage Damage x CustomValue3 % (Dynamike's text: scaleaccessoryvalue3; code 54).
+ *   REPEAT by SubType, damage Damage x CustomValue2 % (codes 51 / 68; Mico's text: scaleaccessoryvalue2):
+ *     1 (Gene; Barley with TargetFriends): one shot at each target within Range tiles (enemies, or allies and the brawler
+ *       himself), nearest first; Gene's RequireEnemyInRange refuses with none. Barley's potion carries Hitpoints x
+ *       |CustomValue2| % (code 59, "heals <VALUE1> health per second") for the BarkeepHealingArea its skin spawns.
+ *     2 (Bea): the bees leave along the aim, turned 360 / n degrees each, to the main attack's range.
+ *     4 (Amber): |CustomValue3| flames at once, evenly around her (code 3, "creates <VALUE3> orbiting flames").
+ *     5 (Mico): |CustomValue3| projectiles over CustomValue4 degrees at the nearest enemy within Range; none: refused.
+ *   The projectile's own data (homing, circling, DamagePercentStart / End, delays, areas) is libg's. */
 static int attack_range(uint8_t *ch) { void *sd = SKILL_ATTACK_SD(ch); int cr = sd ? sd_get(sd, SD_RANGE) : 0; return cr > 0 ? cr * 100 : 1000; }
-static int attack_dmg(uint8_t *ch) { void *sd = SKILL_ATTACK_SD(ch); return sd ? dmg_scaled(ch, sd_get(sd, SD_DAMAGE)) : 0; }
-static int repeat_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
-    (void)tick;
-    if (I32(ch, 0x3c4) <= 0) return 0;
-    int n = ad_get(g->ad, AD_CV1), sp = abs(ad_get(g->ad, AD_CV2));
-    n = n > 16 ? 16 : n;
-    return volley(sim, ch, custom_proj(g->ad), deg, n, sp > 360 ? 360 : sp, attack_range(ch), attack_dmg(ch)) > 0;
+static int attack_dmg_pct(uint8_t *ch, int pct) {
+    void *sd = SKILL_ATTACK_SD(ch); return sd ? dmg_scaled(ch, (int)((int64_t)sd_get(sd, SD_DAMAGE) * abs(pct) / 100)) : 0;
 }
-
-/* ---- SPIN: spin_shoot (Dynamike, Darryl, Mandy... rows with a CustomObject projectile): for ActiveTicks ticks, every
- * CustomValue3 ms a volley of CustomValue1 projectiles evenly around the brawler, turning CustomValue2 degrees per
- * volley, to CustomValue4 units, with the main attack's damage. (Read from the rows: Tnt 2 / 100 / 150 / 700 over 40
- * ticks, Darryl 1 / 25 / 125 / 2500 over 15; the meaning of each value is this reading, not the game's code.) */
-static int spin_classify(void *ad, int type) {
-    return type == ACC_SPIN && custom_proj(ad) && ad_get(ad, AD_CV1) > 0 && ad_get(ad, AD_ACTIVE_TICKS) > 0;
+/* TargetFriends has no getter of its own in this build: libg's bool column read 0xcf6a08(row, column index), as the getters
+ * do (e.g. RequireEnemyInRange 0xa93358), with the index the column-index init stores at 0x123f000 + 2036 ("TargetFriends") */
+static int ad_target_friends(void *ad) { return ((int (*)(void *, int))B(0xcf6a08))(PTR(ad, 8), I32(B(0x123f000), 2036)) & 1; }
+static int rep_classify(void *ad, int type) {
+    return (type == ACC_REPEAT || type == ACC_SPIN) && g_cls_card != CARD_AUTO_AIMER && custom_proj(ad) && ad_get(ad, AD_CV1) > 0
+        && ad_get(ad, AD_ACTIVE_TICKS) > 0;
 }
-static void spin_volley(void *sim, Gad *g, uint8_t *ch) {
-    int n = ad_get(g->ad, AD_CV1), range = ad_get(g->ad, AD_CV4); n = n > 16 ? 16 : n;
-    for (int i = 0; i < n; i++) shoot(sim, ch, custom_proj(g->ad), g->spin_ang + 360.0 * i / n, range > 0 ? range : attack_range(ch), attack_dmg(ch));
-    g->spin_ang += ad_get(g->ad, AD_CV2);
-    int ms = ad_get(g->ad, AD_CV3); g->spin_next += ms > 50 ? ms / 50 : 1;
+/* up to `max` brawlers within `range` of ch, nearest first: enemies (friends 0) or allies and ch itself (friends 1) */
+static int targets(void *sim, uint8_t *ch, int range, int friends, int *ids, int max) {
+    int team = I32(ch, 0x84), X = I32(ch, 0x38), Y = I32(ch, 0x3c), np = I32(sim, 0x7c), n = 0; int64_t d2s[REP_MAX];
+    for (int i = 0; i < np && i < 64; i++) {
+        uint8_t *c = char_of(sim, i);
+        if (!c || I32(c, 0x3c4) <= 0 || !PTR(c, 0x20) || (I32(c, 0x84) == team) != friends || (!friends && c == ch)) continue;
+        int64_t dx = I32(c, 0x38) - X, dy = I32(c, 0x3c) - Y, d2 = dx * dx + dy * dy;
+        if (d2 > (int64_t)range * range) continue;
+        int k = n < max ? n++ : max - 1; if (k == max - 1 && n == max && d2 >= d2s[k]) continue;
+        while (k > 0 && d2s[k - 1] > d2) { d2s[k] = d2s[k - 1]; ids[k] = ids[k - 1]; k--; }
+        d2s[k] = d2; ids[k] = I32(c, 8);
+    }
+    return n;
 }
-static int spin_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
-    if (I32(ch, 0x3c4) <= 0 || g->spin_end) return 0;
-    g->spin_id = I32(ch, 8); g->spin_ang = (int)deg; g->spin_next = tick; g->spin_end = tick + ad_get(g->ad, AD_ACTIVE_TICKS);
-    spin_volley(sim, g, ch);
+static void rep_shot(void *sim, Gad *g, uint8_t *ch) {   /* shot number g->rep_i */
+    void *pd = custom_proj(g->ad); int i = g->rep_i, sub = ad_get(g->ad, AD_SUBTYPE);
+    double deg = g->rep_ang; int range = g->rep_rng;
+    if (g->rep_tgt[i]) {   /* at a target's position now */
+        uint8_t *t = env_obj_by_id(sim, g->rep_tgt[i]);
+        if (t && I32(t, 0x3c4) > 0) {
+            double dx = I32(t, 0x38) - I32(ch, 0x38), dy = I32(t, 0x3c) - I32(ch, 0x3c);
+            deg = atan2(dy, dx) * 180 / M_PI; range = (int)fmax(AIM_MIN, sqrt(dx * dx + dy * dy));
+            if (!U8(pd, PD_INDIRECT) && g->type == ACC_REPEAT && sub != 1) range = g->rep_rng;
+        } else if (t == ch || g->rep_tgt[i] == I32(ch, 8)) range = AIM_MIN;
+        else { g->rep_i++; return; }   /* the target died or left: no shot */
+    }
+    if (g->type == ACC_SPIN) deg += (double)ad_get(g->ad, AD_CV2) * i;
+    else if (sub == 2) deg += 360.0 * i / g->rep_n;
+    if (g->rep_cnt > 1 && g->rep_spread >= 360) for (int k = 0; k < g->rep_cnt; k++) shoot(sim, ch, pd, deg + 360.0 * k / g->rep_cnt, range, g->rep_dmg);
+    else volley(sim, ch, pd, deg, g->rep_cnt, g->rep_spread, range, g->rep_dmg);
+    g->rep_i++;
+}
+static int rep_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+    if (I32(ch, 0x3c4) <= 0 || g->rep_n) return 0;
+    void *ad = g->ad; int sub = ad_get(ad, AD_SUBTYPE), cv1 = ad_get(ad, AD_CV1), act = ad_get(ad, AD_ACTIVE_TICKS);
+    int n = act / cv1, cv3 = abs(ad_get(ad, AD_CV3)); n = n < 1 ? 1 : n > REP_MAX ? REP_MAX : n;
+    int rng = ad_get(ad, AD_RANGE) * AD_RANGE_U;
+    memset(g->rep_tgt, 0, sizeof g->rep_tgt); g->rep_cnt = 1; g->rep_spread = 0; g->rep_ang = deg; g->rep_rng = attack_range(ch);
+    if (g->type == ACC_SPIN) {
+        int r4 = ad_get(ad, AD_CV4); if (r4 > 0) g->rep_rng = r4;
+        g->rep_dmg = attack_dmg_pct(ch, ad_get(ad, AD_CV3));
+    } else {
+        g->rep_dmg = attack_dmg_pct(ch, ad_get(ad, AD_CV2));
+        if (sub == 1) {
+            int fr = ad_target_friends(ad);
+            n = targets(sim, ch, rng > 0 ? rng : g->rep_rng, fr, g->rep_tgt, n < REP_MAX ? n : REP_MAX);
+            if (fr) {   /* the potion: its heal for the healing area (Hitpoints x |CustomValue2| %, code 59) */
+                void *cd = ((void *(*)(void *))B(0xb6a384))(ch);
+                g->rep_dmg = cd ? (int)((int64_t)((int (*)(void *))B(0xab31e8))(cd) * abs(ad_get(ad, AD_CV2)) / 100) : 0;
+            }
+            if (!n) return 0;   /* Gene: RequireEnemyInRange */
+        } else if (sub == 4) { g->rep_cnt = cv3 > 0 ? (cv3 > 16 ? 16 : cv3) : 1; g->rep_spread = 360; n = 1; }
+        else if (sub == 5) {
+            int id; if (!targets(sim, ch, rng, 0, &id, 1)) return 0;   /* RequireEnemyInRange */
+            uint8_t *t = env_obj_by_id(sim, id);
+            g->rep_ang = atan2(I32(t, 0x3c) - I32(ch, 0x3c), I32(t, 0x38) - I32(ch, 0x38)) * 180 / M_PI;
+            g->rep_rng = rng; g->rep_cnt = cv3 > 0 ? (cv3 > 16 ? 16 : cv3) : 1; g->rep_spread = abs(ad_get(ad, AD_CV4));
+        }
+    }
+    g->rep_id = I32(ch, 8); g->rep_n = n; g->rep_i = 0; g->rep_gap = cv1; g->rep_next = tick + cv1;
+    if (g_rep_log++ < 6) LOG("[gadget] repeat card %d type %d sub %d: %d shots every %d ticks, x%d, dmg %d, range %d\n",
+                             g->card, g->type, sub, n, cv1, g->rep_cnt, g->rep_dmg, g->rep_rng);
+    rep_shot(sim, g, ch);
+    if (g->rep_i >= g->rep_n) g->rep_n = 0;
     return 1;
 }
-static void spin_tick(void *sim, Gad *g, int tick) {
-    uint8_t *ch = env_obj_by_id(sim, g->spin_id);
-    if (!ch || I32(ch, 0x3c4) <= 0 || tick >= g->spin_end) { g->spin_end = 0; return; }
-    while (g->spin_end && tick >= g->spin_next && g->spin_next < g->spin_end) spin_volley(sim, g, ch);
+static void rep_tick(void *sim, Gad *g, int tick) {
+    uint8_t *ch = env_obj_by_id(sim, g->rep_id);
+    if (!ch || I32(ch, 0x3c4) <= 0) { g->rep_n = 0; return; }
+    while (g->rep_n && tick >= g->rep_next) { rep_shot(sim, g, ch); g->rep_next += g->rep_gap; if (g->rep_i >= g->rep_n) g->rep_n = 0; }
 }
-#endif
 
 /* ---- ITEM: spawn rows whose CustomObject is an items.csv row (Belle's ElectroTrap, Gale's WindWall): the item at the
  * brawler, through the item factory 0xb55684 as the shipped character-owned item at 0xb583cc calls it (1 item, at most
@@ -397,6 +458,14 @@ static void spin_tick(void *sim, Gad *g, int tick) {
  * CustomValue1 (Gale): 0. Spawns of characters (turrets, clones) and areas
  * (meteor, air strike) need summon / targeting code the host does not have: not usable. */
 static long g_items;
+/* Gale's Twister (Blower_Stopper): the WindWall item spawns, and env repels enemies around it (env_repel_zone), for the item's
+ * Lifetime (items.csv WindWall 100 ticks). [?] reach and strength are not in the data: items.csv Value 600 is read as the push
+ * distance (the knockback moves 6 x strength u: strength 100), the reach as one tile around the item */
+#define ITEM_WINDWALL 36       /* ItemData +0x54: the WindWall type the client's draw code tests (0x5371fc) */
+#define WINDWALL_TICKS 100
+#define WINDWALL_PUSH 100
+#define WINDWALL_R 300
+void env_repel_zone(void *sim, uint8_t *ch, int x, int y, int r, int ticks, int push);   /* env.c */
 static int item_classify(void *ad, int type) { return type == ACC_SPAWN && custom_item(ad); }
 static int item_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
     (void)deg; (void)tick;
@@ -406,6 +475,7 @@ static int item_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
     void *it = ((void *(*)(void *, int, int, int, int, int, int, int, int, int, void *, void *, void *, int))B(0xb55684))(
         custom_item(g->ad), I32(ch, 0x38), I32(ch, 0x3c), 1, 1, dmg, dmg, I32(ch, 0x80), I32(ch, 0x84), 0, ch, ch, sim, 6);
     if (it) g_items++;
+    if (it && I32(custom_item(g->ad), 0x54) == ITEM_WINDWALL) env_repel_zone(sim, ch, I32(ch, 0x38), I32(ch, 0x3c), WINDWALL_R, WINDWALL_TICKS, WINDWALL_PUSH);
     return it != NULL;
 }
 
@@ -452,10 +522,7 @@ static const GadImpl g_impl[] = {
     {NBE_GAD_PROJECTILE, shot_classify, shot_fire},
     {NBE_GAD_SPAWN, skill_area_classify, skill_area_fire},
     {NBE_GAD_PROJECTILE, auto_aim_classify, auto_aim_fire},
-#if 0   /* issue #54: off until redone from the game data (see the REPEAT / SPIN code above) */
-    {NBE_GAD_PROJECTILE, repeat_classify, repeat_fire},
-    {NBE_GAD_PROJECTILE, spin_classify, spin_fire},
-#endif
+    {NBE_GAD_PROJECTILE, rep_classify, rep_fire},
     {NBE_GAD_SPAWN, item_classify, item_fire},
     {NBE_GAD_SUPER, super_classify, super_fire},
     {NBE_GAD_HEAL, heal_now_classify, heal_now_fire},
@@ -468,16 +535,15 @@ static const int g_masked[] = {
     23000263,   /* BowDude_Totem: the projectile flies, the totem summon never spawns */
     23000311,   /* Speedy_Rewind: its projectile is a marker; the rewind (teleport back) is not implemented */
     23000351,   /* HammerDude_Pull: no pull, no damage on the target */
-    23000352,   /* HookDude_Homing: 5 projectiles, none hit (no homing here) */
     23000399,   /* AssaultShotgun_Bomb: no explosion, no damage */
     23000408,   /* Ninja_InvisibleArea: the invisibility area summon never spawns */
     23001247,   /* Gladiator_Amp: the healing item never spawns */
     23001255,   /* MagicalGirl_FlyArea: the area summon never spawns */
-    /* issue #55: the game's description disagrees with what the kind does (python -m desc_audit) */
-    23000293,   /* Barkeep_HealPotion: a heal for allies; REPEAT fires it as main-attack damage at the policy's aim */
-    23000407,   /* Blower_Stopper: the WindWall item spawns but pushes nobody: this libg has no WindWall rule (ItemData +0x54 = 36
-                 * is tested only by client draw code at 0x5371fc; the item tick 0xb6b8e0 never knocks back), and the push's
-                 * reach and strength are not in the data (items.csv Value 600 only) */
+    /* REPEAT rows that fire but showed no hit live (super_audit --gadget, both attempts): */
+    23000260,   /* BarrelBot_Spin: the shot aimed straight at the target 300 / 875 u away passes it, no damage */
+    23000440,   /* KickerDude_Mines: every kernel lands at CustomValue4 (1500 u); the game scatters them, the spread is not in the data */
+    23000312,   /* BeeSniper_ExtraBee: the circling bees never reach the target 450 u away; the curve is not checked */
+    23000488,   /* FireDude_FlameShield: the orbiting flames never reach the target 450 u away; the orbit is not checked */
 };
 static int masked(int card) { for (unsigned k = 0; k < sizeof g_masked / sizeof *g_masked; k++) if (g_masked[k] == card) return 1; return 0; }
 
@@ -520,9 +586,7 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
     for (int i = 0; i < NBE_MAXP; i++) {
         if (g_gad[i].hot_end) heal_tick(sim, &g_gad[i], tick);
         if (g_gad[i].area_at && tick >= g_gad[i].area_at) area_spawn(sim, &g_gad[i]);
-#if 0   /* issue #54: SPIN is off */
-        if (g_gad[i].spin_end) spin_tick(sim, &g_gad[i], tick);
-#endif
+        if (g_gad[i].rep_n) rep_tick(sim, &g_gad[i], tick);
         if (g_gad[i].burst_left) burst_tick(sim, &g_gad[i], tick);
         if (g_gad[i].im && g_gad[i].type == ACC_HEAL_TAKEN) taken_tick(sim, &g_gad[i], tick);
     }

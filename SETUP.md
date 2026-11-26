@@ -53,8 +53,8 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   `0xb35c40` after the row's ActivationDelay. `python -m super_audit --gadget` checks their effects.
 - `gadgets_batch2.patch` (issue #3, a diff on top of `area_gadgets.patch`): more kinds in `gadget.c`. The gadget's own
   skill fired as its projectile(s) through libg's projectile spawn `0xb78190` (SHOT, published PROJECTILE) or as its area
-  (Bull's Stomp, 8-Bit's Extra Credits); repeat_shot / spin_shoot volleys of the row's CustomObject projectile (off since
-  `repeat_spin_off.patch`); items
+  (Bull's Stomp, 8-Bit's Extra Credits); repeat_shot / spin_shoot volleys of the row's CustomObject projectile (off in
+  `repeat_spin_off.patch`, rebuilt from the game data in `repeat_spin_rebuild.patch`); items
   through the item factory `0xb55684` (Bolt, Gale); R-T's super charge (new `NBE_GAD_SUPER`, mirrored in `nbpc/proto.py`);
   instant heals through libg's heal `0xb41554` (Kit, Kenji). Eight rows that classify but showed no effect live are masked
   (`gadget.c` `g_masked`). `python -m super_audit --gadget [--gadget-slot 1]` and `python -m gadget_check` check them.
@@ -184,6 +184,15 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   Griff's coin shower); a SKILL AREA with AreaEffectFollowType 1 stays at the brawler (8-Bit's Extra Credits); ITEM gives
   the item the main attack's Damage x CustomValue1 % (Belle's trap); Gale's tornado joins `g_masked` (this libg has no
   WindWall push). `python -m super_audit --gadget`.
+- `repeat_spin_rebuild.patch` (issue #54 redo, a diff on top of `gadget_damage.patch`): `gadget.c`'s REPEAT kind (published
+  PROJECTILE) rebuilt from the game data for the repeat_shot / spin_shoot rows with a CustomObject projectile (Piper's
+  stays AUTO AIMER): ActiveTicks / CustomValue1 shots, one every CustomValue1 ticks; spin turns CustomValue2 degrees a shot,
+  range CustomValue4, main attack Damage x CustomValue3 %; repeat main attack Damage x CustomValue2 %, by SubType (1: one
+  shot per target within Range, Barley's potion at allies with a Hitpoints x |CustomValue2| % heal; 2: Bea's bees turned
+  360 / n; 4: Amber's |CustomValue3| flames around her; 5: Mico's |CustomValue3| at the nearest enemy in Range). Barley's
+  potion and Gene's homing hand leave `g_masked`; so does Gale's tornado (the WindWall item plus `env.c`'s repel zone,
+  `env_repel_zone`). Darryl's spin, Fang's popcorn, Bea's bees and Amber's flames run the same code but stay in
+  `g_masked`: `super_audit --gadget` saw their shots fly and never hit the target. `python -m desc_audit`, `python -m super_audit --gadget`.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

@@ -12,15 +12,18 @@ CustomObject projectile / area / item rows it uses.
     effect  the text names an effect (heal, shield, speed, stun, slow, push, invisible; EFFECT_WORDS) that the host's effect
             set for the kind lacks, or says it deals damage while the host only heals. The host's set comes from the kind
             plus the data it spawns: area -> its area_effects_logic Type / Damage / PushbackStrength / StunTicks; shot,
-            auto_aim -> damage plus the projectile's PushbackStrength / StunLengthMS / HealOwnPercent / ConsumableShield;
-            heal_now -> heal; super -> super charge. (repeat / spin: the host hands them the main attack's damage; both
-            are off since issue #54, gadget_kind None, but the rules are kept for when they return.)
+            auto_aim, repeat -> damage plus the projectile's PushbackStrength / StunLengthMS / HealOwnPercent / ConsumableShield
+            (repeat with TargetFriends, Barley's potion: heal in place of damage); heal_now -> heal; super -> super charge;
+            item -> the item (Gale's WindWall also push: gadget.c's repel zone, REPEL).
             Status effects and items run the game's own data ("status" / "item" cover any text effect: not compared).
     aim     the text says closest / nearest / automatic target (AIM_WORDS) and the kind fires along the policy's aim
-            (shot, repeat, spin, and skill_area with an AimableArea skill). Only auto_aim picks the closest enemy.
-    range   the accessory has RequireEnemyInRange or a Range, which no kind but auto_aim reads
+            (shot, repeat, and skill_area with an AimableArea skill). auto_aim and the repeat_shot rows with SubType 1 (one shot
+            per target in Range) or 5 (Mico: at the nearest enemy in Range) pick the target themselves (REP_TARGETED).
+    range   the accessory has RequireEnemyInRange or a Range, which only auto_aim and the REP_TARGETED repeat rows read
     count   the text describes one shot (ONE_WORDS) and the kind fires several, or the text says several (MULTI_WORDS) and
-            the kind fires one. Counts: shot NumBulletsInOneAttack, auto_aim 1, repeat CustomValue1, spin CustomValue1 per volley.
+            the kind fires one. Counts: shot NumBulletsInOneAttack, auto_aim 1, repeat ActiveTicks // CustomValue1 shots (1..20)
+            x |CustomValue3| projectiles each for SubType 4 / 5; a SubType 1 row fires one shot per target (any number), so
+            its text's "a shot" / "shots" is not compared.
     split   the text says it splits / breaks into several (SPLIT_TXT) and the projectile row has no ChainBullet(s) / ChainsToEnemies /
             spawned character or item (a chained projectile's areas count too)
     homing  the text says homes / follows / seeks / tracks (HOMING_TXT) and the projectile is not IsHomingMissile /
@@ -57,9 +60,10 @@ SPLIT_TXT = r"\bsplits?\b|\bbounces? into|breaks? (?:up )?into|fragments?"   # t
 HOMING_TXT = r"\bhom(?:es?|ing)\b|\bfollows?\b|\bseeks?\b|\btracks?\b|\bchases?\b"   # "follows the closest target", "homing missile"; host data: IsHomingMissile / spawned seeker pets
 SPEED_TXT = r"\bfaster\b|speed boost|(?:increased|more|extra|higher) (?:movement |projectile )?speed|\bspeeds? up\b|\bhaste"   # needs speed data: a status effect (the game's own) or a projectile Speed override
 TERRAIN_TXT = r"destroy\w*\s+(?:the\s+|all\s+)?(?:walls?|terrain|environment|obstacles?)|break\w*\s+(?:through\s+)?(?:walls?|terrain|obstacles?|environments?)|through (?:walls|obstacles)|over walls"   # wall-breaking / wall-passing; host data: DestroysEnvironment / PiercesEnvironment / IgnoreCloseWalls
-HARM_KINDS = ("repeat", "spin")                  # fire the CustomObject at the main attack's damage (gadget.c attack_dmg)
 WILD = {"status", "item"}                        # host data whose effects the game runs: any text effect passes
-AIM_KINDS = ("shot", "repeat", "spin")           # fire along the policy's aim (gadget.c shot_fire / repeat_fire / spin_fire)
+AIM_KINDS = ("shot", "repeat")                   # fire along the policy's aim (gadget.c shot_fire / rep_fire), but REP_TARGETED
+REP_TARGETED = ("1", "5")                        # repeat_shot SubTypes that aim at targets within Range themselves (gadget.c rep_fire)
+REPEL = {"Blower_Stopper"}                       # item gadgets with gadget.c's repel zone around the item (env_repel_zone): push
 FLAGS = ("effect", "aim", "range", "count", "split", "homing", "speed", "terrain")
 
 
@@ -76,12 +80,15 @@ def text_effects(text):
 
 
 WAVES = {"Gunslinger_Reload": 2}   # gadget.c g_waves: SHOT gadgets that fire more than one wave (issue #55)
+_true = lambda a, k: ((a or {}).get(k) or "").lower() == "true"
+_rep_targeted = lambda a: (a or {}).get("Type") == "repeat_shot" and (a or {}).get("SubType") in REP_TARGETED
 
 
 def host_effects(kind, area=None, projs=(), skill=None, acc=None):
     """the effect categories the host's kind produces, from the data rows it spawns (dicts of CSV columns)"""
     ex = set()
-    if kind in ("shot", "auto_aim", "repeat", "spin"): ex.add("damage")
+    if kind in ("shot", "auto_aim") or kind == "repeat" and not _true(acc, "TargetFriends"): ex.add("damage")
+    if kind == "repeat" and _true(acc, "TargetFriends"): ex.add("heal")   # gadget.c rep_fire: Hitpoints x |CustomValue2| % to the potion's area
     if kind == "skill_area" or kind == "area":
         al = area or {}; ty = al.get("Type") or ""
         if _num(al.get("Damage")) > 0 and ty == "Damage": ex.add("damage")
@@ -101,19 +108,20 @@ def host_effects(kind, area=None, projs=(), skill=None, acc=None):
     if skill and _num(skill.get("ConsumableShieldValue")) > 0: ex.add("shield")
     if kind == "area" and _num((acc or {}).get("ShieldPercent")) > 0 and _num((acc or {}).get("ShieldTicks")) > 0: ex.add("shield")   # gadget.c area_fire
     if kind == "item": ex.add("item")
+    if kind == "item" and (acc or {}).get("Name") in REPEL: ex.add("push")
     if kind == "heal_now": ex.add("heal")
     if kind == "super": ex.add("super")
     return ex
 
 
 def host_count(kind, acc=None, skill=None):
-    """shots fired per use (None: not a shot kind)"""
+    """shots fired per use (None: not a shot kind; a SubType 1 repeat row: at most this many, one per target)"""
     if kind == "shot": return max(1, min(16, int(_num((skill or {}).get("NumBulletsInOneAttack")) or 1))) * WAVES.get((acc or {}).get("Name"), 1)
     if kind == "auto_aim": return 1   # gadget.c auto_aim_fire: one shot at the nearest enemy (issue #54)
-    if kind == "repeat": return max(0, min(16, int(_num((acc or {}).get("CustomValue1")))))
-    if kind == "spin":   # CustomValue1 shots per volley, a volley every CustomValue3 ms (>= 1 tick) for ActiveTicks (gadget.c spin_volley)
-        a = acc or {}; every = max(1, _num(a.get("CustomValue3")) // 50)
-        return max(0, min(16, int(_num(a.get("CustomValue1")) * max(1, -(-_num(a.get("ActiveTicks")) // every)))))
+    if kind == "repeat":   # gadget.c rep_fire: ActiveTicks // CustomValue1 shots (1..REP_MAX 20), SubType 4 / 5 x |CustomValue3| (<= 16)
+        a = acc or {}; cv1 = _num(a.get("CustomValue1")); n = max(1, min(20, int(_num(a.get("ActiveTicks")) // cv1))) if cv1 > 0 else 1
+        if a.get("Type") == "repeat_shot" and a.get("SubType") in ("4", "5"): n *= max(1, min(16, int(abs(_num(a.get("CustomValue3"))))))
+        return n
     return None
 
 
@@ -123,7 +131,7 @@ def host_traits(kind, area=None, projs=(), skill=None, acc=None):
     tr = set(); t = lambda d, k: (d.get(k) or "").lower() == "true"
     for p in projs:
         if p.get("ChainBullet") or _num(p.get("ChainBullets")) > 0 or t(p, "ChainsToEnemies") or p.get("SpawnCharacter") or p.get("SpawnItem"): tr.add("split")
-        if t(p, "IsHomingMissile") or t(p, "IsFriendlyHomingMissile") or p.get("SpawnCharacter"): tr.add("homing")
+        if t(p, "IsHomingMissile") or t(p, "IsFriendlyHomingMissile") or p.get("SpawnCharacter") or _num(p.get("SteerStrength")) > 0: tr.add("homing")   # SteerStrength: Gene's homing hand
         if t(p, "PiercesEnvironment") or t(p, "PiercesEnvironmentLikeButter") or t(p, "PassesEnvironment") or t(p, "IgnoreCloseWalls"): tr.add("terrain")
         if any(p.get(k) for k in ("StatusEffectEnemy", "StatusEffectAlly", "StatusEffectSelfOnHit")): tr.add("speed")
     if (acc or {}).get("StatusEffectSelf") or (acc or {}).get("StatusEffectEnemy"): tr.add("speed")   # the accessory's own status effect (TntDude_Spin)
@@ -152,13 +160,12 @@ def flags_for(kind, text, acc=None, skill=None, hfx=None, aimable=False, traits=
     traits: host_traits() (None skips the behaviour flags)"""
     fl = []; te = text_effects(text); hfx = hfx or set(); low = (text or "").lower()
     miss = {e for e in te if e != "damage" and e not in hfx} if not (hfx & WILD) else set()
-    harm = "heal" in te and "damage" not in te and kind in HARM_KINDS   # a heal the host fires as main-attack damage (Barley)
-    if harm or miss or ("damage" in te and "damage" not in hfx and "status" not in hfx and hfx and "heal" in hfx): fl.append("effect")
-    if re.search(AIM_WORDS, low) and (kind in AIM_KINDS or (kind == "skill_area" and aimable)): fl.append("aim")
-    a = acc or {}
-    if kind != "auto_aim" and ((a.get("RequireEnemyInRange") or "").lower() == "true" or _num(a.get("Range")) > 0): fl.append("range")   # auto_aim reads both
+    if miss or ("damage" in te and "damage" not in hfx and "status" not in hfx and hfx and "heal" in hfx): fl.append("effect")
+    a = acc or {}; targeted = kind == "auto_aim" or kind == "repeat" and _rep_targeted(a)   # these read Range / RequireEnemyInRange
+    if re.search(AIM_WORDS, low) and not targeted and (kind in AIM_KINDS or (kind == "skill_area" and aimable)): fl.append("aim")
+    if not targeted and (_true(a, "RequireEnemyInRange") or _num(a.get("Range")) > 0): fl.append("range")
     n = host_count(kind, a, skill); low = re.sub(SPLIT_WORDS, "", low)
-    if n is not None:
+    if n is not None and not (kind == "repeat" and a.get("Type") == "repeat_shot" and a.get("SubType") == "1"):   # one per target
         if re.search(ONE_WORDS, low) and n > 1 or re.search(MULTI_WORDS, low) and n == 1: fl.append("count")
     if traits is not None: fl += behaviour_flags(text, traits)
     return fl
@@ -262,13 +269,20 @@ def _check():
     assert "range" in ok("shot", "x", acc={"RequireEnemyInRange": "true"}, hfx=set())
     assert "range" not in ok("shot", "x", acc={}, hfx=set())
     # count
-    assert "count" in ok("repeat", "Pops a defensive shot", acc={"CustomValue1": "5"}, hfx={"damage"})
+    assert "count" in ok("repeat", "Pops a defensive shot", acc={"CustomValue1": "5", "ActiveTicks": "20"}, hfx={"damage"})   # 4 shots
+    assert "count" not in ok("repeat", "Fires a homing missile at all enemies", acc={"Type": "repeat_shot", "SubType": "1", "CustomValue1": "5", "ActiveTicks": "100"}, hfx={"damage"})
+    assert host_count("repeat", {"Type": "repeat_shot", "SubType": "4", "CustomValue1": "1", "ActiveTicks": "1", "CustomValue3": "3"}) == 3
+    assert host_count("repeat", {"CustomValue1": "4", "ActiveTicks": "16"}) == 4 and host_count("repeat", {"CustomValue1": "1", "ActiveTicks": "99"}) == 20
     assert "count" in ok("shot", "Fires shots in a row", skill={"NumBulletsInOneAttack": "1"}, hfx={"damage"})
     assert "count" not in ok("shot", "Fires a shot", skill={"NumBulletsInOneAttack": "1"}, hfx={"damage"})
     assert "count" not in ok("shot", "Fires a big bullet that splits into <VALUE1> smaller bullets", skill={}, hfx={"damage"})
-    assert "count" not in ok("spin", "Sprays a barrage of shots", acc={"CustomValue1": "1", "CustomValue3": "125", "ActiveTicks": "15"}, hfx={"damage"})
-    # a heal the host fires as main-attack damage (repeat / spin), even when the projectile's own data heals
-    assert "effect" in ok("repeat", "Throws a healing potion at allies", acc={"CustomValue1": "5"}, hfx={"damage", "status"})
+    assert "count" not in ok("repeat", "Sprays a barrage of shots", acc={"Type": "spin_shoot", "CustomValue1": "1", "ActiveTicks": "15"}, hfx={"damage"})
+    # a TargetFriends repeat row heals (Barley's potion); any other repeat row deals damage
+    tf = {"Type": "repeat_shot", "SubType": "1", "TargetFriends": "true", "CustomValue1": "5", "ActiveTicks": "30", "Range": "10"}
+    assert host_effects("repeat", acc=tf) == {"heal"} and host_effects("repeat", acc={}) == {"damage"}
+    assert not ok("repeat", "Throws a healing potion at nearby allies", acc=tf, hfx=host_effects("repeat", acc=tf))
+    assert "effect" in ok("repeat", "Heals allies", acc={}, hfx=host_effects("repeat", acc={}))
+    assert "push" in host_effects("item", acc={"Name": "Blower_Stopper"}) and "push" not in host_effects("item", acc={"Name": "x"})
     assert "stun" in host_effects("area", {"Type": "Stun"})
     # behaviour flags
     bf = lambda text, *tr: behaviour_flags(text, set(tr))
@@ -278,7 +292,8 @@ def _check():
     assert bf("Destroys walls and deals damage") == ["terrain"] and not bf("Destroys walls", "terrain") and bf("Goes through walls") == ["terrain"]
     assert bf("Throws a bomb") == []
     assert host_traits("shot", projs=[{"ChainBullet": "X"}]) == {"split"} and "homing" in host_traits("shot", projs=[{"IsHomingMissile": "true"}])
-    assert "terrain" in host_traits("shot", projs=[{"PassesEnvironment": "true"}]) and "speed" in host_traits("spin", acc={"StatusEffectSelf": "Boost"})
+    assert "terrain" in host_traits("shot", projs=[{"PassesEnvironment": "true"}]) and "speed" in host_traits("repeat", acc={"StatusEffectSelf": "Boost"})
+    assert "homing" in host_traits("repeat", projs=[{"SteerStrength": "4"}])
     assert "split" in ok("shot", "Splits into bullets", hfx=set(), traits=set()) and "split" not in ok("shot", "Splits into bullets", hfx=set())
     try:
         rs = rows()
@@ -291,10 +306,17 @@ def _check():
     assert "closest enemy" in pi["text"] and pi["kind"] == "auto_aim" and not pi["flags"] and pi["host_count"] == 1, pi
     assert {"damage", "push"} <= set(pi["host_effects"]), pi["host_effects"]
     assert "aim" in ok("repeat", "Pops a shot at the closest enemy", hfx={"damage"}, acc={"Range": "7"}) and "range" in ok("repeat", "x", acc={"Range": "7"}, hfx=set())
+    for sub in ("1", "5"):   # these pick their targets within Range themselves
+        a5 = {"Type": "repeat_shot", "SubType": sub, "Range": "9", "RequireEnemyInRange": "true", "CustomValue1": "5", "ActiveTicks": "5"}
+        assert not {"aim", "range"} & set(ok("repeat", "Screams towards the nearest enemy", acc=a5, hfx={"damage"})), sub
     assert not ok("auto_aim", "Pops a defensive shot at the closest enemy", acc={"Range": "7", "RequireEnemyInRange": "true"}, hfx={"damage", "push"})
-    # Barley's healing potion and Hook's homing gadget: repeat_shot rows, off since issue #54 (kind None) and masked
-    for c in ("Barkeep_HealPotion", "HookDude_Homing"):
-        r = next(r for r in g if r["card"] == c); assert r["masked"] and r["kind"] is None and r not in flagged(), r["kind"]
+    # the repeat_shot / spin_shoot volleys (#54 redo) and Gale's WindWall: their texts match what the host does
+    for c in ("Barkeep_HealPotion", "HookDude_Homing", "TntDude_Spin", "Leaper_Shotgun", "Blower_Stopper"):
+        r = next(r for r in g if r["card"] == c); assert not r["masked"] and r["kind"] in ("repeat", "item") and not r["flags"], (c, r["flags"])
+    for c in ("BarrelBot_Spin", "BeeSniper_ExtraBee", "FireDude_FlameShield", "KickerDude_Mines"):   # masked: no hit seen live
+        assert next(r for r in g if r["card"] == c)["masked"], c
+    assert "heal" in next(r for r in g if r["card"] == "Barkeep_HealPotion")["host_effects"]
+    assert "push" in next(r for r in g if r["card"] == "Blower_Stopper")["host_effects"]
     for c in ("TrickshotDude_BounceHeal", "TntDude_Spin", "Mummy_Acid", "AssaultShotgun_Bomb"):   # real splitting / speed / wall data
         assert not {"split", "homing", "speed", "terrain"} & set(next(r for r in g if r["card"] == c)["flags"]), c
     for c in ("KickerDude_Sweep", "BarrelBot_Spin", "TrickshotDude_BounceHeal"):   # rules that once flagged them wrongly
