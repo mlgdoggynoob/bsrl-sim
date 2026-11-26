@@ -523,7 +523,7 @@ int superfix_status_charge_pct(uint8_t *ch) {
 }
 
 /* StatusEffect (type 36) areas, from superfix.c's area tick hook (0xb28c0c) */
-typedef struct { void *a, *d; int start, end, next; } AreaRec;
+typedef struct { void *a, *d; int start, end, next, n; } AreaRec;
 #define AR_MAX 128
 static AreaRec g_ar[AR_MAX]; static int g_nar;
 typedef void (*apply_t)(void *, void *, int, int, void *, void *, int, int, int, int, int);   /* 0xb35dd0 */
@@ -534,7 +534,7 @@ static AreaRec *area_rec(uint8_t *a, uint8_t *d, int t, int first) {   /* this a
         for (int i = g_nar - 1; i >= 0; i--) if (g_ar[i].end < t) g_ar[i] = g_ar[--g_nar];
         if (g_nar >= AR_MAX) { g_nar = 0; LOG("[superfix] status: area records full, reset\n"); }
         k = g_nar++;
-        g_ar[k] = (AreaRec){a, d, I32(a, 0xd0), I32(a, 0xd8), first};
+        g_ar[k] = (AreaRec){a, d, I32(a, 0xd0), I32(a, 0xd8), first, 0};
     }
     return &g_ar[k];
 }
@@ -697,7 +697,12 @@ void superfix_status_area(uint8_t *a) {
     int t = now_tick(a), interval = I32(d, 0xa0);
     AreaRec *ar = area_rec(a, d, t, U8(d, 0x17c) && interval > 0 ? t + interval : t);
     if (t < ar->next) return;
-    ar->next = interval > 0 ? t + interval : 0x7fffffff;
+    /* an area without TickInterval applies once; one that only a hypercharged super makes (hyper.c) gives its Self / Ally
+     * statuses every tick while it lives: Sandy's SandStormOverchargedUltiAreaSpeedBuff (9 s) carries a Refreshable 10-tick
+     * SpeedBoostAbsolute 200, "increased movement speed while inside of Sandstorm" */
+    extern int hyper_area_oc_only(uint8_t *) __attribute__((weak));
+    int rep = interval <= 0 && hyper_area_oc_only && hyper_area_oc_only(a), again = ar->n++ > 0;
+    ar->next = interval > 0 ? t + interval : rep ? t + 1 : 0x7fffffff;
     int n; void **v = objects(owner, &n); if (!v) return;
     int team = ((geti_t)B(0xb6a820))(a), player = ((geti_t)B(0xb6a754))(a), ax = I32(a, 0x38), ay = I32(a, 0x3c);
     int heroes = U8(d, 0x1b4), hits = 0;
@@ -709,7 +714,7 @@ void superfix_status_area(uint8_t *a) {
         long dx = I32(o, 0x38) - ax, dy = I32(o, 0x3c) - ay, r = ((int (*)(void *, void *))B(0xb2b298))(d, o);
         if (dx * dx + dy * dy > r * r) continue;
         void *st = o == owner ? self : ((geti_t)B(0xb6a820))(o) == team ? ally : enemy;
-        if (!st) continue;
+        if (!st || (rep && again && st == enemy)) continue;
         if (g_superfix_dbg) LOG("[superfix] st: area %d (owner ch %d) tick %d: %s %d -> ch %d at %ld u\n", data_id(d), I32(owner, 8), t,
                                 st == enemy ? "enemy" : o == owner ? "self" : "ally", data_id(st), I32(o, 8), (long)__builtin_sqrt((double)(dx * dx + dy * dy)));
         ((apply_t)B(0xb35dd0))(o, st, player, team, a, owner, I32(a, 0xf8), 0, -1, -1, 0);

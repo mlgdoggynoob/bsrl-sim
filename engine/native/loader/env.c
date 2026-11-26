@@ -194,6 +194,7 @@ static int bush_at(void *sim, int x, int y);   /* the live tile map has a bush a
 /* issue #19: status effects (superfix_status.c, mirrors its StMods) */
 typedef struct { int spd_bp, spd_ba, spd_rp, spd_ra, dmg_bp, dmg_rp, recv_bp, recv_ba; } StMods;
 int superfix_status_speed(uint8_t *ch, int base) __attribute__((weak));
+int hyper_shield_absorb(void *victim, int dmg) __attribute__((weak));   /* hyper.c: Poco's overheal shield */
 int superfix_status_mods(uint8_t *ch, StMods *m) __attribute__((weak));
 int superfix_status_hp_boost(uint8_t *ch) __attribute__((weak)); int hyper_stalk(uint8_t *ch, int idx);
 int superfix_status_blocked(uint8_t *ch) __attribute__((weak));
@@ -490,6 +491,8 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
             if (nd != dmg) { if (a3 == dmg) a3 = nd; dmg = nd; }
         }
     }
+    if (dmg > 0 && hyper_shield_absorb && victim && VTOF(victim) == VT_CHAR) {   /* hypercharge: Poco's overheal shield (hyper.c) */
+        int nd = hyper_shield_absorb(victim, dmg); if (nd != dmg) { if (a3 == dmg) a3 = nd; dmg = nd; } }
     int vchar = victim && VTOF(victim) == VT_CHAR, before = vchar ? I32(victim, 0x3c4) : 0;
     if (vchar && mode3 && just_popped(victim)) { E.charge_level = saved_level; return 0; }
     int ow = vchar && mode3 && resp_on() && E.sim ? brawler_owner(E.sim, victim) : -1;
@@ -927,6 +930,7 @@ static void charge_end_event(uint8_t *ch, uint8_t *a) {
     ((void (*)(void *, void *))B(0xb4fef0))(ch + 0x2b0, ch + 0x2a0);
     if (g_charge_end_events++ < 10) LOG("[env] charge-end event: character %d, end area %d\n", I32(ch, 8), I32(PTR(a, 0x10), 0x20));
 }
+int hyper_card_live(void *ch, int type, int idx);   /* hyper.c: Value<idx> of ch's hypercharge card of that type, -1 if none */
 static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge flag dropped: landing / end of the dash */
     if (j->area1 && j->type != 2 && j->type != 16 && j->type != 22) PTR(ch, 0x550) = j->old550;
     if (I32(ch, 0x3c4) <= 0) return;
@@ -936,6 +940,12 @@ static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge f
     if (j->area_end) { uint8_t *ea = charge_area(sim, ch, j->area_end, x, y);   /* AreaEffect2AtEndOfCharge: Bull's slow, Nori, Ollie, Damian */
         if (ea && I32(ch, 0x3c4) > 0) charge_end_event(ch, ea); }
     if (j->type == 16) charge_land(sim, j, ch, x, y);
+    /* Stu's hypercharge (overcharge_ulti_recharge_on_charge 261, Roller_overcharge 4000: "Stu's Super can be used continuously
+     * while Hypercharged"; RE-IMPLEMENTED: no card-value reader asks for type 261, the code is the server's): a dash that ends
+     * while he is hypercharged gives Value super charge back (4000 = his full super, player +0x54 of max +0x58) */
+    { int v = hyper_card_live(ch, 261, 1), pi; uint8_t *pl = v > 0 ? owner_player(sim, ch, &pi) : NULL;
+      if (pl) { int sc = I32(pl, 0x54) + v; I32(pl, 0x54) = sc < I32(pl, 0x58) ? sc : I32(pl, 0x58);
+                static int nrc; if (nrc++ < 10) LOG("[env] hypercharged dash end: super charge +%d -> %d\n", v, I32(pl, 0x54)); } }
     /* a negative ChargePushback pulls (LuchadorUlti's OverchargedChargePushback -100, the hypercharged super the game passes
      * as the start's x5): every enemy the charge hit is drawn to the landing point by the game's knockback, which for a
      * negative strength moves the victim min(6 * |strength|, its distance) u toward the source (0xb49ba8..0xb49bc8, 0xb49cd0) */
@@ -952,7 +962,6 @@ static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge f
  * cream"; RE-IMPLEMENTED: no libg call site reads this card type): with each trail scoop the game drops, Value more of the
  * same area, the e-th Value3 u from it at e x Value2 degrees from the dash direction (one more scoop 400 u to the dash's left).
  * [?] the server's placement: compiled out; Value2 read as an angle, Value3 as a distance. */
-int hyper_card_live(void *ch, int type, int idx);   /* hyper.c: Value<idx> of ch's hypercharge card of that type, -1 if none */
 #define CT_PAINTER 273   /* overcharge_painter (the card Type enum) */
 static void painter_scoops(void *sim, ChargeJob *j, uint8_t *ch) {
     int n = hyper_card_live(ch, CT_PAINTER, 1), deg = hyper_card_live(ch, CT_PAINTER, 2), off = hyper_card_live(ch, CT_PAINTER, 3);

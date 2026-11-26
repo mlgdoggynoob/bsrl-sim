@@ -246,7 +246,9 @@ static void on_explode(uint64_t *c) {
         if (g_spawn_dbg && i < 2) LOG("[spawnfix] chain %d/%d reason %d%s base %d spread %d dist %d -> %d,%d proj %p\n", i, nspawn, reason, toen ? " enemy" : (n < 1 ? " return" : ""), base, spread, dist, tx[i], ty[i], p);
     }
 }
+void hyper_area_mark(uint8_t *a) __attribute__((weak));   /* hyper.c: an overcharged area's +0x2e4 (Ruffs' hypercharge) */
 static void on_area(uint64_t *c) {
+    if (hyper_area_mark && c[0]) hyper_area_mark((uint8_t *)c[0]);
     if (!g_spawn_fix || !mode() || rec) return;
     uint8_t *a = (uint8_t *)c[0]; uint8_t *d = PTR(a, 0x10);
     if (a && d && (I32(d, 0x118) == 15 || I32(d, 0x118) == 42 || I32(d, 0x118) == 55) && g_spawn_walls && I32(d, 0x13c) >= 0) {
