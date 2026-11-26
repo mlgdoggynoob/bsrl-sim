@@ -203,6 +203,10 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   head left on water after his legs are gone, and a teammate respawning on a split head's water spot are moved to the
   nearest walkable spot (100 u rings up to 900 u [?], then the nearest walkable tile of the map). `python -m charge_check`
   scene 6 and its storm battle.
+- `hyper_unmodelled.patch` (issues #65, #66, #67, a diff on top of `split_extras.patch`): the hypercharges and supers the host
+  could not model (Gray's portals, Kit's attach, Buzz's grapple, Mr. P's porters, Sirius's shadows, TravelType 8 circling,
+  Grom's diagonal walls, Pam, Cordelius, Lou, Amber, Moe, Jae-Yong, Carl's trail) and Squeak's blomb (`superfix_items.c`).
+  `NB_SPAWNFIX_ANGLE=0` and `NB_AUTOCHARGE=0` turn off the angle offset and the auto charge. `python -m super_audit --attack`.
 - `gadgets_batch3.patch` (issue #46, a diff on top of `hyper_unmodelled.patch`, the whole chain above): `gadget.c`'s NEXT
   kind (published STATUS), the next-main-attack gadgets (`next_attack_change`): the accessory getter 0xb422c8 (a stub)
   replaced so libg arms the modifier and runs its own SubType branch, the "modifier used" stub 0xb27cfc hooked to clear it,
@@ -223,6 +227,12 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   counting his queued attacks), Shelly's and Colette's 3 shots per cooldown, Willow's dive no longer invisible, Hank's
   slow masked, the skill Cooldown fallback read as ms. `desc_audit.py` reads the new kinds as the game's own data
   (next, status) or a shield. Notes: `notes/issue46.md`.
+- `no_trains.patch` (a diff on top of `gadgets_batch3.patch`): `NB_NO_TRAINS=1` skips libg's creation of Survival651's
+  trains (`env.c` `no_trains`, the call at 0xc2f570). They are invisible to the observation but stop shots; off by default,
+  which keeps them.
+- `bolt_overdrive.patch` (a diff on top of `no_trains.patch`): Bolt's super gets the speed (+20 %, RockSpeedUpMovement) and
+  the damaging trail (RockUltiTrail) of his Brawler_Rock component, whose tick 0xb99070 is a bare `ret` (`superfix_status.c`
+  `rock_tick`, while the super's 80-tick self status is on him; the trail spacing copies Carl's 0xba1028 [?]).
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

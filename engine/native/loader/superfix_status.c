@@ -47,6 +47,8 @@
  * area enemy call 0xb2a71c (source player 0xb6a754(area), team 0xb6a820(area), area, owner, kind +0xf8, 0, -1, -1, 0).
  * AffectOnlyHeroes +0x1b4 keeps brawlers only (0xb34de4); IgnoreCharacters +0x1b6 areas (projectile slows) are skipped.
  * MountUp (Draco): the component's tick 0xba0048 is never called in this libg; it is run from the character tick (below).
+ * Brawler_Rock (Bolt's super: the speed boost and the trail; its component tick 0xb99070 is a bare `ret`): re-implemented
+ *   from the character tick (rock_tick, below).
  * NB_SUPERFIX=0 turns this off with the rest, NB_SUPERFIX_STATUS=0 this part alone; NB_SUPERFIX_DBG=1 logs adds, area hits, triggers and brawler HP drops. */
 #include "nbhost.h"
 #include <stdlib.h>
@@ -253,6 +255,53 @@ static void trigger(St *s, int t) {
             dmg, heal, hp0, I32(ch, 0x3c4));
 }
 
+/* Bolt (Rock), his super (TID_ROCK_ULTI_DESC "Bolt goes into overdrive, gaining speed and damage reduction, leaving a
+ * damaging trail behind him"). RockUlti (a StatusEffect skill) adds its ActivationSelfStatusEffects (skill data +0x1d0,
+ * read by 0xb8061c) RockUltiDamageReduction (80 ticks, ShieldPercent 40) through the add above: the damage reduction. The
+ * speed and the trail are his Brawler_Rock component's (character_components_logic: StatusEffects RockSpeedUpMovement,
+ * DurationTicks 2, Refreshable, SpeedBoostPercent 20; AreaEffects RockUltiTrail, a StatusEffect area, Radius 300,
+ * TimeMs 3900, RockUltiTrailStatus on enemies): type 25 (the type-name table 0xaaddd8), built by the factory 0xb9e688 with
+ * the ctor 0xb98fe8 (vtable 0x120a538), whose tick (vtable +0x40 = 0xb99070) is a bare `ret` in this build: the server code
+ * is compiled out (the client keeps only the encode 0xb99074). RE-IMPLEMENTED from the data: while the super's self status
+ * is on him (its 80 ticks: the super's window), each tick re-adds StatusEffects[0] (component data +0xb8, a 2-tick
+ * refreshable status: re-added every tick it never lapses; superfix_status_speed gives the +20 % to env.c's mover) through
+ * 0xb35dd0 with the arguments of libg's own component status add 0xb99530, and lays AreaEffects[0] (component data +0x88)
+ * at his feet through the shipped helper 0xb35c40 (kind 2, a super's area as 0xb2aefc names it) by the rule of libg's one
+ * trail component tick (Carl's 0xba1028, hyper.c): when he has laid none in this super yet, when the last one's TimeMs has
+ * passed, or when he is more than Radius x 150 % from the last one. [guess] that spacing: the server's own rule is gone;
+ * the component's Values[0] (900) has no client reader and is not used. */
+#define CT_ROCK 25
+#define ROCK_TICK 0xb99070    /* the component's tick (vtable 0x120a538 +0x40): `ret` */
+static struct { uint8_t *ch; int id, x, y, tick, on; } g_rock[16];   /* one per Bolt; 16 > the 10 brawlers of a battle */
+static long g_nrock_spd, g_nrock_trail;
+static void rock_tick(uint8_t *ch, uint8_t *comp, int t) {
+    uint8_t *cd = PTR(comp, 0x30), **sk = PTR(ch, 0x458);
+    if (!cd || !sk || I32(ch, 0x464) < 2 || !sk[1]) return;
+    uint8_t *sd = ((uint8_t *(*)(void *, int))B(0xb7adfc))(sk[1], 0);   /* the super's skill data */
+    void **self = sd && I32(sd, 0x1d0 + 12) > 0 ? PTR(sd, 0x1d0) : NULL;   /* ActivationSelfStatusEffects (count +0x1dc) */
+    int on = 0;
+    for (int i = 0; self && self[0] && i < g_nst && !on; i++)
+        on = g_st[i].ch == ch && g_st[i].ch_id == I32(ch, 8) && g_st[i].data == self[0] && g_st[i].start <= t && t < g_st[i].until;
+    int k; for (k = 0; k < 16 && g_rock[k].ch && !(g_rock[k].ch == ch && g_rock[k].id == I32(ch, 8)); k++) {}
+    if (k == 16) k = (int)(g_nrock_trail % 16);   /* full: reuse a slot (never with 10 brawlers) */
+    if (g_rock[k].ch != ch || g_rock[k].id != I32(ch, 8)) g_rock[k] = (typeof(g_rock[0])){ch, I32(ch, 8), 0, 0, 0, 0};
+    if (!on) { g_rock[k].on = 0; return; }
+    void **sl = I32(cd, 0xb8 + 12) > 0 ? PTR(cd, 0xb8) : NULL;   /* StatusEffects (count +0xc4) */
+    if (sl && sl[0]) {
+        ((void (*)(void *, void *, int, int, void *, void *, int, int, int, int, int))B(0xb35dd0))(ch, sl[0], I32(ch, 0x80), I32(ch, 0x84), ch, ch, 0, 0, -1, -1, 0);   /* 0xb99530's pattern */
+        g_nrock_spd++;
+    }
+    void **al = I32(cd, 0x88 + 12) > 0 ? PTR(cd, 0x88) : NULL; uint8_t *ad = al ? al[0] : NULL;   /* AreaEffects (count +0x94) */
+    if (!ad) return;
+    int x = I32(ch, 0x38), y = I32(ch, 0x3c);
+    long r = (long)I32(ad, 0x12c) * 150 / 100, dx = x - g_rock[k].x, dy = y - g_rock[k].y;   /* Radius x 150 % (0xba10e4) */
+    if (g_rock[k].on && (long)(t - g_rock[k].tick) * 50 < I32(ad, 0x124) && dx * dx + dy * dy <= r * r) return;   /* +0x124 TimeMs */
+    void *a = ((void *(*)(void *, void *, int, int, int, int, void *))B(0xb35c40))(ch, ad, x, y, 0, 2, NULL);
+    g_rock[k].x = x; g_rock[k].y = y; g_rock[k].tick = t; g_rock[k].on = 1;
+    if (a) g_nrock_trail++;
+    if (g_superfix_dbg) LOG("[superfix] Bolt's trail: ch %d area %d at %d,%d tick %d (%p)\n", I32(ch, 8), data_id(ad), x, y, t, a);
+}
+
 static int g_noil; static void oil_tick(uint8_t *ch, int t);   /* Amber's oil (below, before area_extra) */
 /* enter hook on the character update 0xb3941c: ctx[0] = character */
 static int g_last_tick = -1;
@@ -295,6 +344,7 @@ static void on_char_update(uint64_t *ctx) {
             if (!c[i] || PTR(c[i], 8) != ch) continue;
             void *tk = (*(void ***)c[i])[0x40 / 8];
             if (I32(c[i], 0x10) == 19 && tk == (void *)B(0xb855ac)) { ((void (*)(void *))B(0xb855ac))(c[i]); g_ntrail++; }
+            else if (I32(c[i], 0x10) == CT_ROCK && tk == (void *)B(ROCK_TICK)) rock_tick(ch, c[i], t);   /* Bolt's super (above) */
             else if (I32(c[i], 0x10) == 28 && tk == (void *)B(0xb95154) && U8(c[i], 76)) {
                 ((void (*)(void *))B(0xb95214))(c[i]); g_nmech++;
                 if (g_superfix_dbg) LOG("[superfix] mech deploy areas: ch %d tick %d\n", I32(ch, 8), t);
@@ -870,8 +920,8 @@ void superfix_status_status(void) {
         "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
         "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld "
         "(same-area skips %ld), spin bullets %ld, charge-end cancels %ld; Pierce marked shots %ld, second-wave shots %ld (dropped %ld); "
-        "trail ticks %ld, mech deploys %ld; oil circles %ld, lit %ld, fire areas %ld\n",
+        "trail ticks %ld, mech deploys %ld; oil circles %ld, lit %ld, fire areas %ld; Bolt speed adds %ld, trail areas %ld\n",
         g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal, g_narea_apply, g_narea_hits, g_nmount, g_nstun,
         g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nimm_skip, g_nspin, g_ncharge_end,
-        g_npierce_mark, g_npierce_wave2, g_npierce_drop, g_ntrail, g_nmech, g_noil_add, g_nignite, g_nfire);
+        g_npierce_mark, g_npierce_wave2, g_npierce_drop, g_ntrail, g_nmech, g_noil_add, g_nignite, g_nfire, g_nrock_spd, g_nrock_trail);
 }
