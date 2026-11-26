@@ -47,10 +47,46 @@ A fourth battle (gadgets):
      < STUN_MOVE beyond the knockback, rage_knock);
  20. Damian's wall gadget (GladiatorGadgetSkillWallArea, GladiatorWallSpawn 26): tiles around its landing become
      GladiatorWallDefault (live map).
+A fifth battle (issue #46, gadgets on the brawler itself, gadget_self.c; NAMES5 with GADGETS5, targets ShotgunGirl):
+ 21. Jacky's speed boost (DrillerGadgetSpeedBoost, +25 %): she walks faster by >= JACKY_MIN of her plain walk;
+ 22. Hank's shield (ShieldPercent 40, 60 ticks): a target's shot takes <= SHIELD_MAX of what the same shot took before;
+ 23. Draco's Last Stand (40 ticks): under the fire of three targets he stays alive and reaches exactly 1 HP;
+ 24. Trunk's inverse damage (DomainInverseDamageGadget: ReceiveDamageInversion, CancelOnDamage): the first hit after it
+     heals him instead (the shot's first pellet; the rest of that shot hurts), so that shot takes less than the next one,
+     which hurts in full;
+ 25. Surge's shield (PowerLevelerGadgetShield: CancelOnDamage, then 2 ammo): with his ammo spent, the first shot that hits
+     him gives >= AMMO_MIN ammo at once.
+A sixth battle (issue #46; NAMES6 with GADGETS6; Tara is player 0, the local player whose view state2's visible flag is):
+ 26. Tara's vision (80 ticks): an enemy in a bush VISION_D units away is not visible before it and visible while it runs;
+ 27. Moe's Dodgy Digging (UltiChargeBoostPercent 50): his attack on a target charges his super >= MOE_CHARGE times as
+     much per damage as one before it (one attack each, so the super does not fill up and cap the gain);
+ 28. Sandy's Sleep Stimulator (30 ticks asleep, then full HP): asleep she moves < STUN_MOVE, then her HP is full;
+ 29. Lou's Freeze (ShieldPercent 100, 20 ticks): a target's shot takes nothing, the same shot before it took HP.
+A seventh battle (issue #46; NAMES7 with GADGETS7, Buzz twice with his two cards; player 0 is the local player):
+ 30. Buzz's X-Ray Shades (240 ticks, BUZZ_VISION_D tiles, inside his 1800): as 26, an enemy in a bush is seen only while
+     it runs;
+ 31. Byron's Shot in the Arm (ConsumesAmmo): with his ammo spent (< 1 bar) a fire is refused (no use spent, published
+     cooldown 1); with ammo it spends a use and >= AMMO_COST ammo and heals him;
+ 32. Buzz's Reserve Buoy: with a full super a fire is refused; after his super it fills the super to the maximum;
+ 33. Juju's Voodoo Chile on open ground (VoodooGadgetShield, ShieldPercent 30): a target's shot takes <= JUJU_MAX of what
+     the same shot took before;
+ 34. Bonnie's Sugar Rush (CannonGirlGadgetSpeedBoost, +30 %): she walks faster by >= BONNIE_MIN of her plain walk.
+An eighth battle (issue #46; NAMES8 with GADGETS8):
+ 35. Meg's Jolting Volts in her mech (7 % of max HP a second for 100 ticks): within 20 ticks of the fire she gains
+     >= MEG_MIN of her max HP (regeneration waits 3 s after the last hit);
+ 36. Surge's Power Surge (PowerLevelerExtraUltiCharge, UltiChargeBoostPercent 30): as 27, >= SURGE_CHARGE times the super
+     charge per damage;
+ 37. Kenji's heal (CustomValue2 50 % of the damage taken in the last CustomValue1 60 ticks): after a shot took HP, the
+     gadget heals KENJI_PCT of it;
+ 38. Willow's Dive (ShieldPercent 100 and LosePlayerControl for 40 ticks): a target's shot takes HP before it and
+     nothing while it runs;
+ 39. Kit's Cardboard Box (Invisibility 1 for 60 ticks): an enemy 2000 u away sees him before it and not while it runs.
 python -m status_check            python -m status_check --check   (no host: the judging rules)
---battles 3,4 runs only those battles (default all four).
+--battles 3,4 runs only those battles (default all eight).
 --host-args '--env-arg ...' passes extra host arguments; NB_SUPERFIX=0 in the environment turns the host parts off
-(scenes 2-5 then fail), NB_SUPERFIX_CC=0 the stuns and Draco's swap (scenes 4, 5)."""
+(scenes 2-5 then fail, and the scenes of gadget_self.c's status kinds, which need superfix's status store: 21-25, 27-29,
+33, 34, 36, 38, 39), NB_SUPERFIX_CC=0 the stuns and Draco's swap (scenes 4, 5), NB_GAD_SELF=0 every gadget_self.c kind
+(scenes 21-30, 33, 34, 36, 38, 39)."""
 import argparse, math, sys, time
 import numpy as np
 import super_audit as SA
@@ -75,6 +111,28 @@ EDGAR_CHARGE = 1.8        # super charge per damage dealt after / before (Custom
 TURRET_HEAL = 300         # HP in 30 ticks from the hypercharged turret's Hot (one heal of 1400 at least, with room)
 TURRET_PCT, TURRET_EVERY = 14, 20   # Pam's turret: % of her max HP per heal, ticks between heals (the owner's clip, #22)
 GLAD_WALL = 27000000 + 69 # tiles.csv row of GladiatorWallDefault (DynamicCode 26) as a tile data id (checked in _check)
+NAMES5 = ["Driller", "FishTank", "DragonRider", "Domain", "PowerLeveler"]   # battle 5 (issue #46)
+GADGETS5 = {"Driller": 23000256, "FishTank": 23000580, "DragonRider": 23000737, "Domain": 23001001, "PowerLeveler": 23000485}
+NAMES6 = ["BlackHole", "Digger", "Sandstorm", "IceDude"]                    # battle 6 (issue #46)
+GADGETS6 = {"BlackHole": 23000266, "Digger": 23000806, "Sandstorm": 23000270, "IceDude": 23000326}
+JACKY_MIN = 0.15          # her walk after / before - 1 (SpeedBoostPercent 25, with room for the measurement)
+SHIELD_MAX = 0.8          # shot damage with / without Hank's 40 % shield (0.6, with room for spread)
+AMMO_MIN = 1500           # ammo Surge gets at the hit that ends his shield (2 bars = 2000; reload adds < 100 a tick)
+MOE_CHARGE = 1.3          # super charge per damage after / before Moe's gadget (+50 %: 1.5x)
+VISION_D = (5, 6)         # tiles from Tara to the bush enemy (hidden beyond 900 u, inside the view)
+BUSH_TILES = {27000007, 27000008, 27000017, 27000068}   # encode.c BUSH_ROWS as tile data ids (Forest, ...)
+NAMES7 = ["RopeDude", "SnakeOil", "RopeDude", "Voodoo", "CannonGirl"]   # battle 7 (issue #46): cards by player, not by name
+GADGETS7 = [23000490, 23000333, 23000392, 23000851, 23000480]   # RopeDude_Vision, SnakeOil_Heal, RopeDude_WeakUlti, Voodoo_SelfBuff, CannonGirl_Speed
+NAMES8 = ["MechaDude", "PowerLeveler", "Samurai", "Puppeteer", "Attacher"]   # battle 8 (issue #46)
+GADGETS8 = {"MechaDude": 23000423, "PowerLeveler": 23000285, "Samurai": 23000818, "Puppeteer": 23000564, "Attacher": 23000648}
+# MechaDude_Heal, PowerLeveler_ExtraLevels, Samurai_HealDamageTaken, Puppeteer_Dive, Attacher_Cardboardbox
+BUZZ_VISION_D = (4, 5)    # tiles from Buzz to the bush enemy (hidden beyond 900 u, inside his 1800)
+AMMO_COST = 900           # ammo Byron's gadget takes (one bar = 1000; reload adds < 100 in the step)
+JUJU_MAX = 0.85           # shot damage with / without VoodooGadgetShield's 30 % (0.7, with room for spread)
+BONNIE_MIN = 0.15         # her walk after / before - 1 (SpeedBoostPercent 30, with room for the measurement)
+MEG_MIN = 0.04            # HP gained in 20 ticks / max HP (7 % a second: 0.07, with room for the tick rounding)
+SURGE_CHARGE = 1.15       # super charge per damage after / before Surge's gadget (+30 %: 1.3x)
+KENJI_PCT = (0.3, 0.7)    # heal / the shot's damage (CustomValue2 50 %)
 TARGET = SA.FILLER
 SPEED = {"Speedy": 820, "DragonRider": 720, "ShotgunGirl": 770}   # characters.csv Speed (u/s)
 
@@ -155,7 +213,7 @@ def judge_gain(g, need, what):
 
 def judge_ratio(a, b, need, what):
     if b <= 0: return ["%s: nothing to compare with (before %s, after %s)" % (what, b, a)]
-    return [] if a >= need * b else ["%s: %.0f after vs %.0f before (want x%.1f)" % (what, a, b, need)]
+    return [] if a >= need * b else ["%s: %.3g after vs %.3g before (want x%.1f)" % (what, a, b, need)]
 
 
 def judge_kinds(k0, k1, what):
@@ -186,6 +244,98 @@ def judge_los(open_moved, wall_moved, knock=0):
     if open_moved > STUN_MOVE + knock: bad.append("the enemy in the open moved %.0f u after Fang's kick" % open_moved)
     if wall_moved < 2 * STUN_MOVE: bad.append("the enemy behind the wall moved only %.0f u (stunned through the wall?)" % wall_moved)
     return bad
+
+
+def judge_shield(a, b):
+    if a <= 0: return ["the shot before Hank's shield took nothing (%d)" % a]
+    return [] if b <= SHIELD_MAX * a else ["Hank's shield: the shot took %d, %d before it" % (b, a)]
+
+
+def judge_stand(alive, hmin):
+    if not alive: return ["Draco was knocked out during his Last Stand"]
+    return [] if hmin == 1 else ["Draco's Last Stand: lowest HP %d, want 1 (the fire did not reach it, or no clamp)" % hmin]
+
+
+def judge_invert(h0, h1, h2):
+    bad = []
+    if h0 - h1 >= h1 - h2: bad.append("Trunk: the first shot after his gadget took %d, no less than the next (%d)" % (h0 - h1, h1 - h2))
+    if h2 >= h1: bad.append("Trunk: the next shot did not hurt him (hp %d -> %d)" % (h1, h2))
+    return bad
+
+
+def judge_freeze(a, b):
+    if a <= 0: return ["the shot before Lou's freeze took nothing (%d)" % a]
+    return [] if b <= 0 else ["Lou's freeze: the shot took %d" % b]
+
+
+def judge_sleep(moved, hp, mx):
+    bad = []
+    if moved > STUN_MOVE: bad.append("Sandy moved %.0f u asleep" % moved)
+    if hp < mx: bad.append("Sandy woke with hp %d of %d" % (hp, mx))
+    return bad
+
+
+def judge_vision(v0, v1, who="Tara"):
+    bad = []
+    if v0: bad.append("the bush enemy was visible before %s's vision" % who)
+    if not v1: bad.append("the bush enemy was not visible during %s's vision" % who)
+    return bad
+
+
+def judge_refused(u0, u1, cd, what):
+    """gad_used before / after a fire that must be refused, gad_cd published before it"""
+    bad = [] if u1 == u0 else ["%s: a use was spent (used %d -> %d)" % (what, u0, u1)]
+    return bad + ([] if cd >= 1 else ["%s: published as ready (gad_cd %d)" % (what, cd)])
+
+
+def judge_byron(u0, u1, a0, a1, h0, h1):
+    bad = [] if u1 == u0 + 1 else ["Byron's gadget with ammo: no use spent (used %d -> %d)" % (u0, u1)]
+    if a0 - a1 < AMMO_COST: bad.append("Byron's gadget took %d ammo (%d -> %d), want >= %d" % (a0 - a1, a0, a1, AMMO_COST))
+    if h1 <= h0: bad.append("Byron's gadget did not heal him (hp %d -> %d)" % (h0, h1))
+    return bad
+
+
+def judge_buoy(sc0, sc1, sm):
+    if sc0 >= sm: return ["Buzz's super was already full before the buoy (%d of %d)" % (sc0, sm)]
+    return [] if sc1 >= sm else ["Buzz's buoy: super %d -> %d of %d" % (sc0, sc1, sm)]
+
+
+def judge_less(a, b, f, what):
+    if a <= 0: return ["%s: the shot before took nothing (%d)" % (what, a)]
+    return [] if b <= f * a else ["%s: the shot took %d, %d before" % (what, b, a)]
+
+
+def judge_none(a, b, what):   # a shot before a full shield took HP, the same shot during it nothing
+    if a <= 0: return ["%s: the shot before took nothing (%d)" % (what, a)]
+    return [] if b <= 0 else ["%s: the shot took %d" % (what, b)]
+
+
+def judge_hidden(before, during, what):   # seen by the far enemy before, not while invisible
+    bad = [] if before else ["%s not seen from 2000 u before" % what]
+    return bad + (["%s seen from 2000 u while invisible" % what] if during else [])
+
+
+def judge_kenji(loss, heal):
+    if loss <= 0: return ["the shot on Kenji took nothing"]
+    lo, hi = KENJI_PCT
+    return [] if lo * loss <= heal <= hi * loss else ["Kenji's gadget healed %d of a %d shot, want %.0f-%.0f %%" % (heal, loss, 100 * lo, 100 * hi)]
+
+
+def bush_spot(location=SA.MAP, vd=VISION_D):
+    """an open tile and a bush tile vd tiles to its right on the same row, the open one away from the map's sides
+    (the camera follows it unclamped): -> (open, bush) world positions"""
+    from nbpc import diversity as D
+    ids, rows = D.map_reference(location); H, W = len(rows), len(rows[0]); T = D.table("tiles.csv")
+    walk = {i for _, (i, r) in T.items() if r.get("BlocksMovement") != "true" and r.get("BlocksProjectiles") != "true"}
+    g = np.array(ids).reshape(H, W); raw = np.array([list(r) for r in rows])
+    op = np.isin(g, list(walk - BUSH_TILES)) & ~np.char.isdigit(raw); bu = np.isin(g, list(BUSH_TILES))
+    for y in range(3, H - 3):
+        for x in range(11, W - 11 - max(vd)):
+            for k in vd:
+                if op[y, x] and bu[y, x + k] and not bu[y, x + 1:x + 3].any():
+                    c = lambda tx: ((tx + 0.5) * TILE, (y + 0.5) * TILE)
+                    return c(x), c(x + k)
+    return None
 
 
 def wall_spot(location=SA.MAP):
@@ -267,7 +417,7 @@ def main():
     ap.add_argument("--host-args", default="", help="extra game host arguments")
     ap.add_argument("--verbose", action="store_true", help="print raw values of the leftover scenes")
     ap.add_argument("--tag", default="sc", help="instance tag (two checks at once need two tags)")
-    ap.add_argument("--battles", default="1,2,3,4", help="which battles to run (1-4)")
+    ap.add_argument("--battles", default="1,2,3,4,5,6,7,8", help="which battles to run (1-8)")
     a = ap.parse_args()
     if a.check: return _check()
     from nbpc import diversity as D
@@ -584,6 +734,234 @@ def battles(inst, a, spots, info, fails, B):
             n = max(n, int((inst.map_tiles() == GLAD_WALL).sum()))
         print("status_check: Damian's wall gadget: %d GladiatorWallDefault tiles" % n, flush=True)
         fails["Damian wall gadget"] = [] if n > 0 else ["no GladiatorWallDefault tile after Damian's wall gadget"]
+    if B & {5, 6, 7, 8}: self_battles(inst, a, spots, fails, B, home, at)
+
+
+def self_battles(inst, a, spots, fails, B, home, at):
+    """battles 5 to 8 (issue #46): the gadgets on the brawler itself (gadget_self.c, gadget.c HEAL / BUOY / HEAL_NOW)"""
+    from nbpc import diversity as D
+
+    def gadget(R, i, aim=0.0): return R.step({i: (-1, 3, aim, 0.0)}, 1)
+
+    def shot_loss(R, s, t, aim_t, steps=5):   # t shoots s once: s's HP lost over the next steps
+        h0 = int(R.step().pl[s].hp); R.step({t: (-1, 1, aim_t, 0.0)}, 1); lo = h0
+        for _ in range(steps): lo = min(lo, int(R.step().pl[s].hp))
+        return h0 - lo
+
+    def charge_round(R, s, t, aim):   # one attack of s on t: super charge per damage (one: more would fill the super and cap it)
+        r = R.step(); c0, h0 = int(r.pl[s].super_charge), int(r.pl[t].hp)
+        R.step({s: (-1, 1, aim, 0.0)}, 1)
+        for _ in range(5): r = R.step()
+        if a.verbose: print("  charge", c0, int(r.pl[s].super_charge), "of", int(r.pl[s].super_max), "target hp", h0, int(r.pl[t].hp), flush=True)
+        return (int(r.pl[s].super_charge) - c0) / max(1, h0 - int(r.pl[t].hp))
+
+    def seen(R, i):   # is player i's brawler visible to the local player 0 (state2's visible flag)
+        R.step(); st = SA.parse_state(inst.state_bytes()); cid = SA.brawler_ids(st).get(i)
+        row = st["ch"][st["ch"][:, 0] == cid]
+        return bool(len(row) and row[0][19] == 1)
+
+    def setup(names, gads, seed):   # gads: {name: card}, or a list of cards by player
+        cards = list(gads) if isinstance(gads, list) else [gads.get(n, 0) for n in names]
+        names = names + [TARGET] * (10 - len(names))
+        div = D.make_div(location=SA.MAP, chr=names); div["gadget"] = cards + [0] * (10 - len(cards))
+        inst.reset(seed + a.seed, gas=0, flags=0, native_mask=0, obs_mask=0, div=div)
+        R = Run(inst); R.step(ticks=10); R.place(home); return R
+
+    if 5 in B:
+        R = setup(NAMES5, GADGETS5, 93600004)
+        # 21. Jacky (spot 0): a plain walk, then her gadget and the same walk
+        p, (dx, dy), d = at(0, 0); aim = float(np.degrees(np.arctan2(dy, dx)))
+        R.place({0: p}); v0, _, _ = R.walk(0, d)
+        R.place({0: p}); gadget(R, 0, aim); v1, _, _ = R.walk(0, d)
+        print("status_check: Jacky walks %.0f u/s, %.0f u/s after her gadget" % (v0, v1), flush=True)
+        fails["Jacky speed gadget"] = judge_faster(v1, v0, "Jacky after her gadget", need=JACKY_MIN * v0)
+
+        # 22. Hank (spot 1): target 5 at 300 u shoots him, without and with the shield (place heals him in between)
+        p, (dx, dy), d = at(1, 1); aim = float(np.degrees(np.arctan2(dy, dx))); tp = (p[0] + dx * 300, p[1] + dy * 300)
+        R.place({1: p, 5: tp}); a0 = shot_loss(R, 1, 5, aim + 180)
+        for _ in range(10): R.step()   # target's ammo back
+        R.place({1: p, 5: tp}); gadget(R, 1, aim); a1 = shot_loss(R, 1, 5, aim + 180)
+        print("status_check: Hank loses %d to a shot, %d with his shield" % (a0, a1), flush=True)
+        fails["Hank shield gadget"] = judge_shield(a0, a1)
+
+        # 23. Draco (spot 2): targets 6, 7 at 250 u on two corridors, 8 at 400 u; one shot first, then the gadget and the fire
+        p, _, d = at(2, 2); dirs = spots[2][2]; (ux, uy), (vx, vy) = dirs[0], dirs[1 % len(dirs)]
+        tp = {6: (p[0] + ux * 250, p[1] + uy * 250), 7: (p[0] + vx * 250, p[1] + vy * 250), 8: (p[0] + ux * 400, p[1] + uy * 400)}
+        aims = {6: float(np.degrees(np.arctan2(-uy, -ux))), 7: float(np.degrees(np.arctan2(-vy, -vx))), 8: float(np.degrees(np.arctan2(-uy, -ux)))}
+        R.place({2: p, **tp}); R.step({6: (-1, 1, aims[6], 0.0)}, 1)
+        for _ in range(4): r = R.step()
+        h1 = int(r.pl[2].hp); gadget(R, 2); hmin, alive = h1, True
+        for k in range(16):   # 33 ticks of fire, inside the 40-tick Last Stand
+            r = R.step({t: (-1, 1, aims[t], 0.0) for t in tp} if k % 3 == 0 else None)
+            hmin = min(hmin, int(r.pl[2].hp)); alive &= bool(r.pl[2].alive and r.pl[2].hp > 0)
+        print("status_check: Draco's Last Stand from hp %d: lowest %d, alive %s" % (h1, hmin, alive), flush=True)
+        fails["Draco last stand"] = judge_stand(alive, hmin)
+
+        # 24. Trunk (spot 3): target 9 at 300 u shoots him once, then his gadget, then two more shots
+        p, (dx, dy), d = at(3, 3); aim = float(np.degrees(np.arctan2(dy, dx))); tp = (p[0] + dx * 300, p[1] + dy * 300)
+        R.place({3: p, 9: tp}); shot_loss(R, 3, 9, aim + 180)
+        for _ in range(6): r = R.step()
+        h0 = int(r.pl[3].hp); gadget(R, 3, aim); R.step({9: (-1, 1, aim + 180, 0.0)}, 1)
+        for _ in range(5): r = R.step()
+        h1 = int(r.pl[3].hp); R.step({9: (-1, 1, aim + 180, 0.0)}, 1)
+        for _ in range(5): r = R.step()
+        h2 = int(r.pl[3].hp)
+        print("status_check: Trunk hp %d, after the first shot with his gadget %d, after the next %d" % (h0, h1, h2), flush=True)
+        fails["Trunk inverse damage"] = judge_invert(h0, h1, h2)
+
+        # 25. Surge (spot 4): three attacks away from target 5 (ammo spent), his shield, then 5 (300 u) shoots him
+        p, (dx, dy), d = at(4, 4); aim = float(np.degrees(np.arctan2(dy, dx))); tp = (p[0] + dx * 300, p[1] + dy * 300)
+        R.place({4: p, 5: tp})
+        for _ in range(3): R.step({4: (-1, 1, aim + 90, 0.0)}, 1); R.step(ticks=3)
+        gadget(R, 4, aim); r = R.step(); am0 = int(r.pl[4].ammo); am1 = am0
+        R.step({5: (-1, 1, aim + 180, 0.0)}, 1)
+        for _ in range(3): am1 = max(am1, int(R.step().pl[4].ammo))
+        print("status_check: Surge's ammo %d -> %d at the hit on his shield" % (am0, am1), flush=True)
+        fails["Surge shield ammo"] = [] if am1 - am0 >= AMMO_MIN else ["Surge's ammo %d -> %d at the hit, want +%d" % (am0, am1, AMMO_MIN)]
+
+    if 6 in B:
+        R = setup(NAMES6, GADGETS6, 93600005)
+        # 26. Tara (player 0) on open ground, enemy 5 in a bush VISION_D tiles away
+        bs = bush_spot()
+        if bs is None: fails["Tara vision"] = ["no bush spot on %s" % SA.MAP]
+        else:
+            R.place({0: bs[0], 5: bs[1]}); v0 = seen(R, 5)
+            gadget(R, 0); R.step(); v1 = seen(R, 5)
+            print("status_check: Tara at %s, bush enemy at %s visible before / during her vision %s %s" % (bs[0], bs[1], v0, v1), flush=True)
+            fails["Tara vision"] = judge_vision(v0, v1)
+
+        # 27. Moe (spot 1): target 6 at 250 u; super charge per damage of one attack before and one after his gadget
+        p, (dx, dy), d = at(1, 1); aim = float(np.degrees(np.arctan2(dy, dx))); tp = (p[0] + dx * 250, p[1] + dy * 250)
+        R.place({1: p, 6: tp}); m0 = charge_round(R, 1, 6, aim)
+        for _ in range(20): R.step()
+        R.place({1: p, 6: tp}); gadget(R, 1, aim); m1 = charge_round(R, 1, 6, aim)
+        print("status_check: Moe's super charge per damage %.3f, %.3f after his gadget" % (m0, m1), flush=True)
+        fails["Moe charge gadget"] = judge_ratio(m1, m0, MOE_CHARGE, "Moe's super charge per damage")
+
+        # 28. Sandy (spot 2): target 7 (300 u) shoots her once, then her sleep; she tries to walk, then wakes
+        p, (dx, dy), d = at(2, 2); aim = float(np.degrees(np.arctan2(dy, dx))); tp = (p[0] + dx * 300, p[1] + dy * 300)
+        R.place({2: p, 7: tp}); shot_loss(R, 2, 7, aim + 180)
+        for _ in range(3): R.step()
+        gadget(R, 2); _, moved, _ = R.walk(2, (d + 8) % 16, steps=6)
+        for _ in range(10): r = R.step()   # 34 ticks after the fire
+        print("status_check: Sandy asleep moved %.0f u, woke at hp %d of %d" % (moved, r.pl[2].hp, r.pl[2].max_hp), flush=True)
+        fails["Sandy sleep gadget"] = judge_sleep(moved, int(r.pl[2].hp), int(r.pl[2].max_hp))
+
+        # 29. Lou (spot 3): target 8 at 300 u shoots him, without and with his freeze
+        p, (dx, dy), d = at(3, 3); aim = float(np.degrees(np.arctan2(dy, dx))); tp = (p[0] + dx * 300, p[1] + dy * 300)
+        R.place({3: p, 8: tp}); a0 = shot_loss(R, 3, 8, aim + 180)
+        for _ in range(10): R.step()
+        R.place({3: p, 8: tp}); gadget(R, 3, aim); a1 = shot_loss(R, 3, 8, aim + 180)
+        print("status_check: Lou loses %d to a shot, %d frozen" % (a0, a1), flush=True)
+        fails["Lou freeze gadget"] = judge_freeze(a0, a1)
+    if 7 in B or 8 in B: more_self_battles(setup=setup, gadget=gadget, shot_loss=shot_loss, charge_round=charge_round,
+                                           seen=seen, inst=inst, spots=spots, fails=fails, B=B, at=at)
+
+
+def more_self_battles(setup, gadget, shot_loss, charge_round, seen, inst, spots, fails, B, at):
+    """battles 7 and 8 (issue #46): the rows battles 5 and 6 do not reach"""
+    def used(r, i): return int(r.gad_used[i])
+
+    if 7 in B:
+        R = setup(NAMES7, GADGETS7, 93600006)
+        # 30. Buzz's vision (player 0) on open ground, enemy 5 in a bush BUZZ_VISION_D tiles away
+        bs = bush_spot(vd=BUZZ_VISION_D)
+        if bs is None: fails["Buzz vision"] = ["no bush spot on %s" % SA.MAP]
+        else:
+            R.place({0: bs[0], 5: bs[1]}); v0 = seen(R, 5)
+            gadget(R, 0); R.step(); v1 = seen(R, 5)
+            print("status_check: Buzz at %s, bush enemy at %s visible before / during his vision %s %s" % (bs[0], bs[1], v0, v1), flush=True)
+            fails["Buzz vision"] = judge_vision(v0, v1, "Buzz")
+
+        # 31. Byron (spot 1): ammo spent -> refused; ammo back, a target's shot, then the gadget
+        p, (dx, dy), d = at(1, 1); aim = float(np.degrees(np.arctan2(dy, dx))); tp = (p[0] + dx * 300, p[1] + dy * 300)
+        R.place({1: p, 6: tp})
+        for _ in range(12):   # attacks away from the target until less than one bar is left
+            R.step({1: (-1, 1, aim + 90, 0.0)}, 1); r = R.step(ticks=4)
+            if int(r.pl[1].ammo) < 1000: break
+        r = R.step(ticks=1); am, u0, cd = int(r.pl[1].ammo), used(r, 1), int(r.gad_cd[1])
+        r = gadget(R, 1, aim); r = R.step(); bad = judge_refused(u0, used(r, 1), cd, "Byron's gadget without ammo")
+        if am >= 1000: bad.append("Byron's ammo not spent (%d) before the refusal test" % am)
+        for _ in range(40):
+            r = R.step()
+            if int(r.pl[1].ammo) >= 1500: break
+        shot_loss(R, 1, 6, aim + 180)
+        r = R.step(); a0, h0, u0 = int(r.pl[1].ammo), int(r.pl[1].hp), used(r, 1)
+        r = gadget(R, 1, aim); a1, u1 = int(r.pl[1].ammo), used(r, 1)
+        for _ in range(10): r = R.step()
+        print("status_check: Byron without ammo (%d): refused %s; with ammo %d -> %d, hp %d -> %d" % (am, not bad, a0, a1, h0, int(r.pl[1].hp)), flush=True)
+        fails["Byron heal gadget"] = bad + judge_byron(u0, u1, a0, a1, h0, int(r.pl[1].hp))
+
+        # 32. Buzz's buoy (player 2, spot 2): super full -> refused; his super, then the buoy fills it
+        p, (dx, dy), d = at(2, 2); aim = float(np.degrees(np.arctan2(dy, dx)))
+        R.place({2: p}); inst.setup(super_fill=[2]); R.step(ticks=1); r = R.step(); u0, cd = used(r, 2), int(r.gad_cd[2])
+        gadget(R, 2, aim); r = R.step(); bad = judge_refused(u0, used(r, 2), cd, "Buzz's buoy with a full super")
+        R.step({2: (-1, 2, aim, 1.0)}, 1)
+        for _ in range(5): r = R.step()
+        sc0 = int(r.pl[2].super_charge); gadget(R, 2, aim); r = R.step(); sc1, sm = int(r.pl[2].super_charge), int(r.pl[2].super_max)
+        print("status_check: Buzz's buoy refused on a full super %s; super %d -> %d of %d" % (not bad, sc0, sc1, sm), flush=True)
+        fails["Buzz buoy gadget"] = bad + judge_buoy(sc0, sc1, sm)
+
+        # 33. Juju (spot 3, open ground): target 8 at 300 u shoots her, without and with her gadget
+        p, (dx, dy), d = at(3, 3); aim = float(np.degrees(np.arctan2(dy, dx))); tp = (p[0] + dx * 300, p[1] + dy * 300)
+        R.place({3: p, 8: tp}); a0 = shot_loss(R, 3, 8, aim + 180)
+        for _ in range(10): R.step()
+        R.place({3: p, 8: tp}); gadget(R, 3, aim); a1 = shot_loss(R, 3, 8, aim + 180)
+        print("status_check: Juju loses %d to a shot, %d after her gadget" % (a0, a1), flush=True)
+        fails["Juju shield gadget"] = judge_less(a0, a1, JUJU_MAX, "Juju's gadget on open ground")
+
+        # 34. Bonnie (spot 4): a plain walk, then her gadget and the same walk
+        p, (dx, dy), d = at(4, 4); aim = float(np.degrees(np.arctan2(dy, dx)))
+        R.place({4: p}); v0, _, _ = R.walk(4, d)
+        R.place({4: p}); gadget(R, 4, aim); v1, _, _ = R.walk(4, d)
+        print("status_check: Bonnie walks %.0f u/s, %.0f u/s after her gadget" % (v0, v1), flush=True)
+        fails["Bonnie speed gadget"] = judge_faster(v1, v0, "Bonnie after her gadget", need=BONNIE_MIN * v0)
+
+    if 8 in B:
+        R = setup(NAMES8, GADGETS8, 93600007)
+        # 35. Meg (spot 0, in her mech): two shots of target 5, then her gadget; HP gained in the next 20 ticks
+        p, (dx, dy), d = at(0, 0); aim = float(np.degrees(np.arctan2(dy, dx))); tp = (p[0] + dx * 300, p[1] + dy * 300)
+        R.place({0: p, 5: tp}); shot_loss(R, 0, 5, aim + 180)
+        for _ in range(4): R.step()
+        shot_loss(R, 0, 5, aim + 180)
+        r = R.step(); h0, mx = int(r.pl[0].hp), int(r.pl[0].max_hp); gadget(R, 0, aim)
+        for _ in range(10): r = R.step()
+        g = int(r.pl[0].hp) - h0
+        print("status_check: Meg's mech at hp %d of %d gains %d in 20 ticks after her gadget" % (h0, mx, g), flush=True)
+        fails["Meg heal gadget"] = [] if h0 < mx and g >= MEG_MIN * mx else ["Meg's gadget: hp %d of %d, +%d in 20 ticks, want +%.0f" % (h0, mx, g, MEG_MIN * mx)]
+
+        # 36. Surge (spot 1): target 6 at 400 u (measured: his shot starts about 350 u out, so it passes a target at 250 u,
+        # and does not reach one at 600 u); super charge per damage of one attack before and one after his gadget
+        p, (dx, dy), d = at(1, 1); aim = float(np.degrees(np.arctan2(dy, dx))); tp = (p[0] + dx * 400, p[1] + dy * 400)
+        R.place({1: p, 6: tp}); m0 = charge_round(R, 1, 6, aim)
+        for _ in range(20): R.step()
+        R.place({1: p, 6: tp}); gadget(R, 1, aim); m1 = charge_round(R, 1, 6, aim)
+        print("status_check: Surge's super charge per damage %.3f, %.3f after his gadget" % (m0, m1), flush=True)
+        fails["Surge charge gadget"] = judge_ratio(m1, m0, SURGE_CHARGE, "Surge's super charge per damage")
+
+        # 37. Kenji (spot 2): target 7 at 300 u shoots him once, then his gadget
+        p, (dx, dy), d = at(2, 2); aim = float(np.degrees(np.arctan2(dy, dx))); tp = (p[0] + dx * 300, p[1] + dy * 300)
+        R.place({2: p, 7: tp}); loss = shot_loss(R, 2, 7, aim + 180)
+        r = R.step(); h0 = int(r.pl[2].hp); gadget(R, 2, aim); r = R.step(); heal = int(r.pl[2].hp) - h0
+        print("status_check: Kenji lost %d to a shot, his gadget healed %d" % (loss, heal), flush=True)
+        fails["Kenji heal gadget"] = judge_kenji(loss, heal)
+
+        # 38. Willow (spot 3): target 8 at 300 u shoots her, without and with her dive
+        p, (dx, dy), d = at(3, 3); aim = float(np.degrees(np.arctan2(dy, dx))); tp = (p[0] + dx * 300, p[1] + dy * 300)
+        R.place({3: p, 8: tp}); a0 = shot_loss(R, 3, 8, aim + 180)
+        for _ in range(10): R.step()
+        R.place({3: p, 8: tp}); gadget(R, 3, aim); a1 = shot_loss(R, 3, 8, aim + 180)
+        print("status_check: Willow loses %d to a shot, %d diving" % (a0, a1), flush=True)
+        fails["Willow dive gadget"] = judge_none(a0, a1, "Willow's dive")
+
+        # 39. Kit (spot 4): enemy 9 2000 u along the corridor, before and during his box (as Leon's scene 6)
+        p, (dx, dy), d = at(4, 4); aim = float(np.degrees(np.arctan2(dy, dx)))
+        R.place({4: p, 9: (p[0] + dx * 2000, p[1] + dy * 2000)}); far0 = R.sees(9, 4)
+        gadget(R, 4, aim)
+        for _ in range(3): R.step()
+        far1 = R.sees(9, 4)
+        print("status_check: Kit seen from 2000 u before / in his box %s %s" % (far0, far1), flush=True)
+        fails["Kit box gadget"] = judge_hidden(far0, far1, "Kit")
 
 
 def _check():
@@ -612,6 +990,30 @@ def _check():
     from nbpc import diversity as D
     assert D.table("tiles.csv")["GladiatorWallDefault"][0] == GLAD_WALL
     ws = wall_spot(); assert ws is not None and ws[0][1] == ws[1][1] == ws[2][1] and ws[2][0] - ws[1][0] == 4 * TILE
+    assert not judge_shield(1000, 600) and judge_shield(1000, 900) and judge_shield(0, 0)
+    assert not judge_stand(True, 1) and judge_stand(False, 1) and judge_stand(True, 800)
+    assert not judge_invert(3000, 3600, 2800) and judge_invert(3000, 2500, 2000) and judge_invert(3000, 3600, 3600)
+    assert not judge_invert(7400, 5600, 2600) and judge_invert(7400, 4400, 1400)
+    assert not judge_freeze(900, 0) and judge_freeze(900, 300) and judge_freeze(0, 0)
+    assert not judge_sleep(10, 4000, 4000) and judge_sleep(400, 4000, 4000) and judge_sleep(10, 3000, 4000)
+    assert not judge_vision(False, True) and judge_vision(True, True) and judge_vision(False, False)
+    assert not judge_refused(3, 3, 1, "x") and judge_refused(3, 4, 1, "x") and judge_refused(3, 3, 0, "x")
+    assert not judge_byron(0, 1, 2500, 1500, 3000, 3300) and judge_byron(0, 0, 2500, 1500, 3000, 3300)
+    assert judge_byron(0, 1, 2500, 2450, 3000, 3300) and judge_byron(0, 1, 2500, 1500, 3000, 3000)
+    assert not judge_buoy(0, 4000, 4000) and judge_buoy(0, 0, 4000) and judge_buoy(4000, 4000, 4000)
+    assert not judge_less(1000, 700, JUJU_MAX, "x") and judge_less(1000, 950, JUJU_MAX, "x") and judge_less(0, 0, JUJU_MAX, "x")
+    assert not judge_kenji(1000, 500) and judge_kenji(1000, 0) and judge_kenji(1000, 1000) and judge_kenji(0, 0)
+    assert not judge_none(3000, 0, "x") and judge_none(3000, 600, "x") and judge_none(0, 0, "x")
+    assert not judge_hidden(True, False, "x") and judge_hidden(False, False, "x") and judge_hidden(True, True, "x")
+    gs = SA.all_gadgets()   # the battles' gadget cards are the brawlers' cards (cards.csv ids)
+    assert all(any(c == gads[b] for c, _, _ in gs[b]) for gads in (GADGETS4, GADGETS5, GADGETS6, GADGETS8) for b in gads), "gadget card ids"
+    rows8 = {b: {c: n for c, n, _ in gs[b]} for b in GADGETS8}
+    assert [rows8[b][GADGETS8[b]] for b in NAMES8] == ["MechaDude_Heal", "PowerLeveler_ExtraLevels", "Samurai_HealDamageTaken",
+                                                     "Puppeteer_Dive", "Attacher_Cardboardbox"], rows8
+    assert len(NAMES7) == len(GADGETS7) and all(any(c == k for c, _, _ in gs[b]) for b, k in zip(NAMES7, GADGETS7)), "battle 7 cards"
+    T = D.table("tiles.csv"); assert {T[n][0] for n in ("Forest", "RespawningForest", "ExtraBush", "ExtraBushTemp")} == BUSH_TILES
+    bs = bush_spot(); assert bs is not None and bs[0][1] == bs[1][1] and (bs[1][0] - bs[0][0]) / TILE in VISION_D, bs
+    bs = bush_spot(vd=BUZZ_VISION_D); assert bs is not None and (bs[1][0] - bs[0][0]) / TILE in BUZZ_VISION_D, bs
     print("status_check judging ok")
 
 

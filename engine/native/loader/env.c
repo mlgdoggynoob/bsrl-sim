@@ -213,6 +213,9 @@ static int taunt_target(uint8_t *ch, int *tx, int *ty) {
 }
 void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) __attribute__((weak));   /* superfix_cc.c: projectile stuns */
 void spawnfix_proj_hit(void *src, void *victim) __attribute__((weak));   /* spawnfix.c: chain of a reason-3 hit */
+void gadget_root_post(uint8_t *victim, uint8_t *attacker, uint8_t *src, int removed) __attribute__((weak));   /* gadget.c: next-attack hit fields */
+int gadget_root_pre(uint8_t *victim, uint8_t *attacker, int *dmg, int *a3) __attribute__((weak));   /* gadget_self.c: last stand, inversion */
+int gadget_vision(int li, int x, int y) __attribute__((weak));   /* gadget_self.c: Tara's / Buzz's bush vision */
 void hyper_install(void); void *hyper_super_data(int i, uint8_t *ch, void *sd); void hyper_unswap(int i, uint8_t *ch);
 void hyper_char_changed(uint8_t *old, uint8_t *nc);
 static void *owner_player(void *sim, void *c, int *idx) {   /* the player whose current brawler c is (NULL: none) */
@@ -504,8 +507,15 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
     int vchar = victim && VTOF(victim) == VT_CHAR, before = vchar ? I32(victim, 0x3c4) : 0;
     if (vchar && mode3 && just_popped(victim)) { E.charge_level = saved_level; return 0; }
     int ow = vchar && mode3 && resp_on() && E.sim ? brawler_owner(E.sim, victim) : -1;
+    /* gadget round (issue #46): Trunk's inversion heals the hit, Draco's Last Stand clamps it to hp - 1. Not for a hit the
+     * game drops anyway (Meg just ejected, a respawning brawler) and not for the storm's damage [?] (the cards speak of
+     * damage taken from attacks; a gas tick would spend Trunk's inversion) */
+    if (dmg > 0 && vchar && mode3 && gadget_root_pre && !waiting(ow) && E.in_own_call != 1 && gadget_root_pre(victim, attacker, &dmg, &a3)) {
+        E.charge_level = saved_level; return 0;
+    }
     uint64_t r = o_root(victim, a1, dmg, a3, a4, attacker, src, a7, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9);
     if (waiting(ow)) { I32(victim, 0x3c4) = before; E.charge_level = saved_level; return r; }   /* respawning: invulnerable */
+    if (vchar && mode3 && gadget_root_post) gadget_root_post(victim, attacker, src, before - I32(victim, 0x3c4));   /* gadget round */
     int pop = vchar && mode3 && mech_pop(E.sim, victim, before);   /* the mech's HP is gone, Meg stands in its place */
     if (vchar && mode3) record_event(victim, attacker, pop ? before + 1 : before, pop ? 1 : I32(victim, 0x3c4));   /* no kill */
     if (stalk_heal > 0 && vchar) stalk_heal_after(attacker, stalk_heal, before - I32(victim, 0x3c4));
@@ -1804,7 +1814,7 @@ static void fire_input(void *sim, int pidx, uint8_t *ch, int super, double deg, 
  * 1000 u (like a relative attack input). NOTE: 0xb27c58 is a bare ret in this libg: the input reaches the game, nothing happens.
  * gadget round: a gadget with a host implementation (gadget.c) is activated there instead. */
 int gadget_use(void *sim, int i, uint8_t *ch, double deg, double dist, int tick); void gadget_publish(NbeResp *r, int tick);
-void gadget_clear(void); void gadget_reset_player(int i, void *acc); void gadget_tick(void *sim, int tick);
+void gadget_clear(void); void gadget_reset_player(int i, void *acc); void gadget_tick(void *sim, int tick); void gadget_ready_refresh(void *sim);
 void *env_obj_by_id(void *sim, int id) { return obj_by_id(sim, id); }   /* for gadget.c */
 /* gadget.c's dash: the native charge mover (as native_charge_start) with charge type 1, but no active-skill slot (+0x6d8 = 0)
  * and no env contact job, so a brawler whose super is a charge (Bull, El Primo) does not run that super's hits while it
@@ -1836,6 +1846,13 @@ static void skill_idx_input(void *sim, int pidx, uint8_t *ch, int idx, double de
     LOG("[skillidx] player %d idx %d of %d: data id %d type %d kind %d range %d abs %d timers %d %d charge %d\n", pidx, idx, n,
         I32(sd, 0x20), type, kind, cr, ab, I32(sk, 0x10), I32(sk, 0x18), I32(sk, 0x30));
     apply_input(sim, pidx, kind, ab ? tx : tx - X, ab ? ty : ty - Y, sd);
+}
+/* gadget round (issue #46): player i's main attacks still queued for the next step start (g_fire_delay), which spend
+ * ammo before that step's gadget input: gadget.c's readiness of an ammo-cost gadget (Byron) counts them */
+int env_pending_attacks(int i) {
+    int n = 0; if (i < 0 || i >= NBE_MAXP) return 0;
+    for (int k = 0; k < E.pf[i].n; k++) n += !E.pf[i].super[k];
+    return n;
 }
 static void apply_pending_fires(void *sim, int i, uint8_t *ch) {   /* origin = the shooter's sim position now */
     for (int k = 0; k < E.pf[i].n; k++) fire_input_now(sim, i, ch, E.pf[i].super[k], E.pf[i].deg[k], E.pf[i].dist[k], I32(ch, 0x38), I32(ch, 0x3c));
@@ -2116,6 +2133,7 @@ static long g_streams_freed; int g_free_snap_stream = 1;   /* --keep-snap-stream
 static void apply_teams(void *sim);
 void env_on_build(void *battle, void *sim) {   /* a new battle was built: forget the old one */
     g_lead_n = 0; g_lead_skip = 0;
+    gadget_clear();   /* gadget round: the old battle's accessories are freed; its table must not reach the intro ticks */
     int gen = E.gen + 1, hr = E.have_reset, seed = E.reset_seed, gas = E.gas_on, act = E.act_tick, sa = E.seed_applied, rr = E.reset_req;
     int ga_ok = E.gas_args_ok, a4 = E.ga4, a5 = E.ga5, a7 = E.ga7, s0 = E.gs0;
     NbeCmd cur = E.cur;
@@ -2173,6 +2191,11 @@ static int bush_at(void *sim, int x, int y) {   /* gear round: a bush tile (300 
     int tx = x / 300, ty = y / 300;
     return g_emap.bush && x >= 0 && y >= 0 && tx < g_emap.W && ty < g_emap.H && g_emap.bush[ty * g_emap.W + tx];
 }
+int env_ground(void *sim, int x, int y) {   /* gadget round (issue #46, Juju): 1 bush, 2 water, 0 other ground at world (x, y) */
+    if (bush_at(sim, x, y)) return 1;
+    int tx = x / 300, ty = y / 300;
+    return g_emap.water && x >= 0 && y >= 0 && tx < g_emap.W && ty < g_emap.H && g_emap.water[ty * g_emap.W + tx] ? 2 : 0;
+}
 /* Sim-only mode has no client, so state2's 'client' flags (presence in the client's object list = what the viewer sees;
  * the encoder's enemy 'visible' feature r[19]) would all be -1 (= not visible: bc3p then ranked 6.84 on the PC vs 5.85 on
  * the phone). Emulation fitted to the phone (T6, runs/t6/_vis_fit.py: 10,632 enemy rows of 7 phone episodes, 98.7 %
@@ -2199,7 +2222,8 @@ static void emulate_client_flags(void *sim, int32_t *a) {
         int32_t *r = ch + k * 23; int v = INVIEW(r[3], r[4]);
         if (v && r[2] >= 0 && r[2] != li && r[18] == 0 && r[1] != 16000120) {   /* enemy brawler (or its summon): bush hiding */
             int tx = r[3] / 300, ty = r[4] / 300; if (tx >= W) tx = W - 1; if (ty >= Hh) ty = Hh - 1;
-            if (tx >= 0 && ty >= 0 && g_emap.bush && g_emap.bush[ty * W + tx] && hypot(r[3] - mx, r[4] - my) > 900) v = 0;
+            if (tx >= 0 && ty >= 0 && g_emap.bush && g_emap.bush[ty * W + tx] && hypot(r[3] - mx, r[4] - my) > 900 &&
+                !(gadget_vision && gadget_vision(li, r[3], r[4]))) v = 0;   /* gadget round: Tara's / Buzz's vision */
         }
         if (me == r) v = 1;
         r[19] = v;
@@ -2274,7 +2298,7 @@ static void publish(void *sim, uint32_t seq, int status, const char *err) {
     R->steps_in_frame = E.steps_in_frame; R->frame = E.frame;
     fill_players(sim);
     if (E.cur.type == NBE_CMD_RESET) div_publish(sim);   /* diversity round (before gadget_publish: it sets up the gadgets) */
-    gadget_publish(R, I32(sim, 0x10));                   /* gadget round */
+    gadget_ready_refresh(sim); gadget_publish(R, I32(sim, 0x10));   /* gadget round (readiness on this response's state) */
     { int np; void **ps = players(sim, &np); hyper_publish(R, ps, np); }   /* hypercharge round */
     gear_publish(R);                                                        /* gear round */
     R->njumps = 0; for (int i = 0; i < E.njobs && i < NBE_MAXP; i++) { int *j = R->jumps[R->njumps++]; j[0] = E.jobs[i].id; j[1] = E.jobs[i].t; j[2] = E.jobs[i].T; j[3] = E.jobs[i].x1; j[4] = E.jobs[i].y1; }
@@ -2952,6 +2976,7 @@ void env_install(void) {
     o_dispatch = hook_replace(g_libg, 0xb47084, my_dispatch);
     hyper_install();   /* hypercharge round: Character::isOvercharged (hyper.c) */
     gear_install();    /* gear round (issue #51): NB_GEARS */
+    { extern void gadget_install(void); gadget_install(); }   /* gadget round (issue #46): the next-attack gadgets' hooks */
     if (!g_env_simonly) {
         /* client-mode crash fix (T4/T5): 0xdc1ec0 walks a slot table of weak pointers (x19+0xd0); when lock() 0x11a51c0 fails
          * for an entry that was not yet marked expired (freed concurrently, seen during a reset's loading screen: SIGSEGV
