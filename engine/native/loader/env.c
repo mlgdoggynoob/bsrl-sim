@@ -716,6 +716,15 @@ static int zone_seen(int owner, int cid, int now) {   /* HotAndDot: 1 = this own
     if (g_nzh >= 64) g_nzh = 0;
     g_zh[g_nzh++] = (ZoneHit){owner, cid, now}; return 0;
 }
+/* gadget.c: Gale's Twister (Blower_Stopper, the WindWall item): this libg has no WindWall rule (ItemData +0x54 = 36 is read only by
+ * client draw code), so env repels for it: a Repel zone (kind ZONE_REPEL) knocks every enemy inside `r` away from the centre,
+ * at most every 10 ticks (the knockback's length), for `ticks` ticks (RE-IMPLEMENTED, numbers in gadget.c item_fire) */
+#define ZONE_REPEL 1
+void env_repel_zone(void *sim, uint8_t *ch, int x, int y, int r, int ticks, int push) {
+    if (!ch || g_nzone >= ZONE_MAX) return;
+    int now = I32(sim, 0x10);
+    g_zone[g_nzone++] = (Zone){ZONE_REPEL, I32(ch, 0x80), I32(ch, 0x84), x, y, r, now, now + ticks, 0, 0, push, 0, {0}, {0}, {0}};
+}
 static void zone_tick(void *sim) {   /* pre-snapshot, once per tick */
     int now = I32(sim, 0x10), n; void **v = objvec(sim, &n);
     for (int k = 0; k < g_nzone; k++) {
@@ -741,6 +750,13 @@ static void zone_tick(void *sim) {   /* pre-snapshot, once per tick */
                     int pz = mech_pop(sim, c, hp0);
                     E.in_own_call = 0; record_event(c, atk, pz ? hp0 + 1 : hp0, pz ? 1 : I32(c, 0x3c4)); g_zone_hits++; v = objvec(sim, &n);
                 }
+            } else if (z->kind == ZONE_REPEL) {
+                if (ally || dist > z->r) continue;
+                int s; for (s = 0; s < z->nside && z->side_id[s] != cid; s++) {}
+                if (s == z->nside) { if (s >= 16) continue; z->nside++; z->side_id[s] = cid; z->next[s] = now; }
+                if (now < z->next[s]) continue;
+                int sx = dist < 1 ? z->x - 1 : z->x, sy = z->y;   /* on the centre: pushed along +x */
+                KNOCKBACK(c, sx, sy, z->push, z->owner); z->next[s] = now + 10; g_zone_pushes++;
             } else if (!ally) {   /* EdgeCrossing */
                 int s; for (s = 0; s < z->nside && z->side_id[s] != cid; s++) {}
                 if (s == z->nside) { if (s >= 16) continue; z->nside++; z->side_id[s] = cid; z->side[s] = dist < z->r; z->next[s] = now; continue; }

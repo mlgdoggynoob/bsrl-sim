@@ -59,8 +59,8 @@ the live audits record (objects / projectiles count, damage, push, heal, move): 
 live_ok / live_wrong, else live_unchecked. Output: super_audit_hyper_desc.json / .md (--live: folder of the two audits).
 --gadget (gadget round, issue #3): the brawlers with a gadget the host implements and this audit can see (`audit_gadgets`,
 `gadget_kind` mirrors nbhost gadget.c's classify functions: area at the brawler, the gadget's own skill shot or area, items,
-instant heals, Piper's Auto Aimer; R-T's super charge is gadget_check's; the other repeat_shot / spin_shoot volleys are off,
-issue #54). Each shooter gets that gadget card and fires it (fire 3, aimed at the target, super_dist = d / CastingRange as
+instant heals, Piper's Auto Aimer, the other repeat_shot / spin_shoot volleys ("repeat", issue #54 redo); R-T's super charge
+is gadget_check's). Each shooter gets that gadget card and fires it (fire 3, aimed at the target, super_dist = d / CastingRange as
 for a super: a thrown gadget lands there) in place of the super; consumed = the host counted a use (NbeResp gad_used). An
 item gadget (a trap, a tornado) acts on an enemy that comes to it, so its target walks to the shooter's spot after the fire
 (walk_in; push = how far it is kept from that spot). Expected effects come from the tables and from the card's own
@@ -277,12 +277,11 @@ NO_DAMAGE_AREAS = ("WallSpawn", "StatusEffect", "ChargeSuper", "EnragerOvercharg
 HEAL_TYPES = ("Heal", "Hot", "HealRegen", "HealAndDamage", "HotAndDot")
 
 
-MASKED = {"BowDude_Totem", "Speedy_Rewind", "HammerDude_Pull", "HookDude_Homing", "AssaultShotgun_Bomb", "Ninja_InvisibleArea",
-          "Gladiator_Amp", "MagicalGirl_FlyArea",
-          "Barkeep_HealPotion", "Blower_Stopper"}   # gadget.c g_masked: classified, but no
-# effect in this audit, or (the last two, Barley's and Gale's) the effect disagrees with the game's description (desc_audit, #55)
+MASKED = {"BowDude_Totem", "Speedy_Rewind", "HammerDude_Pull", "AssaultShotgun_Bomb", "Ninja_InvisibleArea",
+          "Gladiator_Amp", "MagicalGirl_FlyArea",   # gadget.c g_masked: classified, but no effect in this audit
+          "BarrelBot_Spin", "KickerDude_Mines", "BeeSniper_ExtraBee", "FireDude_FlameShield"}   # REPEAT rows with no hit seen
 # -> not usable
-GADGET_KINDS = ("area", "shot", "skill_area", "item", "heal_now", "super", "auto_aim")
+GADGET_KINDS = ("area", "shot", "skill_area", "item", "heal_now", "super", "auto_aim", "repeat")
 
 
 def gadget_kind(a, masked=True):
@@ -301,7 +300,8 @@ def gadget_kind(a, masked=True):
         if bt in ("Attack", "AimableArea") and not sk.get("Projectiles") and sk.get("AreaEffectObject"): return "skill_area"
         return None
     if a.get("Name") == "Sniper_HandGun" and is_proj and num("Range") > 0: return "auto_aim"   # gadget.c AUTO AIMER (#54 redo)
-    if t in ("repeat_shot", "spin_shoot"): return None   # issue #54: gadget.c's REPEAT / SPIN are off (N main attacks at full damage)
+    if t in ("repeat_shot", "spin_shoot"):   # gadget.c REPEAT / SPIN (#54 redo): ActiveTicks // CustomValue1 shots of the CustomObject
+        return "repeat" if is_proj and num("CustomValue1") > 0 and num("ActiveTicks") > 0 and a.get("Name") != "Sniper_HandGun" else None
     if t == "spawn" and obj in T["item"]: return "item"
     if t in ("heal_attached_and_self", "heal_damage_taken") and num("CustomValue1") > 0: return "heal_now"
     if t == "charge_ulti" and num("CustomValue1") > 0: return "super"
@@ -324,7 +324,7 @@ def all_gadgets():
     return out
 
 
-AUDIT_KINDS = ("area", "shot", "skill_area", "item", "heal_now", "auto_aim")   # "super" (R-T): gadget_check checks it
+AUDIT_KINDS = ("area", "shot", "skill_area", "item", "heal_now", "auto_aim", "repeat")   # "super" (R-T): gadget_check checks it
 
 
 @functools.lru_cache(None)
@@ -357,7 +357,8 @@ def _expected_gadget(name, slot=0):
     heal from the area's area_effects_logic row, range = its radius (the target stands inside it). shot / skill_area: the
     gadget's own skill as expected_skill() reads a super. item: an item. heal_now: a heal (the target hits the shooter
     first). auto_aim: the CustomObject projectile, damage, and a push when the projectile has PushbackStrength; range = the
-    row's Range in tiles (the shot goes at the nearest enemy within it)."""
+    row's Range in tiles (the shot goes at the nearest enemy within it). repeat: the CustomObject projectile and damage (heal for
+    a TargetFriends row: Barley's potion), range = the row's Range in tiles, else CustomValue4 (spin_shoot), else 600."""
     from nbpc import diversity as D
     T = _tables(); card, acc, kind = audit_gadgets(slot)[name]
     a = {r["Name"]: r for r in D._rows("accessories.csv") if r.get("Name")}[acc]
@@ -381,6 +382,11 @@ def _expected_gadget(name, slot=0):
         obj = a["CustomObject"].split(";")[0]; pl = T["plog"].get(T["pskin"].get(obj, {}).get("LogicProjectile") or obj, {})
         ex = ["projectile", "damage"] + (["push"] if _num(pl, "PushbackStrength") > 0 else [])
         return {**base, "kind": "Gadget: auto_aim", "range": _num(a, "Range") * TILE, "expect": ex, "projectiles": [obj]}
+    if kind == "repeat":
+        obj = a["CustomObject"].split(";")[0]; fr = (a.get("TargetFriends") or "").lower() == "true"
+        rng = _num(a, "Range") * TILE or (_num(a, "CustomValue4") if a.get("Type") == "spin_shoot" else 0) or 600.0
+        return {**base, "kind": "Gadget: repeat " + a.get("Type", ""), "range": rng, "expect": ["projectile", "heal" if fr else "damage"],
+                "projectiles": [obj]}
     if kind == "item":
         return {**base, "kind": "Gadget: item", "range": 600.0, "expect": ["item"], "items": [a["CustomObject"].split(";")[0]],
                 "walk_in": True}   # a trap / tornado acts on an enemy that comes to it: the target walks to the shooter
@@ -1307,21 +1313,25 @@ def _check():
         assert "ClusterBombDude" in ag and eb["skill"] == "ClusterBombDude_Explosion" and {"area", "damage", "push"} <= set(eb["expect"]) and eb["delay"] == 20, eb
         assert expected_gadget("DeadMariachi")["expect"] == ["area", "heal"] and expected_gadget("Ghost")["expect"] == ["area"]
         kinds = collections.Counter(k for gs in all_gadgets().values() for _, _, k in gs)   # gadget.c's coverage of the enabled cards
-        assert sum(kinds.values()) == 213 and kinds["shot"] == 25 and not {"repeat", "spin"} & set(kinds), kinds
-        assert kinds["item"] == 1 and kinds["heal_now"] == 2 and kinds["super"] == 1 and kinds["skill_area"] == 2, kinds   # #55 masked Gale's
+        assert sum(kinds.values()) == 213 and kinds["shot"] == 25 and kinds["repeat"] == 4 and "spin" not in kinds, kinds
+        assert kinds["item"] == 2 and kinds["heal_now"] == 2 and kinds["super"] == 1 and kinds["skill_area"] == 2, kinds   # Gale's WindWall: item
         assert audit_gadgets(0)["Gunslinger"][1] == "Gunslinger_Reload" and audit_gadgets(1)["Gunslinger"][1] == "Gunslinger_BigBullet"
         assert expected_gadget("Gunslinger")["expect"][:1] == ["projectile"] and expected_gadget("Gunslinger")["gadget_kind"] == "shot"
-        assert not {"BowDude", "HookDude"} & set(audit_gadgets(0))
+        assert "BowDude" not in audit_gadgets(0) and audit_gadgets(0)["HookDude"][2] == "repeat"   # Gene's homing hand: repeat (#54 redo)
         assert kinds["auto_aim"] == 1 and audit_gadgets(0)["Sniper"][1:] == ("Sniper_HandGun", "auto_aim"), kinds
         pa = expected_gadget("Sniper")
         assert pa["expect"] == ["projectile", "damage", "push"] and pa["range"] == 2100 and pa["projectiles"] == ["PiperHandgunProjectile"], pa
-        assert "Barkeep" not in audit_gadgets(1) and expected_gadget("ElectroSniper")["expect"][:1] == ["item"]   # HealPotion: repeat_shot, off (#54), and masked (#55)
+        assert audit_gadgets(1)["Barkeep"][1] == "Barkeep_HealPotion" and expected_gadget("ElectroSniper")["expect"][:1] == ["item"]
+        eh = _expected_gadget("Barkeep", 1)   # the potion: TargetFriends -> a heal, range Range 10 tiles
+        assert eh["gadget_kind"] == "repeat" and eh["expect"] == ["projectile", "heal"] and eh["range"] == 3000, eh
+        ed = _expected_gadget("TntDude")   # Dynamike's spin: no Range -> CustomValue4
+        assert ed["expect"] == ["projectile", "damage"] and ed["range"] == 700 and ed["projectiles"] == ["TntDudeProjectile"], ed
         assert expected_gadget("BullDude", 1)["gadget_kind"] == "skill_area" and "area" in expected_gadget("BullDude", 1)["expect"]
         eg = expected_gadget("ElectroSniper")   # text effects: damage the data did not give goes to text_expect, the unmeasurable to notes
         assert eg["text_expect"] == ["damage"] and "damage" in eg["expect"] and any("slow" in x for x in eg["notes"]), eg
         assert expected_gadget("DeadMariachi")["text_expect"] == [] and any("not checked live" in x and "slow" in x for x in expected_gadget("Ghost")["notes"])
         assert any("slow, stun" in x for x in expected_gadget("BullDude", 1)["notes"])
-        assert eg.get("walk_in") and "Blower" not in audit_gadgets(0)   # item gadgets: the target walks in; Gale's tornado: masked (#55)
+        assert eg.get("walk_in") and audit_gadgets(0)["Blower"][1:] == ("Blower_Stopper", "item")   # item gadgets: the target walks in
         fg = expected_gadget("FutureGirl")   # Wendy's grenade: thrown, its areas deal no damage -> its skill's Damage is not expected
         assert "damage" not in fg["expect"] and any("thrown" in x for x in fg["notes"]), fg
         assert "damage" in expected_gadget("AssaultShotgun")["expect"]   # Griff's coins land on a damage area: still expected

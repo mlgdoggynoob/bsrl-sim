@@ -5,7 +5,8 @@
      SETTLE ticks later that the kind's effect happened (EFFECT; a kind without an effect test fails, so a new kind comes
      with its test). The effect has to show in at least EFFECT_SHARE of the activations of each kind: a dash aimed into
      a wall stops short and enemy fire can outweigh a heal over time, and the check plays random agents in a real battle;
-  3. fire 3 on a gadget that is not ready (no use left / cooldown / kind not implemented) spends nothing;
+  3. fire 3 on a gadget that is not ready (no use left / cooldown / kind not implemented) spends nothing; a ready gadget
+     whose row has RequireEnemyInRange (`needs_enemy`) may refuse with no enemy in Range, which spends nothing either;
   4. env_v5.Env.gadget (obs_v5 self 3) agrees with the response;
   5. volley damage (issue #54), a scripted scene on the same boot after the random battles: every brawler with a SHOT
      gadget (super_audit.all_gadgets kind "shot", gadget.c SHOT, published PROJECTILE) stands on a super_audit.find_spots
@@ -90,13 +91,23 @@ def effect_dash(a, b): d = float(np.hypot(b["x"] - a["x"], b["y"] - a["y"])); re
 def effect_heal(a, b): return b["hp"] > a["hp"], "hp %d -> %d" % (a["hp"], b["hp"])
 def effect_spawn(a, b):   # an area / item (gadget.c AREA, SKILL AREA, ITEM): not in NbeResp; its effects: `super_audit --gadget`
     return True, "use spent (area / item: super_audit --gadget)"
-def effect_projectile(a, b):   # projectiles (gadget.c SHOT): not in NbeResp; seen by `super_audit --gadget`, damage by 5
+def effect_projectile(a, b):   # projectiles (gadget.c SHOT, AUTO AIMER, REPEAT / SPIN): not in NbeResp; seen by `super_audit --gadget`, damage by 5
     return True, "use spent (projectiles: super_audit --gadget, damage: the volley scene)"
 def effect_super(a, b): return b["sc"] > a["sc"], "super %d -> %d of %d" % (a["sc"], b["sc"], b["sm"])
 EFFECT = {"DASH": effect_dash, "HEAL": effect_heal, "SPAWN": effect_spawn, "PROJECTILE": effect_projectile,
           "SUPER": effect_super}   # by GAD_* name; add one with each kind gadget.c implements
 WANT = {"HEAL": lambda s: s["hp"] < 0.9 * s["max_hp"],   # judged only when the effect can show (a heal needs missing hp,
         "SUPER": lambda s: s["sc"] < s["sm"]}             # a super charge a super that is not full)
+
+
+def needs_enemy():
+    """cards.csv data ids of the usable gadgets whose accessories.csv row has RequireEnemyInRange (gadget.c refuses their
+    fire 3 with no enemy in Range: Piper's Auto Aimer, Gene, Mico), from super_audit's mirror"""
+    import super_audit as SA
+    from nbpc import diversity as D
+    acc = {r["Name"]: r for r in D._rows("accessories.csv") if r.get("Name")}
+    return {c for gs in SA.all_gadgets().values() for c, n, k in gs
+            if k and (acc.get(n, {}).get("RequireEnemyInRange") or "").lower() == "true"}
 
 
 def judge(a, b):
@@ -358,6 +369,7 @@ def main():
     roster = [x for x in a.roster.split(",") if x] or None
     env = E.Env(1, E.make_battle_fn(10, roster=roster, gadgets=True), ticks=2, fair=True, max_ticks=4000)
     rng = np.random.default_rng(0); pend = {}; fails = []; done = collections.Counter(); refused = collections.Counter()
+    gate = needs_enemy()
     settle = {}; eff = collections.Counter(); eff_ok = collections.Counter(); eff_what = collections.defaultdict(list)
     seen = collections.Counter(); t0 = None; steps = 0
     by = lambda aid: {s.battle: s for s in env.I}.get(int(aid) >> 4)
@@ -379,6 +391,8 @@ def main():
                 if aid in pend:
                     b0 = pend.pop(aid)
                     if b0["tick"] < now["tick"] and not now["out"] and now["card"] == b0["card"]:   # same battle, still in play
+                        if ready(b0) and b0["card"] in gate and now["used"] == b0["used"] and now["charges"] == b0["charges"]:
+                            refused[KIND[b0["kind"]] + " (no enemy in range)"] += 1; continue   # RequireEnemyInRange
                         bad = judge(b0, now)
                         fails += ["player %d %s: %s" % (p, KIND[b0["kind"]], m) for m in bad]
                         (done if ready(b0) else refused)[KIND[b0["kind"]]] += 1
