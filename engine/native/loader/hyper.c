@@ -48,8 +48,9 @@
  * takes Meg's card, Kaze's other form (GeishaTransformed, Geisha's Pet) Kaze's. A character change hands a running hypercharge to the new form (hyper_char_changed). NbeResp hyp_supers / hyp_super_id count the supers cast while hypercharged and name the SkillData of
  * the last one (hyper_super_data, from env.c fire_input_now).
  * The visual effects (client side) are whatever the client draws from +0xa0 and the overcharged skill data.
- * Also here: the steering of homing projectiles (on_travel), which Belle's and Hank's hypercharged supers need; it applies
- * to every TravelType 4 projectile, hypercharged or not. NBHOST_HYPER_TRACE=1 logs each libg call site of isOvercharged. */
+ * Also here: the steering of homing projectiles (on_travel), which Belle's and Hank's hypercharged supers need, and the
+ * circling of TravelType 8 ones (circle_travel: R-T's hypercharged lasers, Melodie's notes); both apply to every
+ * projectile of that TravelType, hypercharged or not. NBHOST_HYPER_TRACE=1 logs each libg call site of isOvercharged. */
 #include "nbhost.h"
 #include "nbenv_proto.h"
 #include <string.h>
@@ -180,9 +181,34 @@ static uint8_t *steer_target(uint8_t *pr, int x, int y, int r) {
     }
     return best;
 }
+/* Circling projectiles (TravelType 8: R-T's hypercharged security lasers SplitterCirclingProjectile, Melodie's notes
+ * AxeJugglerProjectile2, ...). Their spawn 0xb78c58 sets the angle on the circle (proj +0x454, degrees: 360 / n apart; a new
+ * one re-spaces the owner's others from the first one's +0x454, 0xb79004..0xb79068) and the ring radius +0x498 when the
+ * spawner gives one (libg's own Brawler_Splitter tick: 1000). The travel step 0xb709e4 ends the flight once the owner
+ * (+0xe0) is gone or the end tick passed, then moves the projectile to +0x94 / +0x98 (0xb70bfc), the position the
+ * compiled-out circling code writes: it stayed 0, so the lasers jumped to the map origin. Here (same enter hook as the homing
+ * steer): that position = the owner's + radius along the angle, radius = +0x498 or else TravelTypeVariable (data +0x214, the
+ * one 0xb70c44 reads: Melodie 650), angle = +0x454 + the turn since tick 0, one clock for all, so the spacing the spawner
+ * sets holds. The turn: Speed (proj +0x14c) units/s along the circle ([?] guess: no client code turns it; Speed read as for
+ * every other projectile; R-T's Speed 29 makes his lasers almost still, Melodie's 860 at 650 is a turn in 4.7 s). The
+ * game's own code then places it there and its hits run as for any projectile. */
+static long g_ncircle;
+static void circle_travel(uint8_t *pr, uint8_t *d) {
+    uint8_t *o = PTR(pr, 0xe0);
+    int r = I32(pr, 0x498) > 0 ? I32(pr, 0x498) : I32(d, 0x214);
+    if (!o || r < 1 || r > 5000) return;
+    int now = I32(pr, 0x410) + ((int (*)(void *))B(0xc26bd8))(((void *(*)(void *))B(0xb6a378))(pr));
+    /* degrees turned: Speed / 20 units per tick on a circle of radius r = Speed x 180 / (20 pi r) degrees per tick */
+    long turn = now > 0 ? (long)now * I32(pr, 0x14c) * 9000 / (31416L * r / 10000) / 1000 : 0;
+    int a = (int)(((I32(pr, 0x454) + turn) % 360 + 360) % 360);
+    I32(pr, 0x94) = I32(o, 0x38) + ((sin1024(a + 90) * r) >> 10); I32(pr, 0x98) = I32(o, 0x3c) + ((sin1024(a) * r) >> 10);
+    if (g_ncircle++ < 6) LOG("[hyper] circling projectile %d (data %d): owner %d, radius %d, angle %d at tick %d\n", I32(pr, 8), I32(d, 0x20),
+                             I32(o, 8), r, a, now);
+}
 static void on_travel(uint64_t *c) {
     uint8_t *pr = (uint8_t *)c[0], *d = pr ? PTR(pr, 0x10) : NULL;
-    if (!d || ((int (*)(void *))B(0xb7625c))(pr) == 8) return;
+    if (!d) return;
+    if (((int (*)(void *))B(0xb7625c))(pr) == 8) { circle_travel(pr, d); return; }
     int str = ((int (*)(void *))B(0xb7634c))(pr); if (str < 1) return;
     int now = I32(pr, 0x410) + ((int (*)(void *))B(0xc26bd8))(((void *(*)(void *))B(0xb6a378))(pr)), start = I32(pr, 0x28);
     int k = 0, fr = -1;

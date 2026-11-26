@@ -449,6 +449,7 @@ static int mech_pop(void *sim, uint8_t *c, int before);   /* Meg's mech at 0 HP:
 static int just_popped(uint8_t *c);                       /* ... and takes no other hit in that tick */
 static uint8_t *split_link(void *sim, uint8_t *c, int before, void *atk, int a1, int *lost);   /* R-T's legs at 0 HP: the head goes too (below) */
 void superfix_split_drop(uint8_t *head) __attribute__((weak));   /* superfix_moves.c: a knocked-out R-T head's legs go */
+void superfix_hit_event(uint8_t *victim, uint8_t *attacker, void *src) __attribute__((weak));   /* superfix_moves.c: Sirius's hit listener */
 static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *attacker, void *src, int a7,
                         int s0, int s1, void *s2, int s3, int s4, int s5, int s6, int s7, int s8, int s9) {
     int mode3 = I32(g_libg->base, 0x12eefb4) == 3;
@@ -508,6 +509,8 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
     int pop = vchar && mode3 && mech_pop(E.sim, victim, before);   /* the mech's HP is gone, Meg stands in its place */
     if (vchar && mode3) record_event(victim, attacker, pop ? before + 1 : before, pop ? 1 : I32(victim, 0x3c4));   /* no kill */
     if (stalk_heal > 0 && vchar) stalk_heal_after(attacker, stalk_heal, before - I32(victim, 0x3c4));
+    if (superfix_hit_event && vchar && mode3 && !E.in_own_call && dmg > 0 && before > 0 && attacker && src)   /* his hit event (char +0x280) */
+        superfix_hit_event(victim, attacker, src);
     if (!pop && ow >= 0 && I32(victim, 0x3c4) <= 0 && resp_mate(E.sim, ow)) {   /* knocked out while a teammate lives */
         E.resp_at[ow] = I32(E.sim, 0x10) + RESP_TICKS; E.resp_ai[ow] = U8(victim, 0x469); E.resp_n++;
         /* area round: it loses its power cubes (Duo Showdown: a respawned brawler starts at 0 cubes) and their +400 max HP
