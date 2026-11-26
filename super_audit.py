@@ -4,6 +4,7 @@ some of it re-implemented in nirkt's env.c / spawnfix.c). Output is a per-brawle
     python -m super_audit [--n 2] [--only BullDude,Sniper]     # live: boots --n hosts (60-90 s each)
     python -m super_audit --check                              # classification self-check, no host
     python -m super_audit --hyper --only Jester,Twins          # the hypercharged supers (hypercharge first, host hyper.c)
+    python -m super_audit --attack                             # the main attacks (fire 1 in place of the super)
     python -m super_audit --hyper-desc [--live DIR]            # offline: hypercharge descriptions vs tables and live audits
 
 Setup (one battle per 10 brawlers, map MAP = the most open Showdown map, storm off, every player's native AI off):
@@ -11,11 +12,14 @@ players 0-4 shoot in phase A, players 5-9 in phase B; in each phase every shoote
 wide corridor of open tiles in at least two directions, spots >= SPACING apart; A and B use different spots) with one
 enemy target at distance d along a corridor. Per phase: teleport + heal everyone and end spawn protection; the target fires
 one normal attack at the shooter (so a self-heal is visible); fill the shooters' supers; fire the super (fire 2, aim at the
-target, super_dist = d / CastingRange, a charge aims ~1 tile past the target); watch WATCH ticks (LONG_WATCH for Bo's mines and Mico's jump). A super the player steers
+target, super_dist = d / CastingRange, a charge aims ~1 tile past the target); watch WATCH ticks (LONG_WATCH for Bo's mines and Mico's jump). Bo's mines land in a ring around the aim point
+and go off only when an enemy comes within their trigger range, so from TRAP_WALK ticks after the fire the target walks to the
+nearest of the shooter's proximity traps (`is_trap`; its push is not read while it walks). A super the player steers
 while it runs (FlyJump, Ww) has its shooter walk towards the target once its CastingTime is over (moves sent while it
 casts are dropped), so its "move" is plain walking.
 A ProjectileShield super (Buster) has its target SHIELD_D away, past the shield line, shooting into it at the first
-step POST_HIT_SHIELD ticks or more after the fire; a type-16 charge (Bonnie, who hits where she lands) is aimed at the target, not past it.
+step POST_HIT_SHIELD ticks or more after the fire. Projectiles end on a PayloadTrack tile on this host (MAP has a loop of
+them), so Buster and Bibi (her ball) take a spot and direction with none on the line to past the target (`track_spots`); a type-16 charge (Bonnie, who hits where she lands) is aimed at the target, not past it.
 Measured per shooter (state2 dump each step, attributed by owner player index): super consumed (charge < half of max),
 damage = target HP lost (or the shooter's NbeResp damage_dealt summed over the watch steps: the host reports it per step), own max displacement (dash / jump / charge; host `leaping` flag), target max
 displacement (pushback / pull), own HP gain (only when the pre-damage hit), new projectiles / summons / area effects
@@ -68,7 +72,13 @@ item gadget (a trap, a tornado) acts on an enemy that comes to it, so its target
 description (`expected_gadget`: damage, push and heal that texts.csv names are expected too, issue #55; the other effects it
 names are listed as not checked live). A thrown shot whose projectiles hit nobody in flight and whose areas deal no damage
 (Damian's wall, Wendy's grenade, Spike's cactus) does not expect its skill's Damage (`thrown_harms`). --gadget-slot 1 audits
-each brawler's second such gadget. Output: super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*)."""
+each brawler's second such gadget. Output: super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*).
+--attack (main attack round): the same scene, but each shooter fires its main attack (fire 1, aimed at the target; the host
+always throws it at full range) in place of the super, with no super fill. Expected effects come from the brawler's
+characters.csv WeaponSkill row read as a super's (`expected(attack=True)`, Meg: her mech's weapon); consumed = the attack's
+ammo (state2 skill 0 word, NbeResp ammo) dropped, or damage dealt. A thrown attack (an Indirect projectile: Dynamike, Barley,
+Tick, ...) lands at full range, so its target stands at min(CastingRange, DIST_MAX) on both attempts (`throw`). No LONG_WATCH.
+Output: super_audit_attack.json / .md."""
 import argparse, collections, functools, json, os, re, sys, threading, time
 import numpy as np
 
@@ -79,6 +89,9 @@ CORR = 8                                 # corridor length in tiles from the sho
 SPACING = 13                             # tiles between spot centres (3900 u: a long super past its target stays clear)
 WATCH = 50                               # ticks watched after the fire (2.5 s at 20 ticks/s; regen starts 3 s after a hit)
 LONG_WATCH = {"BowDude": 160, "Leaper": 160}   # Bo's mines arm and go off after 2.5 s; Mico's jump lasts 6 s: watched 8 s
+TRAP_WALK = 40       # ticks after the fire: the target walks to the nearest of the shooter's armed proximity traps (Bo's mines
+                     # land in a ring ~500 u around the aim point and arm 25-32 ticks after the fire: host run, items log)
+TRAP_RANGE = 10      # items.csv TriggerRangeSubTiles up to this is a proximity trap (Bo's Mine 3; Tick's 200 is a timer)
 STEP = 2                                 # ticks per env step while watching
 POST_HIT = 0                             # --post-hit: tick after the fire at which the target shoots the shooter again (0 off)
 POST_HIT_SHIELD = 8                      # ProjectileShield (Buster): the target shoots into the shield at the first step >= this tick
@@ -155,6 +168,12 @@ def display(name):
     return t.title() if t else name
 
 
+def is_trap(did):
+    """an items data id -> True for a proximity trap: a TriggerAreaEffect set off by an enemy within TriggerRangeSubTiles"""
+    r = _tables()["item"].get(data_name(did), {})
+    return bool(r.get("TriggerAreaEffect")) and 0 < _num(r, "TriggerRangeSubTiles") <= TRAP_RANGE
+
+
 def area_radius(did):
     """area_effects_skin data id -> table radius (units; obs_v5's lookup)"""
     import obs_v5 as O
@@ -181,18 +200,19 @@ def hyper_owner(name):
     return None
 
 
-def expected(name, hyper=False):
+def expected(name, hyper=False, attack=False):
     """the brawler's super from the tables -> dict(skill, type (BehaviorType), kind (finer group label), range (units),
     charge (bool), expect (effects that must be seen), notes). A brawler in START_FORM (Meg: the client spawns her in her
     mech) gets its start form's super, with a note. hyper: its hypercharged super (hyper_skill); expect adds
     hyper_cast (the host cast it while hypercharged, with this skill's data where characters.csv names an
     OverchargedUltimateSkill) and hyper (one of the projectiles / summons / areas / items only the hypercharged super has,
-    `hyper_names`, when it has any); a brawler with no card (`hyper_owner` None) keeps its normal super, no_hyper=True"""
+    `hyper_names`, when it has any); a brawler with no card (`hyper_owner` None) keeps its normal super, no_hyper=True. attack (--attack): its main attack (characters.csv WeaponSkill) in place of its super"""
     if name in START_FORM:
-        out = expected(START_FORM[name], hyper)
-        out["notes"].append(f"spawns as {START_FORM[name]}: its super is audited; the eject and the change back: charge_check")
+        out = expected(START_FORM[name], hyper, attack)
+        out["notes"].append(f"spawns as {START_FORM[name]}: its {'attack' if attack else 'super'} is audited; the eject and the change back: charge_check")
         return out
-    T = _tables(); ch = T["char"][name]; sk_name = ch.get("UltimateSkill", ""); s = T["skill"].get(sk_name, {})
+    T = _tables(); ch = T["char"][name]; sk_name = ch.get("WeaponSkill" if attack else "UltimateSkill", ""); s = T["skill"].get(sk_name, {})
+    if attack: return expected_skill(sk_name, s)
     if hyper and not hyper_owner(name):   # no hypercharge card (Wendy, Nori, the SuperNova forms): its normal super, class no_hyper
         out = expected_skill(sk_name, s); out["no_hyper"] = True
         out["notes"].append("no hypercharge card (cards.csv MetaType 6) for it or the brawler it is a form of: no hypercharge")
@@ -261,6 +281,11 @@ def expected_skill(sk_name, s):
            "steer": steer, "cast": _num(s, "CastingTime"), "expect": ex,
            "post_hit": POST_HIT_SHIELD if bt == "ProjectileShield" else 0,
            "land": charge and s.get("ChargeType") == "16",   # Bonnie: she hits where she lands, aimed at the target (not past it)
+           "throw": any(r.get("Indirect") == "true" for r in pl),   # --attack: a thrown attack lands at full range (env.c fire 1)
+           # projectiles end on a PayloadTrack tile on this host (Bibi's ball never leaves one; the targets' shells hit 2 of 13
+           # shooters standing on one, 6-10 of 13 elsewhere): Bibi's ball and the shots into Buster's shield need a corridor with
+           # none up to past the target (`track_free`, phase())
+           "track": bt == "ProjectileShield" or any(r.get("IsBouncing") == "true" and _num(r, "DamagesConstantlyTickDelay") > 0 for r in pl),
            "projectiles": projs, "summons": summons, "areas": areas, "items": items, "notes": notes}
     return out
 
@@ -465,7 +490,7 @@ def describe(m, missing=()):
     if m.get("crashed"): return "host crashed with it as the only shooter"
     if not m.get("spawned", True): return "brawler not spawned (host rejected it)"
     if not m.get("filled", True): return "super could not be filled (super max %s)" % m.get("super_max")
-    if not m.get("consumed"): return "super charge not consumed"
+    if not m.get("consumed"): return "attack ammo not used" if m.get("attack") else "super charge not consumed"
     p = []
     if m.get("damage", 0) > 0: p.append("%d damage%s" % (m["damage"], " (foreign summon near: not counted)" if m.get("foreign_near") else ""))
     if m.get("move", 0) >= MOVE_MIN or m.get("leaping"): p.append("moved %d u%s" % (m.get("move", 0), " (leap)" if m.get("leaping") else ""))
@@ -525,6 +550,36 @@ def find_spots(location=MAP, n=10, seed=0, tries=400):
     return [((c[0] + 0.5) * TILE, (c[1] + 0.5) * TILE, c[2]) for c in top]
 
 
+TRACK_TILE = "PayloadTrack"   # tiles.csv row that ends projectiles on this host (Survival651 has a loop of it)
+
+
+@functools.lru_cache(None)
+def _track_map(location=MAP):
+    from nbpc import diversity as D
+    ids, rows = D.map_reference(location); H, W = len(rows), len(rows[0])
+    tid = D.table("tiles.csv")[TRACK_TILE][0]
+    return (np.asarray(ids) == tid).reshape(H, W)
+
+
+def track_free(x, y, dx, dy, location=MAP):
+    """tiles from the shooter's tile (x, y world units) along (dx, dy) before the first PayloadTrack tile on that line (0: the
+    shooter stands on one), at most CORR + 2"""
+    trk = _track_map(location); H, W = trk.shape; cx, cy = int(x // TILE), int(y // TILE); k = 0
+    while k <= CORR + 1 and 0 <= cx + dx * k < W and 0 <= cy + dy * k < H and not trk[cy + dy * k, cx + dx * k]: k += 1
+    return k
+
+
+def track_spots(spots, d):
+    """{spot index: [directions]} with no PayloadTrack on the line from the shooter to 2 tiles past a target d units away
+    (expected()'s `track`)"""
+    need = int(np.ceil(d / TILE)) + 2
+    out = {}
+    for i, (x, y, dirs) in enumerate(spots):
+        ok = [dv for dv in dirs if track_free(x, y, dv[0], dv[1]) >= need]
+        if ok: out[i] = ok
+    return out
+
+
 # ------------------------------------------------------------------ live
 def parse_state(buf):
     a = np.frombuffer(buf, "<i4")
@@ -547,10 +602,10 @@ class Job:
 
 
 class Auditor:
-    def __init__(self, names, n=1, retry=True, log_dir=None, seed=0, host_args=(), verbose=True, hyper=False, gadget=False, slot=0):
+    def __init__(self, names, n=1, retry=True, log_dir=None, seed=0, host_args=(), verbose=True, hyper=False, gadget=False, slot=0, attack=False):
         from nbpc import diversity as D
-        self.D = D; self.hyper = hyper; self.gadget = gadget; self.retry = retry; self.verbose = verbose
-        self.info = {b: expected_gadget(b, slot) if gadget else expected(b, hyper) for b in names}
+        self.D = D; self.hyper = hyper; self.gadget = gadget; self.attack = attack; self.retry = retry; self.verbose = verbose
+        self.info = {b: expected_gadget(b, slot) if gadget else expected(b, hyper, attack) for b in names}
         self.results = {b: [] for b in names}; self.lock = threading.Lock(); self.inflight = 0
         self.queue = collections.deque(Job(b) for b in names); self.seed = 93000000 + seed
         self.spots = find_spots(MAP)
@@ -591,10 +646,10 @@ class Auditor:
     def worker(self, idx):
         from nbpc.instance import Instance, InstanceDead
         inst = Instance(idx, tag=f"sa{os.getpid()}", log_dir=self.log_dir, bell=True, extra_args=self.host_args)
-        def boot():
-            t = time.time(); inst.start(); inst.wait_ready(); self.log(f"instance {idx} ready in {time.time() - t:.0f} s")
-        boot()
+        def boot():   # 1800 s: a loaded machine (other hosts on the same cores) boots well past 300 s
+            t = time.time(); inst.start(); inst.wait_ready(timeout=1800); self.log(f"instance {idx} ready in {time.time() - t:.0f} s")
         try:
+            boot()
             while True:
                 jobs = self.take()
                 if jobs is None:
@@ -661,13 +716,23 @@ class Auditor:
     def phase(self, inst, run, spots):
         from nbpc import proto as P
         geo, pos = {}, {}
+        sk = list(range(len(spots)))   # spot of each run position; a `track` super (Bibi, Buster) takes one clear of PayloadTrack
+        for a, (j, s, t) in enumerate(run):
+            if not self.info[j.name].get("track"): continue
+            good = track_spots(spots, DIST_MAX)
+            if sk[a] in good: continue
+            busy = {sk[b] for b, (jb, _, _) in enumerate(run) if b != a and self.info[jb.name].get("track")}
+            free = [b for b in range(len(sk)) if sk[b] in good and sk[b] not in busy]
+            if free: b = free[0]; sk[a], sk[b] = sk[b], sk[a]
         for k, (j, s, t) in enumerate(run):
-            inf = self.info[j.name]; x, y, dirs = spots[k]
+            inf = self.info[j.name]; x, y, dirs = spots[sk[k]]
+            if inf.get("track"): dirs = track_spots([spots[sk[k]]], DIST_MAX).get(0, dirs)
             dx, dy = dirs[min(j.attempt, len(dirs) - 1)]
             if inf.get("east") and (1, 0) in dirs: dx, dy = 1, 0
             d = float(np.clip(DIST_F[min(j.attempt, 1)] * inf["range"], DIST_MIN, DIST_MAX))
             if j.attempt and len(dirs) == 1: d = float(np.clip(d * 0.6, DIST_MIN, DIST_MAX))
             if inf["type"] == "ProjectileShield": d = SHIELD_D   # the target shoots from beyond the shield line
+            if self.attack and inf.get("throw"): d = float(min(inf["range"], DIST_MAX))   # fire 1 throws at full range
             tx, ty = x + dx * d, y + dy * d
             if inf.get("ring") and inf["range"] > inf["ring"]:   # no damage inside InnerRadius (Kaze): land past the target
                 d = float(np.clip(inf["range"] - inf["ring"], DIST_MIN, DIST_MAX))
@@ -684,7 +749,7 @@ class Auditor:
         stp(acts, 1)
         for _ in range(12): stp()
         sh = [s for _, s, _ in run]
-        if self.gadget: r = stp(ticks=1); gu0 = {s: int(r.gad_used[s]) for s in sh}   # no super: the gadget is fired below
+        if self.gadget or self.attack: r = stp(ticks=1); gu0 = {s: int(r.gad_used[s]) for s in sh}   # no super: fired below
         else: inst.setup(super_fill=sh, hyper_fill=sh if self.hyper else ()); r = stp(ticks=1)
         if self.hyper:   # --hyper: activate (fire 4), then the super below is the hypercharged one
             acts = dict(idle)
@@ -701,12 +766,12 @@ class Auditor:
             M[j] = dict(geo[j], spawned=True, filled=bool(p.super_max > 0 and p.super_charge >= p.super_max), super_max=int(p.super_max),
                         sc0=int(p.super_charge), sc_min=int(p.super_charge), hp0=int(p.hp), hp_max=int(p.hp), max_hp=int(p.max_hp),
                         pre_damaged=bool(p.hp < p.max_hp), x0=int(p.x), y0=int(p.y), tx0=int(q.x), ty0=int(q.y), thp0=int(q.hp), thp_min=int(q.hp),
-                        move=0, push=0, pull=0, leaping=False, projectiles={}, summons={}, areas={}, items={},
+                        ammo0=int(p.ammo), ammo_min=int(p.ammo), move=0, push=0, pull=0, leaping=False, projectiles={}, summons={}, areas={}, items={},
                         changed=False, data0=int(ch[0, 1]) if len(ch) else NIL, ulti0=int(ch[0, 15]) if len(ch) else NIL,
                         ulti_active=False, foreign_near=False, target_dead=False, s=s, t=t)
         m_x0, m_y0 = (lambda j: M[j]["x0"]), (lambda j: M[j]["y0"])
         acts = dict(idle)
-        for j, s, t in run: acts[s] = (-1, 3, geo[j]["aim"], geo[j]["super_dist"]) if self.gadget else (-1, 2, geo[j]["aim"], geo[j]["super_dist"])
+        for j, s, t in run: acts[s] = (-1, 1 if self.attack else 3 if self.gadget else 2, geo[j]["aim"], geo[j]["super_dist"])
         r = stp(acts, 1); n = 1
         if self.hyper:
             for j, s, t in run: M[j]["hyper_on"] = hy0[s][0] > 0
@@ -716,13 +781,13 @@ class Auditor:
                 m, p, q = M[j], r.pl[s], r.pl[t]
                 m["sc_min"] = min(m["sc_min"], int(p.super_charge)); m["hp_max"] = max(m["hp_max"], int(p.hp))
                 m["thp_min"] = min(m["thp_min"], int(q.hp) if q.alive else 0); m["target_dead"] |= bool(not q.alive or q.eliminated)
-                m["leaping"] |= bool(p.leaping)
+                m["leaping"] |= bool(p.leaping); m["ammo_min"] = min(m["ammo_min"], int(p.ammo))
                 if p.alive: m["move"] = max(m["move"], int(np.hypot(p.x - m["x0"], p.y - m["y0"])))
                 if q.alive and not q.eliminated:
                     if self.info[j.name].get("walk_in"):   # walking in: pushed back = away from the shooter's spot again
                         rr = float(np.hypot(q.x - m["x0"], q.y - m["y0"])); m["r_min"] = min(m.get("r_min", rr), rr)
                         m["push"] = max(m["push"], int(rr - m["r_min"]))
-                    else:   # (a walk-in target ends nearer the shooter by itself: no pull read from it)
+                    elif not m.get("trap_walk"):   # (a walk-in target ends nearer the shooter by itself: no pull read from it)
                         m["push"] = max(m["push"], int(np.hypot(q.x - m["tx0"], q.y - m["ty0"])))
                         if p.alive and m["push"] >= PUSH_MIN:   # pull: the target ends nearer the shooter than it started from
                             m["pull"] = max(m["pull"], int(np.hypot(m["tx0"] - p.x, m["ty0"] - p.y) - np.hypot(q.x - p.x, q.y - p.y)))
@@ -745,7 +810,7 @@ class Auditor:
                     elif own not in (s, t) and cid not in bid.values():   # someone else's summon near this pair
                         if min(np.hypot(row[3] - m["tx0"], row[4] - m["ty0"]), np.hypot(row[3] - m["x0"], row[4] - m["y0"])) < 2000:
                             m["foreign_near"] = True
-            if n >= max([WATCH] + [LONG_WATCH.get(j.name, 0) for j, _, _ in run]): break
+            if n >= max([WATCH] + [LONG_WATCH.get(j.name, 0) for j, _, _ in run if not self.attack]): break
             acts = dict(idle)
             for j, s, t in run:   # steered supers (FlyJump, Ww): once cast, the shooter walks to the target (16 joystick directions)
                 p, q = r.pl[s], r.pl[t]; inf = self.info[j.name]
@@ -753,6 +818,11 @@ class Auditor:
                     acts[s] = (int(round(np.degrees(np.arctan2(q.y - p.y, q.x - p.x)) / 22.5)) % 16, 0, 0.0, 0.0)
                 if inf.get("walk_in") and q.alive and np.hypot(q.x - m_x0(j), q.y - m_y0(j)) > 150:   # item gadgets: the target walks in
                     acts[t] = (int(round(np.degrees(np.arctan2(m_y0(j) - q.y, m_x0(j) - q.x)) / 22.5)) % 16, 0, 0.0, 0.0)
+                if not (self.gadget or self.attack) and n >= TRAP_WALK and q.alive and st is not None:   # proximity traps (Bo's mines)
+                    tr = [(float(row[3]), float(row[4])) for row in st["it"] if row[2] == s and row[0] not in ids0 and is_trap(row[1])]
+                    if tr:
+                        x, y = min(tr, key=lambda c: np.hypot(c[0] - q.x, c[1] - q.y)); M[j]["trap_walk"] = True
+                        if np.hypot(x - q.x, y - q.y) > 50: acts[t] = (int(round(np.degrees(np.arctan2(y - q.y, x - q.x)) / 22.5)) % 16, 0, 0.0, 0.0)
             # shield / status supers: the target shoots the shooter again (--post-hit for all; a ProjectileShield always)
             due = [(j, s, t) for j, s, t in run if "ph_hp0" not in M[j] and (POST_HIT or self.info[j.name].get("post_hit"))
                    and n >= (POST_HIT or self.info[j.name]["post_hit"])]
@@ -770,6 +840,7 @@ class Auditor:
             m = M[j]
             m["consumed"] = bool(m["filled"] and m["sc_min"] < m["super_max"] / 2)
             if self.gadget: m["consumed"] = int(r.gad_used[s]) > gu0[s]; m["filled"] = True   # the host counted a use
+            if self.attack: m.update(consumed=m["ammo_min"] < m["ammo0"] or m.get("dd", 0) > 0, filled=True, attack=True)   # ammo spent
             m["damage"] = max(m["thp0"] - m["thp_min"], m.get("dd", 0))
             m["heal"] = m["hp_max"] - m["hp0"]
             m["pre_hit"] = m["max_hp"] - m["hp0"]                     # the target's shot before the super
@@ -885,7 +956,7 @@ HDESC_CARD = {"overcharge_weapon_spread": ("radius",), "overcharge_weapon_offset
 DMG_AREAS = ("Damage", "Dot", "DelayedDamage", "DamageAndStatusEffect", "HealAndDamage", "HotAndDot", "DamageDrain", "Pushback", "Stun",
              "CrossSlashGround")   # area types that hit enemies (Effect / StatusEffect rows carry a Damage column that hits no one)
 # (range / speed: the audit aims at a fixed distance and records no speed, so neither maps to its move field)
-HDESC_LIVE = {"count": "objects", "split": "projectiles", "spray": "projectiles", "damage": "damage", "dot": "damage", "push": "push",
+HDESC_LIVE = {"count": "objects", "split": "children", "spray": "projectiles", "damage": "damage", "dot": "damage", "push": "push",
               "pull": "pull", "heal": "heal"}
 
 
@@ -1108,14 +1179,16 @@ def live_claim(claim, mh, mn, name):
     """one claim vs the live audits: mh = the hypercharged run's measurements (super_audit_hyper.json best attempt), mn = the
     normal run's (super_audit.json) or None -> (live_ok / live_wrong / live_unchecked, why). Without a normal run, a count
     compares with the hypercharged table count, and a damage / push / heal the normal super's tables do not expect compares
-    with 0"""
+    with 0. An equal damage with the target dead in both runs is unchecked (its HP caps the measure)"""
     fld = HDESC_LIVE.get(claim["feature"])
     if not fld: return "live_unchecked", "no recorded field"
     if not mh: return "live_unchecked", "no hypercharged run"
     if not mh.get("consumed") or not mh.get("hyper_cast"): return "live_unchecked", "super not cast hypercharged"
     if fld == "heal" and not mh.get("pre_damaged"): return "live_unchecked", "heal not testable (pre-damage missed)"
     n_obj = lambda m: sum(len(m.get(k, [])) for k in ("projectiles", "items", "summons", "areas"))
-    get = {"objects": n_obj, "projectiles": lambda m: len(m.get("projectiles", [])), "damage": lambda m: m.get("damage", 0),
+    # children: a split's parts are projectiles or, from a BulletExplosion area's BulletExplosionItem, items (Tick's minimines)
+    get = {"objects": n_obj, "projectiles": lambda m: len(m.get("projectiles", [])),
+           "children": lambda m: len(m.get("projectiles", [])) + len(m.get("items", [])), "damage": lambda m: m.get("damage", 0),
            "push": lambda m: m.get("push", 0), "pull": lambda m: m.get("pull", 0), "heal": lambda m: m.get("heal", 0)}[fld]
     vh = get(mh)
     if fld == "pull":   # the normal super never pulls: judged on the hypercharged run alone
@@ -1123,6 +1196,8 @@ def live_claim(claim, mh, mn, name):
     if mn is not None and mn.get("consumed"):
         vn = get(mn); why = "%s %g -> %g (normal run -> hypercharged run)" % (fld, vn, vh)
         if fld == "heal" and vh == vn: return "live_unchecked", why + ": equal, capped by the pre-damage"
+        if fld == "damage" and vh == vn and mh.get("target_dead") and mn.get("target_dead"):
+            return "live_unchecked", why + ": equal, the target died in both runs (capped by its HP)"
         if vh == vn == 0: return "live_unchecked", why + ": none in either run (the setup does not reach it)"
         return ("live_ok" if vh > vn else "live_wrong"), why
     ex = expected(name)["expect"]
@@ -1131,9 +1206,9 @@ def live_claim(claim, mh, mn, name):
                 "%s %g (the normal super's tables expect none)" % (fld, vh))
     if fld == "objects" and claim.get("hyper"):
         return ("live_ok" if n_obj(mh) >= claim["hyper"] else "live_wrong"), "%d objects seen, hypercharged tables %g" % (n_obj(mh), claim["hyper"])
-    if fld == "projectiles" and claim.get("hyper", 0) > claim.get("normal", 0):
+    if fld in ("projectiles", "children") and claim.get("hyper", 0) > claim.get("normal", 0):
         top = len([p for p in (hyper_skill(name)[1].get("Projectiles") or "").split(";") if p]) * max(1.0, _num(hyper_skill(name)[1], "NumBulletsInOneAttack"))
-        return ("live_ok" if vh > top else "live_wrong"), "%d projectiles seen, %g fired (children expected)" % (vh, top)
+        return ("live_ok" if vh > top else "live_wrong"), "%d %s seen, %g fired (children expected)" % (vh, fld, top)
     return "live_unchecked", "no normal run (super_audit.json) to compare %s with" % fld
 
 
@@ -1253,12 +1328,16 @@ def _check():
     assert live_claim({"feature": "pull"}, hm, m(push=780), "x")[0] == "live_wrong" and live_claim({"feature": "radius"}, hm, None, "x")[0] == "live_unchecked"
     assert live_claim({"feature": "pull"}, m(hyper_cast=True, push=300, pull=300), m(push=780), "x")[0] == "live_ok"
     assert live_claim({"feature": "push"}, hm, m(), "x")[0] == "live_unchecked"           # nothing in either run: the setup does not reach it
+    assert live_claim({"feature": "damage"}, m(hyper_cast=True, damage=7400, target_dead=True), m(damage=7400, target_dead=True), "x")[0] == "live_unchecked"   # Grom: both kill the filler
+    assert live_claim({"feature": "damage"}, m(hyper_cast=True, damage=7400), m(damage=7400), "x")[0] == "live_wrong"
     assert live_claim({"feature": "count"}, m(items=["B"]), m(), "x") == ("live_unchecked", "super not cast hypercharged")
+    assert live_claim({"feature": "split"}, m(hyper_cast=True, projectiles=["P"], items=["M"] * 6), m(projectiles=["P"]), "x")[0] == "live_ok"   # Tick's minimines
     # best attempt, descriptions, checklist
     at = [{"class": "no_effect"}, {"class": "works"}]
     assert best(at)["class"] == "works" and best([{"class": "crash"}, {"class": "not_fired"}])["class"] == "not_fired"
     d = describe(m(damage=1960, move=2100, areas=[{"name": "BullSlowArea", "radius": 300}], expect=["move"]), ["push"])
     assert "1960 damage" in d and "moved 2100" in d and "BullSlowArea r300" in d and d.endswith("missing: push"), d
+    assert describe(m(consumed=False, attack=True)) == "attack ammo not used"
     assert describe(m(consumed=False)) == "super charge not consumed" and "not testable" in describe(m(pre_damaged=False, expect=["heal"]))
     rows = [{"name": "BullDude", "display": "Bull", "kind": "Charge 1", "class": "partial", "what": d},
             {"name": "Shaman", "display": "Nita", "kind": "Attack: summon", "class": "works", "what": "summons: ShamanPet"},
@@ -1284,6 +1363,8 @@ def _check():
         assert all(i["range"] > 0 and i["skill"] for i in inf.values())
         assert inf["Gladiator"]["expect"] == ["move", "area"] and any("EdgeCrossing" in x for x in inf["Gladiator"]["notes"]), inf["Gladiator"]
         assert inf["ShieldTank"]["post_hit"] == POST_HIT_SHIELD and inf["BullDude"]["post_hit"] == 0
+        iid = {r[next(iter(r))]: 18000000 + i for i, r in enumerate(_tables()["rows"][18])}
+        assert is_trap(iid["Mine"]) and is_trap(iid["OverchargedMine"]) and not is_trap(iid["BoxOfMines"]) and not is_trap(iid["ClusterMine"])
         assert "MechaDudeBig" in inf and len(env_v5.forms()) == 9 and "MechaDudeBig" not in env_v5.heroes()   # forms audited, never picked
         assert display("BullDude") == "Bull" and data_name(16000000 + list(_tables()["char"]).index("BullDude")) == "BullDude"
         hy = {h: expected(h, hyper=True) for h in ("Jester", "Beamer", "Twins", "Skater", "Domain", "Dancer", "MechaDudeBig", "ShotgunGirl", "PowerLeveler")}
@@ -1296,6 +1377,10 @@ def _check():
         assert hy["PowerLeveler"]["skill"] == "PowerLevelerUltiOvercharged" and not hy["PowerLeveler"]["own_skill"]
         assert hy["ShotgunGirl"]["skill"] == "ShotgunGirlUlti" and "hyper_cast" in hy["ShotgunGirl"]["expect"]
         assert "hyper_cast" not in inf["Jester"]["expect"]
+        at = {h: expected(h, attack=True) for h in ("ShotgunGirl", "TntDude", "Undertaker", "MechaDude", "Rock")}   # --attack: WeaponSkill
+        assert at["ShotgunGirl"]["skill"] == "ShotgunGirlWeapon" and at["ShotgunGirl"]["expect"] == ["projectile", "damage"], at["ShotgunGirl"]
+        assert at["TntDude"]["throw"] and not at["ShotgunGirl"]["throw"] and {"move", "damage"} <= set(at["Undertaker"]["expect"])
+        assert at["MechaDude"]["skill"] == _tables()["char"]["MechaDudeBig"]["WeaponSkill"] and at["Rock"]["expect"] == [], at["Rock"]
         assert hyper_owner("Sniper") == "Sniper" and hyper_owner("MechaDudeBig") == "MechaDude" and hyper_owner("GeishaTransformed") == "Geisha"
         assert hyper_owner("FutureGirl") is None and hyper_owner("KatanaKid") is None and hyper_owner("SuperNovaCactus") is None
         assert expected("FutureGirl", hyper=True).get("no_hyper") and "hyper_cast" not in expected("FutureGirl", hyper=True)["expect"]
@@ -1340,6 +1425,10 @@ def _check():
         sp = find_spots(MAP)
         assert len(sp) == 10 and all(len(d) >= 2 for _, _, d in sp), len(sp)
         assert min(max(abs(a[0] - c[0]), abs(a[1] - c[1])) for i, a in enumerate(sp) for c in sp[i + 1:]) >= SPACING * TILE
+        assert expected("Baseball")["track"] and expected("Baseball", True)["track"] and expected("ShieldTank")["track"]
+        assert not expected("TrickshotDude")["track"] and not expected("ShotgunGirl")["track"]
+        assert track_free(1950, 4650, 0, 1) == 0 and track_free(3450, 750, 1, 0) == CORR + 2   # Bibi's ball: on / clear of the track
+        assert track_spots(sp[:5], DIST_MAX) and track_spots(sp[5:], DIST_MAX)   # each phase has a spot for it
     print("super_audit ok: classification%s" % (", tables of %d brawlers and forms, %d spots on %s" % (n_tab, 10, MAP) if n_tab else ""))
 
 
@@ -1361,6 +1450,8 @@ def main():
                     "gadget (fire 3) in place of the super; writes super_audit_gadget.json / .md")
     ap.add_argument("--gadget-slot", type=int, default=0, help="--gadget: which of a brawler's implemented gadgets (0 = first, 1 = "
                     "second: Gene, Colt, ...); slot 1 writes super_audit_gadget_2.json / .md")
+    ap.add_argument("--attack", action="store_true", help="the main attacks: fire each brawler's attack (fire 1) in place of the "
+                    "super, expect its WeaponSkill's effects; writes super_audit_attack.json / .md")
     ap.add_argument("--hyper-desc", action="store_true", help="offline (no host): each hypercharge's game description as claims, "
                     "checked against the tables and the live --hyper / normal audits; writes super_audit_hyper_desc.json / .md")
     ap.add_argument("--live", default="", help="--hyper-desc: folder of super_audit.json / super_audit_hyper.json (default --out, "
@@ -1376,8 +1467,8 @@ def main():
     bad = [x for x in names if x not in _tables()["char"] or (a.gadget and x not in audit_gadgets(a.gadget_slot))]
     if bad: sys.exit(f"unknown brawlers{' (or no implemented gadget in that slot)' if a.gadget else ''}: {bad}")
     au = Auditor(names, n=a.n, retry=not a.no_retry, seed=a.seed, host_args=a.host_args.split(), hyper=a.hyper, gadget=a.gadget,
-                 slot=a.gadget_slot)
-    stem = ("super_audit_gadget" + ("_%d" % (a.gadget_slot + 1) if a.gadget_slot else "")) if a.gadget else "super_audit_hyper" if a.hyper else "super_audit"
+                 slot=a.gadget_slot, attack=a.attack)
+    stem = ("super_audit_gadget" + ("_%d" % (a.gadget_slot + 1) if a.gadget_slot else "")) if a.gadget else "super_audit_hyper" if a.hyper else "super_audit_attack" if a.attack else "super_audit"
     nf = sum(x in forms for x in names)
     au.log(f"{len(names) - nf} brawlers + {nf} forms, {a.n} instances, {au.npair} pairs per phase on {MAP}")
     res = au.run()
@@ -1387,12 +1478,13 @@ def main():
         old = {r["name"]: r for r in json.load(open(jp)).get("brawlers", [])}
         old.update({r["name"]: r for r in rows}); rows = [old[k] for k in sorted(old)]
     bt = [t / max(k, 1) for k, t in au.timing]
-    meta = {"map": MAP, "hyper": a.hyper, "watch_ticks": WATCH, "instances": a.n, "seconds": round(time.time() - au.t0),
+    meta = {"map": MAP, "hyper": a.hyper, "attack": a.attack, "watch_ticks": WATCH, "instances": a.n, "seconds": round(time.time() - au.t0),
             "battles": len(au.timing), "battle_s": round(float(sum(t for _, t in au.timing)), 2),
             "battle_s_per_brawler": round(float(np.mean(bt)), 3) if bt else None, "host_args": a.host_args, "time": time.strftime("%F %T")}
     json.dump({"meta": meta, "brawlers": rows}, open(jp, "w"), indent=1)
     md = markdown(rows, a.hyper)
     if a.gadget: md = md.replace("# Super audit", "# Gadget audit (gadget slot %d, fire 3 in place of the super)" % (a.gadget_slot + 1), 1)
+    if a.attack: md = md.replace("# Super audit", "# Main attack audit (fire 1 in place of the super; expected: the WeaponSkill row)", 1)
     open(os.path.join(a.out, stem + ".md"), "w").write(md + "\n")
     print(md)
     au.log(f"wrote {jp} and {stem}.md; {meta['battles']} battles in {meta['battle_s']} s ({meta['battle_s_per_brawler']} s per brawler-attempt)")

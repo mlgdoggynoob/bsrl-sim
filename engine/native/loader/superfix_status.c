@@ -253,6 +253,7 @@ static void trigger(St *s, int t) {
             dmg, heal, hp0, I32(ch, 0x3c4));
 }
 
+static int g_noil; static void oil_tick(uint8_t *ch, int t);   /* Amber's oil (below, before area_extra) */
 /* enter hook on the character update 0xb3941c: ctx[0] = character */
 static int g_last_tick = -1;
 static void on_char_update(uint64_t *ctx) {
@@ -341,6 +342,7 @@ static void on_char_update(uint64_t *ctx) {
         U8(ch, CH_FULLSTUN) = full; U8(ch, CH_TAUNT) = taunt; U8(ch, CH_FEAR) = fear;
         extern void superfix_cc_tick(uint8_t *) __attribute__((weak)); if (superfix_cc_tick) superfix_cc_tick(ch);
         extern void superfix_summon_area(uint8_t *) __attribute__((weak)); if (superfix_summon_area) superfix_summon_area(ch);   /* issue #19 final */
+        if (g_noil) oil_tick(ch, t);   /* Amber's oil (below) */
         extern void superfix_cc_switch(uint8_t *, int) __attribute__((weak));   /* issue #19 final: Angelo's SwitchSkill area */
         if (superfix_cc_switch) superfix_cc_switch(ch, zone_get(ch, ZN_SWITCH, t));
     }
@@ -427,11 +429,13 @@ int superfix_status_mods(uint8_t *ch, StMods *m) {
  * 0 (SpeedReducePercent 100 = a root: Kenji's hide, Morningstar's root). The order and the floor are this host's choice:
  * the server code that does it is not in the client build. */
 int superfix_split_speed(uint8_t *ch) __attribute__((weak));   /* superfix_moves.c: R-T's split speed (absolute) */
+int hyper_slow_pct(uint8_t *ch) __attribute__((weak));         /* hyper.c: Cordelius's hypercharged realm slow (percent) */
 int superfix_status_speed(uint8_t *ch, int base) {
     StMods m; if (base <= 0) return -1;
-    int extra = superfix_split_speed ? superfix_split_speed(ch) : 0;
-    if (!superfix_status_mods(ch, &m)) { if (extra <= 0) return -1; memset(&m, 0, sizeof m); }
+    int extra = superfix_split_speed ? superfix_split_speed(ch) : 0, slow = hyper_slow_pct ? hyper_slow_pct(ch) : 0;
+    if (!superfix_status_mods(ch, &m)) { if (extra <= 0 && slow <= 0) return -1; memset(&m, 0, sizeof m); }
     m.spd_ba += extra > 0 ? extra : 0;   /* added like a status's SpeedBoostAbsolute */
+    if (slow > m.spd_rp) m.spd_rp = slow;   /* like a non-Stacking status's SpeedReducePercent */
     if (!m.spd_bp && !m.spd_ba && !m.spd_rp && !m.spd_ra) return -1;
     long v = (long)base * (100 + m.spd_bp) / 100 + m.spd_ba;
     int rp = m.spd_rp > 100 ? 100 : m.spd_rp;
@@ -586,12 +590,12 @@ static int same_area_immune(uint8_t *d, uint8_t *o, int t) {   /* 1 = skip o; el
  *   BulletSpin 40 (Darryl's hypercharged roll, BarrelBotOverchargeChargeArea, a trail area): at its first tick, CustomValue
  *     (2) BulletExplosionBullets leave it evenly spread, flying BulletExplosionBulletDistance x 100 units, the spread turned
  *     by SPIN_STEP degrees per tick of the battle ("shoots his shotguns around himself"). [?] the server's pattern.
+ *   PetrolDistribution 19 (Amber's oil; the puddle and its ignition into PetrolFire, oil_add / oil_tick).
  *   HotAndOverheals 45 (Pam's hypercharged turret, MinigunOverchargedHealingStationHeal): the data's type is set to Hot 4 at
  *     its first area tick (and the apply run once), so libg heals with it as with the normal turret's HealingStationHeal;
- *     the overheal shield (OverHealTicks / MaxOverHeal / OverHealMultiplier) is not modelled.
+ *     the overheal shield (OverHealTicks / MaxOverHeal / OverHealMultiplier) is superfix.c's turret heal + hyper.c's hyper_overheal.
  * Not done: SpeedBuff 11 / IncreaseHealth 22 (no row in use), ReloadSpeedBuff 12 (only MechaDudeReloadTower's area, a
- *   summon nothing spawns), PetrolDistribution 19 (Amber: the area lasts 500 ms; the lasting puddle and its ignition into
- *   PetrolFire are server state), MeepleCheatArea 44 (its statuses' AttackThroughWalls / MoveThroughWalls / pierce have no
+ *   summon nothing spawns), MeepleCheatArea 44 (its statuses' AttackThroughWalls / MoveThroughWalls / pierce have no
  *   reader here), ShootsProjectileToSource 51 (Mortis's hypercharged dash: its MortisOverchargedBulletSpawner area is
  *   never spawned in this build). Walls (MeepleWallSpawn 42, GladiatorWallSpawn 55) and HpBasedStun 43: spawnfix.c and
  *   superfix_cc.c. Notes: notes/issue19-final.md. */
@@ -599,11 +603,116 @@ static int same_area_immune(uint8_t *d, uint8_t *o, int t) {   /* 1 = skip o; el
 static long g_nsmoke_hits, g_nheal_area, g_ncleanse, g_ncharge, g_nspin;
 #define SPIN_STEP 45   /* BulletSpin: degrees the spread turns per tick [?] (a trail area spawns every few ticks of the roll) */
 long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) __attribute__((weak));   /* superfix_cc.c: libg's target test */
+/* Amber's oil (PetrolDistribution 19: PetrolDistributionArea r 800, OverchargedPetrolDistributionArea r 1600, the flask's
+ * PetrolDistributionTrail r 300, PetrolDistributionGadget r 600; each lives 500 ms). The puddle they leave and its ignition
+ * into PetrolFire are server state; libg reads neither (its one "PetrolFire" reference is the card text 0xaa9890). Here:
+ * at its first tick each such area leaves an oil circle (its centre, Radius +0x12c) for its owner; a new spill after OIL_GAP
+ * ticks replaces the owner's older oil ("One flask at a time!", TID_FIRE_DUDE_ULTI_DESC). From the character update, once
+ * a projectile of the owner's main attack (CharacterData +0x260 weapon, Projectiles +0x58: her firebreathing, "that she can
+ * then light up with her firebreathing") is inside one of her circles, the whole puddle burns: an area of PetrolFire (r 300,
+ * 500 ms, enemy status PetrolFire 480 a second for 80 ticks every 10 ticks) is spawned every FIRE_STEP units over the oil
+ * (the area chain of superfix.c's spawnAreaEffect: create 0xb2aefc, add 0xb63198, start 0xb29494), or of
+ * PetrolFireOvercharged (2000 ms: "Oil keeps burning for 3 seconds after being lit on fire" - the data says 2 s) when the oil
+ * came from the hypercharged OverchargedPetrolDistributionArea ("Super's oil spill area is increased"), and the oil is gone.
+ * The StatusEffect areas then burn enemies through superfix_status_area. [?] the grid, OIL_GAP; the oil lasts until it is
+ * lit or replaced (no lifetime in the data). Not modelled: burning bushes, the star powers' second puddle and reload. */
+void *div_data(int id);   /* env.c: data row by global id */
+#define OIL_MAX 48
+#define OIL_GAP 40       /* [?] ticks: the flask's flight (CastingRange 22 at Speed 1750, ~1.3 s) leaves trail areas, a gap
+                          * longer than that starts a new spill */
+#define FIRE_STEP 400    /* a fire area every 400 units: PetrolFire's Radius 300 covers the square between (half diagonal 283) */
+#define FIRE_MAX 48      /* fire areas per ignition (OverchargedPetrolDistributionArea's r 1600 needs ~50) */
+typedef struct { uint8_t *owner; int owner_id, x, y, r, oc, kind, t; } Oil;
+static Oil g_oil[OIL_MAX]; static int g_noil;
+static void *g_fire, *g_fire_oc, *g_oil_oc; static int g_oil_init;
+static long g_noil_add, g_nignite, g_nfire;
+static void *row_named(int table, const char *name) {   /* hyper.c data_named: column 0 (0xcf6a28(row, 0)) == name */
+    for (int idx = 0, miss = 0; idx < 4000 && miss < 64; idx++) {
+        uint8_t *d = div_data(table * 1000000 + idx);
+        if (!d) { miss++; continue; }
+        miss = 0;
+        void *s = PTR(d, 8) ? ((void *(*)(void *, int))B(0xcf6a28))(PTR(d, 8), 0) : NULL;
+        if (s && (((int (*)(void *, const char *))B(0xe9779c))(s, name) & 1)) return d;
+    }
+    return NULL;
+}
+static void oil_init(void) {
+    if (g_oil_init) return;
+    g_oil_init = 1;
+    g_fire = row_named(17, "PetrolFire"); g_fire_oc = row_named(17, "PetrolFireOvercharged");
+    g_oil_oc = row_named(17, "OverchargedPetrolDistributionArea");
+    LOG("[superfix] st: Amber's oil: fire areas %p / %p, hypercharged spill %p\n", g_fire, g_fire_oc, g_oil_oc);
+}
+static void oil_add(uint8_t *a, uint8_t *d, int t) {
+    uint8_t *ow = PTR(a, 0x108);
+    if (!is_char(ow)) return;
+    oil_init();
+    int last = -1;
+    for (int i = 0; i < g_noil; i++) if (g_oil[i].owner == ow && g_oil[i].owner_id == I32(ow, 8) && g_oil[i].t > last) last = g_oil[i].t;
+    if (last >= 0 && (t - last > OIL_GAP || t < last))   /* a new flask: the old puddle goes */
+        for (int i = g_noil - 1; i >= 0; i--) if (g_oil[i].owner == ow && g_oil[i].owner_id == I32(ow, 8)) g_oil[i] = g_oil[--g_noil];
+    if (g_noil >= OIL_MAX) return;
+    g_oil[g_noil++] = (Oil){ow, I32(ow, 8), I32(a, 0x38), I32(a, 0x3c), I32(d, 0x12c), d == g_oil_oc, I32(a, 0xf8), t};
+    g_noil_add++;
+    static int nlog; if (nlog++ < 12 || g_superfix_dbg) LOG("[superfix] st: oil of ch %d at %d,%d r %d%s, tick %d\n", I32(ow, 8), I32(a, 0x38),
+                                                       I32(a, 0x3c), I32(d, 0x12c), d == g_oil_oc ? " (hypercharged)" : "", t);
+}
+static void oil_ignite(uint8_t *ch, int t) {
+    int oc = 0, np = 0, px[FIRE_MAX], py[FIRE_MAX], kind = 2;
+    for (int i = 0; i < g_noil; i++) if (g_oil[i].owner == ch && g_oil[i].owner_id == I32(ch, 8)) {
+        Oil *o = &g_oil[i]; oc |= o->oc; kind = o->kind;
+        for (int gx = (o->x - o->r) / FIRE_STEP; gx <= (o->x + o->r) / FIRE_STEP + 1; gx++)
+            for (int gy = (o->y - o->r) / FIRE_STEP; gy <= (o->y + o->r) / FIRE_STEP + 1; gy++) {
+                long x = (long)gx * FIRE_STEP, y = (long)gy * FIRE_STEP, dx = x - o->x, dy = y - o->y; int k = 0;
+                if (dx * dx + dy * dy > (long)o->r * o->r || np >= FIRE_MAX) continue;
+                while (k < np && !(px[k] == x && py[k] == y)) k++;
+                if (k == np) { px[np] = (int)x; py[np] = (int)y; np++; }
+            }
+        int k = 0;   /* a small circle no grid point falls in (a trail area): its centre */
+        while (k < np && (long)(px[k] - o->x) * (px[k] - o->x) + (long)(py[k] - o->y) * (py[k] - o->y) > (long)o->r * o->r) k++;
+        if (k == np && np < FIRE_MAX) { px[np] = o->x; py[np] = o->y; np++; }
+    }
+    for (int i = g_noil - 1; i >= 0; i--) if (g_oil[i].owner == ch && g_oil[i].owner_id == I32(ch, 8)) g_oil[i] = g_oil[--g_noil];
+    void *fd = oc && g_fire_oc ? g_fire_oc : g_fire;
+    if (!fd || !PTR(ch, 0x20)) return;
+    g_nignite++;
+    for (int k = 0; k < np; k++) {
+        void *f = ((void *(*)(void *, void *, int, int, int, int, int))B(0xb2aefc))(fd, ch, px[k], py[k], 0, kind, 0);
+        if (!f) continue;
+        ((void (*)(void *, void *))B(0xb63198))(PTR(ch, 0x20), f);
+        ((void (*)(void *))B(0xb29494))(f);
+        g_nfire++;
+    }
+    static int nlog; if (nlog++ < 10) LOG("[superfix] st: Amber's oil lit (ch %d, tick %d): %d %s areas\n", I32(ch, 8), t, np,
+                                          fd == g_fire_oc ? "PetrolFireOvercharged" : "PetrolFire");
+}
+#define VT_PROJ 0x1209318
+static void oil_tick(uint8_t *ch, int t) {   /* from the character update: one of ch's main attack projectiles in its oil? */
+    int k = 0;
+    while (k < g_noil && !(g_oil[k].owner == ch && g_oil[k].owner_id == I32(ch, 8))) k++;
+    if (k == g_noil || I32(ch, 0x3c4) <= 0) return;
+    uint8_t *cd = ((getp_t)B(0xb6a384))(ch), *wd = cd ? PTR(cd, 0x260) : NULL;   /* CharacterData WeaponSkill */
+    void **wp = wd ? PTR(wd, 0x58) : NULL; int nwp = wd ? I32(wd, 0x64) : 0;      /* its Projectiles */
+    uint8_t *sim = ((getp_t)B(0xb6a378))(ch), *h = sim ? PTR(sim, 0) : NULL;   /* the battle's object list (env.c snap2) */
+    void **v = h ? PTR(h, 0) : NULL; int n = h ? I32(h, 12) : 0;
+    for (int i = 0; wp && v && i < n; i++) {
+        uint8_t *p = v[i];
+        if (!p || (int)((uint8_t *)PTR(p, 0) - g_libg->base) != VT_PROJ || PTR(p, 0xe0) != ch) continue;   /* ch's own */
+        void *pd = ((getp_t)B(0xb6a384))(p); int w = 0;
+        while (w < nwp && w < 8 && wp[w] != pd) w++;
+        if (w == nwp || w == 8) continue;
+        for (int j = 0; j < g_noil; j++) {
+            Oil *o = &g_oil[j]; long dx = I32(p, 0x38) - o->x, dy = I32(p, 0x3c) - o->y;
+            if (o->owner == ch && o->owner_id == I32(ch, 8) && dx * dx + dy * dy <= (long)o->r * o->r) { oil_ignite(ch, t); return; }
+        }
+    }
+}
 static void area_extra(uint8_t *a, uint8_t *d, int type) {
     uint8_t *owner = PTR(a, 0x108);
     if (!owner) return;
     int t = now_tick(a); if (t < 0) return;
     if (type == 3 && I32(d, 0x154) > 0) return;   /* libg's gate let it through */
+    if (type == 19) { AreaRec *r = area_rec(a, d, t, t); if (r->n++ == 0) oil_add(a, d, t); return; }   /* Amber's oil (above) */
     if (type == 32 || type == 33) {   /* issue #19 final: the owner's marks, every tick of the area */
         if (type == 32) { zone_mark(owner, ZN_RELOAD, I32(d, 0x13c), t); zone_mark(owner, ZN_CHARGE, I32(d, 0x140), t); }
         else if (I32(owner, 0x3c4) > 0 && superfix_area_reach && superfix_area_reach(a, d, owner) >= 0) zone_mark(owner, ZN_SWITCH, 1, t);
@@ -682,14 +791,15 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
 void superfix_status_area(uint8_t *a) {
     if (!g_superfix || !mode() || !a) return;
     uint8_t *d = ((getp_t)B(0xb6a384))(a);
-    if (d && (I32(d, 0x118) == 16 || I32(d, 0x118) == 24 || I32(d, 0x118) == 43 || I32(d, 0x160) > 0)) {   /* issue #19: Stun / Silence / HpBasedStun areas
-        * and any area with StunTicks (+0x160: Mico's hypercharged landing; libg reads it only when it loads the table) (superfix_cc.c) */
+    if (d && (I32(d, 0x118) == 16 || I32(d, 0x118) == 24 || I32(d, 0x118) == 43 || I32(d, 0x160) > 0 || I32(d, 0x118) == 20)) {   /* issue #19: Stun / Silence / HpBasedStun areas
+        * and any area with StunTicks (+0x160: Mico's hypercharged landing; libg reads it only when it loads the table); Slippery
+        * 20 (Lou's freeze build-up; its damage is superfix.c's slippery_tick) (superfix_cc.c) */
         extern void superfix_cc_area(uint8_t *, uint8_t *) __attribute__((weak)); if (superfix_cc_area) superfix_cc_area(a, d);
         return;
     }
     if (d) { int ty = I32(d, 0x118);   /* issue #19 leftovers: the dropped types above */
         if (ty == 1 || ty == 3 || ty == 10 || ty == 17 || ty == 23 || ty == 26 || ty == 29 || ty == 31 ||
-            ty == 18 || ty == 32 || ty == 33 || ty == 40 || ty == 45 || ty == 57) { area_extra(a, d, ty); return; } }
+            ty == 18 || ty == 19 || ty == 32 || ty == 33 || ty == 40 || ty == 45 || ty == 57) { area_extra(a, d, ty); return; } }
     if (!d || I32(d, 0x118) != 36) return;
     void *self = PTR(d, 0x88), *ally = PTR(d, 0x90), *enemy = PTR(d, 0x98);
     uint8_t *owner = PTR(a, 0x108);
@@ -756,8 +866,8 @@ void superfix_status_status(void) {
         "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
         "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld "
         "(same-area skips %ld), spin bullets %ld, charge-end cancels %ld; Pierce marked shots %ld, second-wave shots %ld (dropped %ld); "
-        "trail ticks %ld, mech deploys %ld\n",
+        "trail ticks %ld, mech deploys %ld; oil circles %ld, lit %ld, fire areas %ld\n",
         g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal, g_narea_apply, g_narea_hits, g_nmount, g_nstun,
         g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nimm_skip, g_nspin, g_ncharge_end,
-        g_npierce_mark, g_npierce_wave2, g_npierce_drop, g_ntrail, g_nmech);
+        g_npierce_mark, g_npierce_wave2, g_npierce_drop, g_ntrail, g_nmech, g_noil_add, g_nignite, g_nfire);
 }

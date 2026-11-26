@@ -29,14 +29,16 @@
  * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value); the card-object stub 0xb39704 answers Melodie's card at
  * its one overcharge_axe_juggler call site (hyper_axe_card: her hypercharge notes). Hypercharges whose card Type
  * no libg call site asks for (code compiled out) are re-implemented: Lumi's side blasts (my_spawn), Griff's extra notes
- * (hyper_chain_extra, from spawnfix.c), Colette's spirit (hyper_spirit_damage, from env.c's charge contact), Carl's
- * flame trail (hyper_trail_tick, from env.c's hyper_tick) and Gus's spirits (hyper_proj_end / hyper_spirits_tick);
- * Damian's burning ground is libg's own component code, reached through env.c's charge_end_event; Fang's wall pass and
+ * (hyper_chain_extra, from spawnfix.c), Colette's spirit (hyper_spirit_damage, from env.c's charge contact) and Gus's
+ * spirits (hyper_proj_end / hyper_spirits_tick); Carl's flame trail is libg's card component, whose tick hyper_trail_tick
+ * runs (from env.c's hyper_tick); Damian's burning ground is libg's own component code, reached through env.c's charge_end_event; Fang's wall pass and
  * popcorn are env.c's (fang_oc_super); Alli's boost, whose one libg reader is unreachable here, is
  * hyper_stalk (from env.c's damage root); Tick's dead
  * head gets its summoner for its mine chain (hyper_dead_pet_owner, from superfix_items.c). Also here: Ruffs' +25 % (an area's
- * overcharged byte, hyper_area_mark), Poco's overheal shield (my_heal, hyper_shield_absorb), Shade's dead centre
- * (hyper_dead_centre), the repeat of a Dot area only the hypercharged super makes (Kaze's centre, hyper_area_tick) and
+ * overcharged byte, hyper_area_mark), Poco's overheal shield (my_heal, hyper_shield_absorb), Pam's (hyper_overheal, from
+ * superfix.c's turret heal) and Gray's portal shield (hyper_portal_shield, from superfix_moves.c's portals), Shade's dead
+ * centre (hyper_dead_centre), Cordelius's slow of his realm target (hyper_realm_enter, hyper_slow_pct), the repeat of a Dot
+ * area only the hypercharged super makes (Kaze's centre, hyper_area_tick) and
  * which areas those are (hyper_area_oc_only; superfix_status.c refreshes their Self / Ally statuses: Sandy's speed);
  * Stu's super recharge is env.c's charge_end. Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
  * MechaDudeBig) have a separate super instead (characters.csv OverchargedUltimateSkill): the game builds it as the brawler's
@@ -46,8 +48,9 @@
  * takes Meg's card, Kaze's other form (GeishaTransformed, Geisha's Pet) Kaze's. A character change hands a running hypercharge to the new form (hyper_char_changed). NbeResp hyp_supers / hyp_super_id count the supers cast while hypercharged and name the SkillData of
  * the last one (hyper_super_data, from env.c fire_input_now).
  * The visual effects (client side) are whatever the client draws from +0xa0 and the overcharged skill data.
- * Also here: the steering of homing projectiles (on_travel), which Belle's and Hank's hypercharged supers need; it applies
- * to every TravelType 4 projectile, hypercharged or not. NBHOST_HYPER_TRACE=1 logs each libg call site of isOvercharged. */
+ * Also here: the steering of homing projectiles (on_travel), which Belle's and Hank's hypercharged supers need, and the
+ * circling of TravelType 8 ones (circle_travel: R-T's hypercharged lasers, Melodie's notes); both apply to every
+ * projectile of that TravelType, hypercharged or not. NBHOST_HYPER_TRACE=1 logs each libg call site of isOvercharged. */
 #include "nbhost.h"
 #include "nbenv_proto.h"
 #include <string.h>
@@ -178,9 +181,34 @@ static uint8_t *steer_target(uint8_t *pr, int x, int y, int r) {
     }
     return best;
 }
+/* Circling projectiles (TravelType 8: R-T's hypercharged security lasers SplitterCirclingProjectile, Melodie's notes
+ * AxeJugglerProjectile2, ...). Their spawn 0xb78c58 sets the angle on the circle (proj +0x454, degrees: 360 / n apart; a new
+ * one re-spaces the owner's others from the first one's +0x454, 0xb79004..0xb79068) and the ring radius +0x498 when the
+ * spawner gives one (libg's own Brawler_Splitter tick: 1000). The travel step 0xb709e4 ends the flight once the owner
+ * (+0xe0) is gone or the end tick passed, then moves the projectile to +0x94 / +0x98 (0xb70bfc), the position the
+ * compiled-out circling code writes: it stayed 0, so the lasers jumped to the map origin. Here (same enter hook as the homing
+ * steer): that position = the owner's + radius along the angle, radius = +0x498 or else TravelTypeVariable (data +0x214, the
+ * one 0xb70c44 reads: Melodie 650), angle = +0x454 + the turn since tick 0, one clock for all, so the spacing the spawner
+ * sets holds. The turn: Speed (proj +0x14c) units/s along the circle ([?] guess: no client code turns it; Speed read as for
+ * every other projectile; R-T's Speed 29 makes his lasers almost still, Melodie's 860 at 650 is a turn in 4.7 s). The
+ * game's own code then places it there and its hits run as for any projectile. */
+static long g_ncircle;
+static void circle_travel(uint8_t *pr, uint8_t *d) {
+    uint8_t *o = PTR(pr, 0xe0);
+    int r = I32(pr, 0x498) > 0 ? I32(pr, 0x498) : I32(d, 0x214);
+    if (!o || r < 1 || r > 5000) return;
+    int now = I32(pr, 0x410) + ((int (*)(void *))B(0xc26bd8))(((void *(*)(void *))B(0xb6a378))(pr));
+    /* degrees turned: Speed / 20 units per tick on a circle of radius r = Speed x 180 / (20 pi r) degrees per tick */
+    long turn = now > 0 ? (long)now * I32(pr, 0x14c) * 9000 / (31416L * r / 10000) / 1000 : 0;
+    int a = (int)(((I32(pr, 0x454) + turn) % 360 + 360) % 360);
+    I32(pr, 0x94) = I32(o, 0x38) + ((sin1024(a + 90) * r) >> 10); I32(pr, 0x98) = I32(o, 0x3c) + ((sin1024(a) * r) >> 10);
+    if (g_ncircle++ < 6) LOG("[hyper] circling projectile %d (data %d): owner %d, radius %d, angle %d at tick %d\n", I32(pr, 8), I32(d, 0x20),
+                             I32(o, 8), r, a, now);
+}
 static void on_travel(uint64_t *c) {
     uint8_t *pr = (uint8_t *)c[0], *d = pr ? PTR(pr, 0x10) : NULL;
-    if (!d || ((int (*)(void *))B(0xb7625c))(pr) == 8) return;
+    if (!d) return;
+    if (((int (*)(void *))B(0xb7625c))(pr) == 8) { circle_travel(pr, d); return; }
     int str = ((int (*)(void *))B(0xb7634c))(pr); if (str < 1) return;
     int now = I32(pr, 0x410) + ((int (*)(void *))B(0xc26bd8))(((void *(*)(void *))B(0xb6a378))(pr)), start = I32(pr, 0x28);
     int k = 0, fr = -1;
@@ -242,7 +270,7 @@ void hyper_proj_site(void); void hyper_summon_bl(void);
  * ("Pam's turret heals on deploy", TID_MINIGUN_DUDE_OVERCHARGE_DESC): the area apply 0xb29494 acts on a Heal area only
  * for a positive amount (0xb29628..0xb29670) and no client code heals with it. Here, after each tick (hyper_tick_player),
  * each new Heal area the hypercharged brawler owns (area +0x108) heals every living character of its team (+0x84) within
- * Radius (+0x12c) once, up to max HP (the hypercharge's overheal shield is not modelled), by the area's damage word +0xe8
+ * Radius (+0x12c) once, up to max HP (the turret's later heals overheal: hyper_overheal), by the area's damage word +0xe8
  * negated, or where that is not negative by the DamageScaleType 2 amount of the area create 0xb2b124: the owner's max HP
  * +0x3c8 x Damage (+0x134) / 100. */
 static void oc_heal_areas(uint8_t *ch) {
@@ -282,7 +310,7 @@ static void oc_heal_areas(uint8_t *ch) {
  * and NumBulletsInOneAttack from Value2 in place of the skill's. HammerDude_overcharge 19 / 10 (Frank: "hits an entire circle
  * around him"; pattern 19 is the full circle of MegaBossFrankAttackHyper) and Mender_overcharge 19 / 14 (Glowy).
  * Checked and left at -1 (types above 210): _door_man 272 (portal count, Value 2 = the default
- * 2; the shield Value2 has no reader), _mecha_dude 281 (Value 0 / 0, which the reader 0xb7d030 skips), _geisha 296 (Value2 %
+ * 2; the shield Value2 / Value3 has no reader: hyper_portal_shield), _mecha_dude 281 (Value 0 / 0, which the reader 0xb7d030 skips), _geisha 296 (Value2 %
  * on the skill's ChargeSpeed, 0 for GeishaUlti). overcharge_stalker 319 (Alli 25 / 20): libg reads it at 0xb2a340 only
  * while the character's stalk aggregate +0x96c is set, which only the network decode writes; env.c's damage root asks it
  * through hyper_stalk instead (Value1 % of the target's max HP in place of the super's % of its current HP, Value2 % of the
@@ -304,7 +332,8 @@ static void oc_heal_areas(uint8_t *ch) {
 #define CT_DIGGER 307        /* overcharge_digger (Moe 10 / 300 / 100 / 5, "Driller has longer range and lasts for longer"):
                               * the dive's ChargeSpeed + Value3 % (skill fire 0xb7bc14: 2500 -> 5000), its range bonus + Value
                               * tiles (0xc6e754), and the Driller's (UniqueProperty 32) attack Value4 more tiles (0xc6e998:
-                              * DiggerDrillWeapon 5 -> 10). Value2 (the longer Driller form) has no reader in this build. */
+                              * DiggerDrillWeapon 5 -> 10). Value2 (the longer Driller form) has no reader in this build: env.c dig_change
+                              * reads it (the drill timer x Value2 %). */
 /* The other types whose call sites apply the value themselves (the Type enum from the card loader's string table; Value<n>
  * from cards.csv; the "Attack handler" is the super's attack setup 0xb7d108..0xb7f2ec, where the overrides chain 192 -> 201
  * -> 194 -> 200 -> 202 for the super, w27 == 2): */
@@ -526,30 +555,42 @@ int hyper_spirit_damage(uint8_t *ch, int d) {
     return 0;
 }
 /* overcharge_whirlwind (Carl, Whirlwind_overcharge: "Carl gains a flame trail while using his Super. The trail burns on
- * contact, causing damage over time"): no card-value reader asks for type 285 (no 0xb5281c / 0xc427d8 call with w1 #0x11d)
- * and no battle code spawns the card's AreaEffect (the list card +0x78, count +0x84, filled by the loader at 0xaa33ec;
- * WhirlwindUlti has no Overcharged* area): the trail is server code. Here, while a super that started hypercharged runs
- * (skill instance 1: +8 its ActiveTime left in ms, 3000 at the start and 50 less per tick, or +0x30 running; +0x31 its
- * overcharged latch), the card's AreaEffect (WhirlwindOverchargedAreaEffect, a
- * StatusEffect area: WhirlwindUltiTrailFire on enemies, 4 s, Radius 270, superfix_status.c applies it) is spawned at Carl
- * through the shipped helper 0xb35c40 (kind 2, as the skill execute passes) each time he is farther than its Radius from the
- * last one, the spacing of the charge trails (env.c). [?] the server's spacing. */
+ * contact, causing damage over time"): libg's own trail code. The character init 0xb59de0 gives the holder of a card of type
+ * 285 (0xb5a12c) a component (ctor 0xba0fe0: +8 the character, +0x38 the card, +0x40 the last spawn's tick, -1 = none,
+ * +0x44 / +0x48 its spot; vtable 0x120b1e8) whose tick (vtable +0x40 = 0xba1028) libg never calls, as the other
+ * components' (superfix_moves.c's R-T, superfix_status.c's Draco). That tick, while the super that started hypercharged
+ * runs (skill instance 1: +8 its ActiveTime left > 0 and +0x31 its overcharged latch), spawns the card's AreaEffect (the
+ * list card +0x78, WhirlwindOverchargedAreaEffect: a StatusEffect area, WhirlwindUltiTrailFire on enemies, TimeMs 4000,
+ * Radius 270; superfix_status.c applies it) at Carl through the shipped helper 0xb35c40 (kind 10) when it has spawned none
+ * yet, when the last one's TimeMs has passed, or when Carl is more than Radius x 150 % from the last one (405 u). Here it
+ * runs once per tick for a hypercharge holder of that card (from env.c's hyper_tick); without the component (a character
+ * made before the card was in the config) the same rule runs here. */
 #define CT_WHIRLWIND 285
-#define AREA_STATUS 36   /* AreaEffectData +0x118: StatusEffect */
-static struct { int id, x, y; } g_trail[NBE_MAXP]; static long g_ntrail;
+#define AREA_STATUS 36        /* AreaEffectData +0x118: StatusEffect */
+#define TRAIL_TICK 0xba1028   /* the component's tick (vtable 0x120b1e8 +0x40) */
+static struct { int id, x, y, tick; } g_trail[NBE_MAXP]; static long g_ntrail, g_ntrail_comp;
 void hyper_trail_tick(int i, uint8_t *ch) {
     if (i < 0 || i >= NBE_MAXP || !ch || I32(ch, 0x3c4) <= 0 || !PTR(ch, 0x20)) return;
     uint8_t *card = g_card_ch[i] == ch && I32(ch, 8) == g_card_id[i] ? g_card[i] : NULL;
     if (!card || I32(card, 0x100) != CT_WHIRLWIND) return;
+    int nc = I32(ch, 0xa6c); void **c = PTR(ch, 0xa60);
+    for (int k = 0; c && k < nc && k < 64; k++)
+        if (c[k] && PTR(c[k], 8) == ch && (*(void ***)c[k])[0x40 / 8] == (void *)B(TRAIL_TICK)) {
+            ((void (*)(void *))B(TRAIL_TICK))(c[k]);
+            if (g_ntrail_comp++ == 0) LOG("[hyper] flame trail: player %d runs libg's trail component\n", i);
+            return;
+        }
     uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464);
-    if (!sk || n < 2 || !sk[1] || (I32(sk[1], 8) <= 0 && !U8(sk[1], 0x30)) || !(U8(sk[1], 0x31) & 1)) { g_trail[i].id = 0; return; }
+    if (!sk || n < 2 || !sk[1] || I32(sk[1], 8) < 1 || !(U8(sk[1], 0x31) & 1)) return;
     void **al = PTR(card, 0x78); uint8_t *ad = al && I32(card, 0x84) > 0 ? al[0] : NULL;
-    if (!ad || I32(ad, 0x118) != AREA_STATUS) return;
-    int x = I32(ch, 0x38), y = I32(ch, 0x3c); long r = I32(ad, 0x12c), dx = x - g_trail[i].x, dy = y - g_trail[i].y;
-    if (g_trail[i].id == I32(ch, 8) && dx * dx + dy * dy <= r * r) return;
-    void *a = ((void *(*)(void *, void *, int, int, int, int, void *))B(0xb35c40))(ch, ad, x, y, 0, 2, NULL);
-    g_trail[i].id = I32(ch, 8); g_trail[i].x = x; g_trail[i].y = y;
-    if (a && g_ntrail++ < 10) LOG("[hyper] flame trail: player %d area %d at %d,%d (r %ld)\n", i, I32(ad, 0x20), x, y, r);
+    uint8_t *sim = ((void *(*)(void *))B(0xb6a378))(ch);
+    if (!ad || !sim || I32(ad, 0x118) != AREA_STATUS) return;
+    int x = I32(ch, 0x38), y = I32(ch, 0x3c), now = I32(sim, 0x10);
+    long r = I32(ad, 0x12c) * 150 / 100, dx = x - g_trail[i].x, dy = y - g_trail[i].y;   /* 0xba10e4: Radius x 150 % */
+    if (g_trail[i].id == I32(ch, 8) && (long)(now - g_trail[i].tick) * 50 < I32(ad, 0x124) && dx * dx + dy * dy <= r * r) return;   /* +0x124 TimeMs */
+    void *a = ((void *(*)(void *, void *, int, int, int, int, void *))B(0xb35c40))(ch, ad, x, y, 0, 10, NULL);
+    g_trail[i].id = I32(ch, 8); g_trail[i].x = x; g_trail[i].y = y; g_trail[i].tick = now;
+    if (a && g_ntrail++ < 10) LOG("[hyper] flame trail: player %d area %d at %d,%d (no component)\n", i, I32(ad, 0x20), x, y);
 }
 static void hyper_pets_clear(void) { memset(g_pet, 0, sizeof g_pet); memset(g_card, 0, sizeof g_card); memset(g_card_ch, 0, sizeof g_card_ch); memset(g_trail, 0, sizeof g_trail); }
 #define SNAP_MAX 1024
@@ -805,10 +846,11 @@ static void *hyper_axe_card(uint8_t *ch, int type) {
  * superfix.c's own heal both call 0xb41554(ch, source player, amount, 1, projectile data, ...), wrapped here) that goes past
  * max HP gives the healed character a shield of the excess; it shrinks linearly to 0 over Value ticks after the last
  * overheal (a new overheal adds to what is left) and takes damage before HP (hyper_shield_absorb, env.c my_root).
- * [?] Value 100 read as ticks (5 s, the hypercharge's own length): 100 s would be no decay. */
+ * Value 100 is ticks: the card text's <VALUE1> for type 238 is Value through the ticks-to-seconds formatter 0xa18e8c
+ * (card description 0x90c024: Value / 20) -> "5 seconds". */
 #define CT_DEAD_MARIACHI 238
 #define OSH_MAX 16
-static struct { uint8_t *ch; int id, hp, start, end; } g_osh[OSH_MAX];
+static struct { uint8_t *ch; int id, hp, start, end, flat; } g_osh[OSH_MAX];   /* flat: no decay (Gray's portals) */
 static long g_osh_given, g_osh_absorbed;
 typedef uint64_t (*heal16_t)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
                              uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
@@ -817,6 +859,7 @@ static void osh_clear(void) { memset(g_osh, 0, sizeof g_osh); }
 static int sim_now(uint8_t *ch) { uint8_t *sim = ((void *(*)(void *))B(0xb6a378))(ch); return sim ? I32(sim, 0x10) : 0; }
 static int osh_left(int k, int now) {
     if (!g_osh[k].ch || now >= g_osh[k].end) return 0;
+    if (g_osh[k].flat) return g_osh[k].hp;
     return (int)((long)g_osh[k].hp * (g_osh[k].end - now) / (g_osh[k].end - g_osh[k].start));
 }
 static uint64_t my_heal(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
@@ -832,7 +875,7 @@ static uint64_t my_heal(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint
         for (; k < OSH_MAX && !(g_osh[k].ch == ch && g_osh[k].id == I32(ch, 8)); k++) if (fr < 0 && osh_left(k, now) <= 0) fr = k;
         if (k == OSH_MAX) { if (fr < 0) break; k = fr; g_osh[k].ch = ch; g_osh[k].id = I32(ch, 8); g_osh[k].hp = 0; g_osh[k].end = now; }
         int left = osh_left(k, now), over = before + amt - mx;
-        g_osh[k].hp = left + over; g_osh[k].start = now; g_osh[k].end = now + ticks; g_osh_given += over;
+        g_osh[k].hp = left + over; g_osh[k].start = now; g_osh[k].end = now + ticks; g_osh[k].flat = 0; g_osh_given += over;
         static int nlog; if (nlog++ < 10) LOG("[hyper] overheal: ch %d hp %d + %d (max %d) -> shield %d for %d ticks\n", I32(ch, 8), before, amt, mx, g_osh[k].hp, ticks);
         break;
     }
@@ -844,11 +887,48 @@ int hyper_shield_absorb(void *victim, int dmg) {   /* env.c my_root: damage left
         int now = sim_now(ch), left = osh_left(k, now), a = dmg < left ? dmg : left;
         if (a <= 0) return dmg;
         /* what is left shrinks on from here: keep the rate, take a off the amount */
-        g_osh[k].hp = (int)((long)(left - a) * (g_osh[k].end - g_osh[k].start) / (g_osh[k].end - now)); g_osh_absorbed += a;
+        if (g_osh[k].flat) g_osh[k].hp = left - a; else g_osh[k].hp = (int)((long)(left - a) * (g_osh[k].end - g_osh[k].start) / (g_osh[k].end - now)); g_osh_absorbed += a;
         static int nlog; if (nlog++ < 10) LOG("[hyper] overheal shield of ch %d takes %d of %d (left %d)\n", I32(ch, 8), a, dmg, left - a);
         return dmg - a;
     }
     return dmg;
+}
+/* overcharge_door_man (Gray, DoorMan_overcharge 2 / 1000 / 300: "Gray opens a new pair of portals that shields him and
+ * allies for <VALUE2> when they pass through"; RE-IMPLEMENTED: libg reads only Value (the portal count, 0xb7d1a4), the
+ * teleport and the shield are the server's): superfix_moves.c's portals give a character that passes through a hypercharged
+ * pair a shield of Value2 that takes damage before HP (hyper_shield_absorb) for Value3 / 5 ticks ([?] Value3 300 read as
+ * hundredths of a second: 3 s; the description names no time). A new pass sets it to Value2 again (no stacking). */
+#define CT_DOOR_MAN 272
+int hyper_portal_shield(void *chp, int player) {   /* -> the shield given (0: none: no such card for that player) */
+    uint8_t *ch = chp; if (!ch || player < 0 || player >= NBE_MAXP || !g_card[player] || I32(g_card[player], 0x100) != CT_DOOR_MAN) return 0;
+    int hp = card_value(g_card[player], 2), ticks = card_value(g_card[player], 3) / 5, now = sim_now(ch), k = 0, fr = -1;
+    if (hp <= 0 || ticks <= 0) return 0;
+    for (; k < OSH_MAX && !(g_osh[k].ch == ch && g_osh[k].id == I32(ch, 8)); k++) if (fr < 0 && osh_left(k, now) <= 0) fr = k;
+    if (k == OSH_MAX) { if (fr < 0) return 0; k = fr; }
+    g_osh[k].ch = ch; g_osh[k].id = I32(ch, 8); g_osh[k].hp = hp; g_osh[k].start = now; g_osh[k].end = now + ticks; g_osh[k].flat = 1;
+    g_osh_given += hp;
+    static int nlog; if (nlog++ < 10) LOG("[hyper] portal shield: ch %d gets %d for %d ticks (player %d's card)\n", I32(ch, 8), hp, ticks, player);
+    return hp;
+}
+/* Pam (MinigunDude_overcharge, overcharge_pet_change: "It continues to heal Brawlers over their max health by providing them
+ * with a decaying shield"; RE-IMPLEMENTED: the area type HotAndOverheals 45 and its OverHeal* columns, AreaEffectData +0x1a4
+ * OverHealTicks / +0x1a8 StackOverHeal / +0x1ac MaxOverHeal / +0x1b0 OverHealMultiplier (stores at 0xa96420..0xa964a8), have
+ * no reader in the client). superfix.c's summon heal of the hypercharged turret's MinigunOverchargedHealingStationHeal
+ * (OverHealTicks 150, StackOverHeal, MaxOverHeal 6000, OverHealMultiplier 80) calls this with what went past max HP: a shield
+ * of amount x mult / 100, added to what is left when the data stacks (else the larger), at most max, which shrinks linearly
+ * to 0 over OverHealTicks ticks after the last overheal (the same store as Poco's above, taken by hyper_shield_absorb).
+ * [?] OverHealTicks read as the decay time in ticks (7.5 s) and MaxOverHeal as an absolute cap (power-11 HP). */
+void hyper_overheal(uint8_t *ch, int over, uint8_t *ad) {
+    int ticks = ad ? I32(ad, 0x1a4) : 0, mx = ad ? I32(ad, 0x1ac) : 0, amt = ad ? (int)((long)over * I32(ad, 0x1b0) / 100) : 0;
+    if (!ch || over <= 0 || ticks <= 0 || amt <= 0) return;
+    int now = sim_now(ch), k = 0, fr = -1;
+    for (; k < OSH_MAX && !(g_osh[k].ch == ch && g_osh[k].id == I32(ch, 8)); k++) if (fr < 0 && osh_left(k, now) <= 0) fr = k;
+    if (k == OSH_MAX) { if (fr < 0) return; k = fr; g_osh[k].ch = ch; g_osh[k].id = I32(ch, 8); g_osh[k].hp = 0; g_osh[k].end = now; }
+    int left = osh_left(k, now), hp = U8(ad, 0x1a8) ? left + amt : (amt > left ? amt : left);
+    if (mx > 0 && hp > mx) hp = mx;
+    g_osh[k].hp = hp; g_osh[k].start = now; g_osh[k].end = now + ticks; g_osh[k].flat = 0; g_osh_given += hp - left;
+    static int nlog; if (nlog++ < 10) LOG("[hyper] turret overheal: ch %d +%d over max (x %d %%) -> shield %d for %d ticks\n", I32(ch, 8), over,
+                                          I32(ad, 0x1b0), hp, ticks);
 }
 /* Shade (Ghost_overcharge, overcharge_default: "Shade's attacks during its Hypercharged Super all deal maximum damage, even if
  * the enemy is not hugged in the center"; RE-IMPLEMENTED: libg asks nothing hypercharge-specific there). The melee hit
@@ -870,6 +950,35 @@ int hyper_dead_centre(void *a, void *b, void *c, uint8_t *att) {
 }
 void hyper_dc_thunk(void);
 __asm__(".text\n.global hyper_dc_thunk\nhyper_dc_thunk:\n\tmov x3, x22\n\tb hyper_dead_centre\n");
+/* Cordelius (Duelist_overcharge, overcharge_default: "Cordelius slows down his targets when sending them to the Shadow Realm";
+ * RE-IMPLEMENTED: no slow in the data, the card's Value 6 is the batch value of ten overcharge_default cards). His super's
+ * hit (UniqueProperty 13, 0xb750cc..0xb75208) sends him and the target x27 to the Shadow Realm with 0xb58214 (ch, enter,
+ * ticks, ...); its last call (0xb751fc) sets the target's realm ticks (w2, from 0xb77e3c). hook_bl on that call
+ * (hyper_realm_thunk, which passes the projectile x25): a hypercharged Cordelius's target is slowed REALM_SLOW % for the
+ * realm's ticks (hyper_slow_pct, read by superfix_status.c's speed for env.c's mover). */
+#define REALM_SLOW 30   /* [?] guess: no number in the data or texts; 30 % is the most common SpeedReducePercent of the slows */
+static struct { uint8_t *ch; int id, until, pct; } g_slow[16];
+int hyper_slow_pct(uint8_t *ch) {   /* superfix_status.c superfix_status_speed: an extra SpeedReducePercent, 0 = none */
+    int t = -1, pct = 0;
+    for (int k = 0; ch && k < 16; k++) if (g_slow[k].ch == ch && g_slow[k].id == I32(ch, 8)) {
+        if (t < 0) t = sim_now(ch);
+        if (t < g_slow[k].until && g_slow[k].pct > pct) pct = g_slow[k].pct;
+    }
+    return pct;
+}
+void hyper_realm_enter(uint8_t *target, int enter, int ticks, int a3, int a4, uint8_t *proj) {
+    ((void (*)(void *, int, int, int, int))B(0xb58214))(target, enter, ticks, a3, a4);
+    uint8_t *owner = proj ? PTR(proj, 0xe0) : NULL;
+    if (!owner || !target || PTR(target, 0) != B(0x1209020) || ticks <= 0 || !(my_is_oc(owner) & 1)) return;
+    int now = sim_now(target), k = 0, fr = 0;
+    for (; k < 16 && !(g_slow[k].ch == target && g_slow[k].id == I32(target, 8)); k++) if (g_slow[k].until < g_slow[fr].until) fr = k;
+    if (k == 16) k = fr;   /* a new record over the one that ends first */
+    g_slow[k].ch = target; g_slow[k].id = I32(target, 8); g_slow[k].until = now + ticks; g_slow[k].pct = REALM_SLOW;
+    static int nlog; if (nlog++ < 10) LOG("[hyper] shadow realm: ch %d slowed %d %% for %d ticks (Cordelius ch %d)\n", I32(target, 8),
+                                          REALM_SLOW, ticks, I32(owner, 8));
+}
+void hyper_realm_thunk(void);
+__asm__(".text\n.global hyper_realm_thunk\nhyper_realm_thunk:\n\tmov x5, x25\n\tb hyper_realm_enter\n");
 void hyper_install(void) {
     hook_enter(g_libg, 0xb709e4, on_travel);   /* homing projectiles (above) */
     { uint32_t *pc = (uint32_t *)B(0xb5adc8);   /* bl 0xd00b6c (Shade's dead centre, above) */
@@ -884,6 +993,9 @@ void hyper_install(void) {
         LOG("[hyper] isOvercharged 0xb35bf0: unexpected bytes %08x %08x, hypercharged skills off\n", f[0], f[1]); return;
     }
     hook_replace(g_libg, 0xb35bf0, (void *)my_is_oc);
+    { uint32_t *pc = (uint32_t *)B(0xb751fc);   /* bl 0xb58214: the target's realm ticks (Cordelius's slow, above) */
+      if ((*pc & 0xfc000000) == 0x94000000 && (uint8_t *)pc + (((int32_t)(*pc << 6)) >> 4) == B(0xb58214)) hook_bl(g_libg, 0xb751fc, (void *)hyper_realm_thunk);
+      else LOG("[hyper] 0xb751fc: unexpected bytes, Cordelius's hypercharged slow is off\n"); }
     uint32_t *cv = (uint32_t *)B(0xb5281c);
     if (cv[0] == 0x12800000 && cv[1] == 0xd65f03c0) hook_replace(g_libg, 0xb5281c, (void *)my_card_value);   /* mov w0, #-1 ; ret */
     else LOG("[hyper] 0xb5281c: unexpected bytes %08x %08x, hypercharge card values off\n", cv[0], cv[1]);

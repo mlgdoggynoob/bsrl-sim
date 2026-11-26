@@ -21,6 +21,7 @@
  *   - a new stun or loss of control stops the character's current path (stop 0xb4103c), because the mover only refuses new
  *     moves (superfix_cc_tick from the character update hook);
  *   - CcImmunity statuses (superfix_status.c aggregate +0x982) keep stuns and silences off.
+ *   - Lou's freeze meter (PartialStunPromille hits, Slippery areas' CustomValue2): a full meter stuns (freeze_add).
  *   - Draco (DragonRider): change-skill 0xb35c3c(ch, slot, SkillData, w3, w4, w5) is a bare `ret` (24 callers). The MountUp
  *     component's mount (call at 0xba02e0) passes his dragon weapon (weapon SkillData +0x158 = DragonRiderDragonWeapon), its
  *     dismount (0xba0178) CharacterData +0x260 (DragonRiderWeapon). Only those two call sites (by return address) swap the
@@ -60,6 +61,8 @@ static void stun(uint8_t *ch, int ticks, const char *why) {
     if (I32(ch, CH_STUN_TICKS) < ticks) I32(ch, CH_STUN_TICKS) = ticks;   /* the longer stun wins (no stacking) */
     if (g_superfix_dbg) LOG("[superfix] cc: stun ch %d for %d ticks (%s), tick %d\n", I32(ch, 8), ticks, why, now_tick(ch));
 }
+/* superfix_moves.c: Buzz's landing stun, Kit's hypercharged super */
+void superfix_cc_stun(uint8_t *ch, int ticks, const char *why) { if (on()) stun(ch, ticks, why); }
 typedef struct { uint8_t *ch; int id, until; } Sil;
 #define SIL_MAX 64
 static Sil g_sil[SIL_MAX]; static int g_nsilrec;
@@ -101,6 +104,7 @@ static void on_proj_hit(uint64_t *ctx) {
 /* From env.c's damage root hook (0xb422d0, x6 = the damage source): a projectile source with a stun length stuns the
  * victim. The hit code's own path (0xb73eb8 above) does not run for these projectiles' hits in this build. */
 #define VT_PROJ 0x1209318
+static void freeze_add(uint8_t *ch, int pm, const char *why);   /* below: Lou's freeze meter */
 void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) {
     (void)lr;
     if (!on() || !src || !is_char(victim)) return;
@@ -110,6 +114,40 @@ void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) {
     if (!pd) return;
     int ticks = I32(pd, 0x1d0);
     if (ticks > 0) { stun(victim, ticks, "projectile hit"); g_nstun_proj++; }
+    if (I32(pd, 0x1d4) > 0) freeze_add(victim, I32(pd, 0x1d4), "projectile hit");   /* PartialStunPromille (Lou's snow cones: 143) */
+}
+/* Lou's freeze meter. PartialStunPromille (ProjectileData +0x1d4, loader store 0xaf7388; its one
+ * reader 0xafa990 is called only by the card text 0x8c5c1c) and the Slippery areas' CustomValue2 (+0x140) fill a meter on
+ * the victim that the server keeps; the client has none of it. Here: a projectile hit adds its promille (env.c's damage
+ * root -> superfix_cc_hit), every tick of a Slippery area (IceDudeUltiArea 7, IceDudeOverchargedUltiArea 6, and
+ * IceDudeOverchargedUltiAreaInvisible 1000: "Lou's Super instantly freezes enemies in the area") adds CustomValue2 to every
+ * enemy character libg's target test reaches; at FREEZE_FULL the victim is stunned FREEZE_TICKS and the meter empties.
+ * [?] CustomValue2 read as promille per tick (7 -> frozen after 143 ticks in the area of the 200-tick super; 1000 at once),
+ * and the meter's decay (FREEZE_KEEP). Not modelled: the slide (CustomValue 90), Hypothermia, the nano traits. */
+#define FREEZE_FULL 1000   /* promille: the Cryo Syrup gadget's text "adds 20% freeze meter" for Value 20 */
+#define FREEZE_TICKS 30    /* 1.5 s: the constant (fmov s0, #1.5 at 0x8c5c44) libg's card text shows as <accumulatedStun>
+                            * ("freeze them in place for <accumulatedStun> seconds") for a projectile with PartialStunPromille */
+#define FREEZE_KEEP 60     /* [?] ticks without a new freeze after which the meter is empty again (the server's decay) */
+typedef struct { uint8_t *ch; int id, pm, last; } Frz;
+#define FRZ_MAX 32
+static Frz g_frz[FRZ_MAX]; static int g_nfrz; static long g_nfreeze_add, g_nfreeze;
+static void freeze_add(uint8_t *ch, int pm, const char *why) {
+    if (!is_char(ch) || pm <= 0 || I32(ch, 0x3c4) <= 0) return;
+    int t = now_tick(ch), k; if (t < 0) return;
+    for (k = 0; k < g_nfrz && !(g_frz[k].ch == ch && g_frz[k].id == I32(ch, 8)); k++) {}
+    if (k == g_nfrz) {
+        for (int i = g_nfrz - 1; i >= 0; i--) if (t - g_frz[i].last > FREEZE_KEEP || t < g_frz[i].last) g_frz[i] = g_frz[--g_nfrz];
+        if (g_nfrz >= FRZ_MAX) return;
+        k = g_nfrz++; g_frz[k] = (Frz){ch, I32(ch, 8), 0, t};
+    }
+    if (t - g_frz[k].last > FREEZE_KEEP || t < g_frz[k].last) g_frz[k].pm = 0;
+    g_frz[k].pm += pm; g_frz[k].last = t; g_nfreeze_add++;
+    if (g_frz[k].pm >= FREEZE_FULL) {
+        g_frz[k].pm = 0;
+        if (!U8(ch, CH_CCIMM)) g_nfreeze++;
+        stun(ch, FREEZE_TICKS, why);
+        static int nlog; if (nlog++ < 10) LOG("[superfix] cc: ch %d frozen for %d ticks (%s), tick %d\n", I32(ch, 8), FREEZE_TICKS, why, t);
+    }
 }
 /* libg's own target test of the area apply 0xb29494 (0xb29e8c..0xb29fcc), for the areas the host applies itself (issue #19
  * final): the character must be within r = 0xb2b298(data, ch) (Radius + the character's radius - 50) of the area, both
@@ -155,8 +193,26 @@ static int kb_on(uint8_t *ch) {
 typedef struct { void *a; int start; } CcArea;
 #define CA_MAX 64
 static CcArea g_ca[CA_MAX]; static int g_nca;
+static struct { void *a; int t; } g_slip[CA_MAX];   /* Slippery areas: the tick each last filled the meters (once a tick) */
+static void slip_freeze(uint8_t *a, uint8_t *d) {
+    uint8_t *owner = PTR(a, 0x108), *mgr = owner ? PTR(owner, 0x20) : NULL;
+    int t = now_tick(a), k, fr = -1, pm = I32(d, 0x140);   /* CustomValue2 */
+    if (!mgr || t < 0 || pm <= 0) return;
+    for (k = 0; k < CA_MAX && g_slip[k].a != a; k++) if (fr < 0 && (!g_slip[k].a || t - g_slip[k].t > 400 || t < g_slip[k].t)) fr = k;   /* 400: a free or stale record (20 s) */
+    if (k == CA_MAX) { if (fr < 0) return; k = fr; g_slip[k].a = a; g_slip[k].t = -1; }
+    if (g_slip[k].t == t) return;
+    g_slip[k].t = t;
+    int n = I32(mgr, 0x34); void **v = PTR(mgr, 0x28); if (!v || n < 0 || n > 4096) return;
+    int team = ((int (*)(void *))B(0xb6a820))(a);
+    for (int i = 0; i < n; i++) {
+        uint8_t *o = v[i];
+        if (!is_char(o) || I32(o, 0x3c4) <= 0 || ((int (*)(void *))B(0xb6a820))(o) == team) continue;
+        if (superfix_area_reach(a, d, o) >= 0) freeze_add(o, pm, "slippery area");
+    }
+}
 void superfix_cc_area(uint8_t *a, uint8_t *d) {
     if (!on() || !a || !d) return;
+    if (I32(d, 0x118) == 20) { slip_freeze(a, d); return; }
     int type = I32(d, 0x118), cc = type == 16 || type == 24 || type == 43, ticks = cc ? I32(d, 0x13c) : I32(d, 0x160);   /* StunTicks */
     int full = ticks, push = 0; uint8_t *owner = PTR(a, 0x108);
     if (ticks <= 0 || !owner) return;
@@ -258,6 +314,23 @@ void superfix_cc_switch(uint8_t *ch, int inside) {
     w->want = want; w->mount = inside; do_swap(ch, w);
 }
 
+/* superfix_moves.c: Kit attached to a teammate throws his weapon's SecondarySkill (AttacherWeaponAlternate, the yarn balls;
+ * hypercharged: SecondarySkill2), back on his own weapon (want NULL) once he lets go; the same swap (waits while it runs) */
+void superfix_cc_weapon(uint8_t *ch, void *want) {
+    if (!on() || !is_char(ch)) return;
+    uint8_t *cd = ((uint8_t *(*)(void *))B(0xb6a384))(ch), *own = cd ? PTR(cd, 0x260) : NULL;
+    uint8_t **sk = PTR(ch, 0x458);
+    if (!own || !sk || I32(ch, 0x464) < 1 || !sk[0]) return;
+    if (!want) want = own;
+    Swap *w = NULL;
+    for (int i = 0; i < g_nsw; i++) if (g_sw[i].ch == ch && g_sw[i].id == I32(ch, 8)) w = &g_sw[i];
+    if (PTR(sk[0], 0) == want) { if (w) w->want = NULL; return; }
+    if (!w) w = swap_rec(ch);
+    if (!w) return;
+    if (want != own) w->spare = NULL;
+    w->want = want; w->mount = want != own; do_swap(ch, w);
+}
+
 /* ------------------------------------------------------------------ per character tick (superfix_status.c's update hook) */
 typedef struct { uint8_t *ch; int id; } Blk;
 #define BLK_MAX 64
@@ -299,6 +372,6 @@ void superfix_cc_status(void) {
         LOG("[superfix] env (this battle): moves re-timed by statuses %ld, rooted %ld; hits scaled %ld; inputs refused %ld; "
             "moves re-sent %ld; taunted / feared steps %ld, native moves %ld\n", o[0], o[1], o[2], o[3], o[4], o[5], o[6]); }
     LOG("[superfix] cc: stuns trap %ld, projectile %ld, area %ld; silences projectile %ld, area %ld; immune %ld; out of sight %ld; "
-        "paths stopped %ld; weapon swaps %ld (waited %ld)\n", g_nstun_trap, g_nstun_proj, g_nstun_area, g_nsil, g_nsil_area, g_nimm,
-        g_nlos_block, g_nstop, g_nswap, g_nswap_wait);
+        "paths stopped %ld; weapon swaps %ld (waited %ld); freeze meter adds %ld, freezes %ld\n", g_nstun_trap, g_nstun_proj, g_nstun_area,
+        g_nsil, g_nsil_area, g_nimm, g_nlos_block, g_nstop, g_nswap, g_nswap_wait, g_nfreeze_add, g_nfreeze);
 }

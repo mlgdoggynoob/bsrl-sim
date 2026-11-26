@@ -15,6 +15,13 @@
  * ConductorSignArea (Damage) is spawned once, on the sign's first update that runs (the update is skipped while
  * +0xd4 > now), i.e. when the post lands.
  *
+ * Squeak's Sticky Blombs (item type 32: StickyBomb from his main attack, StickyBombUlti from his super's blobs, their skins):
+ * the projectile hit makes the blomb and sticks it to the character it hits (b74cb4..b74dd4: factory 0xb55684, attach
+ * 0xb6e5b4 -> +0x138, start tick +0xd4), and a new blomb on a character first blows the ones already on it (b74ae4..b74b28:
+ * 0xb6e388, a bare `ret`, then the destroy 0xb6e0b0); the update has no type-32 fuse, so no blomb ever blew. Re-implemented:
+ * 0xb6e388 spawns the blomb's TriggerAreaEffect (StickyBombExplosion / StickyBombUltiExplosion) with spawn_area_at below; a
+ * stuck blomb rides on its character, and Value2 ms (1150) after its start it blows and is destroyed the same way.
+ *
  * Area ChainAreaEffect (AreaEffectData +0xe0, getter 0xa97c04): the area expire 0xb28f84 (called from the area tick at
  * b28d08 when shouldExpire 0xb28d4c says so) only sets +0xf4 and runs the listeners; no reader of 0xa97c04 spawns the
  * chain. On entry, for an area that reached its end tick (+0xd8), the chain area is spawned at it with the same sequence
@@ -48,6 +55,7 @@ static int busy;   /* our own spawns run 0xb29494 / update code again: no nested
 #define BOMB_ITEM 18000035                  /* Piper's bombs (normal, hypercharged OverchargedBomb): env.c */
 #define OC_BOMB_ITEM 18000146               /* sf_bomb_state / sf_explode explode them */
 #define FUSE_TYPES 0x4802020200005040ULL    /* b6cf0c: item types with a trigger fuse */
+#define STICKY_TYPE 32                      /* Squeak's blombs (ItemData +0x54; 0xae6cf4) */
 
 static long hp_sum(uint8_t *src) {   /* debug: HP of every character (vtable 0x1209020) in src's object manager */
     uint8_t *mgr = PTR(src, 0x20); void **arr = mgr ? PTR(mgr, 0x28) : NULL; int cnt = mgr ? I32(mgr, 0x34) : 0; long s = 0;
@@ -85,6 +93,41 @@ static int seen(int *ring, int n, int *pos, int id) {
     for (int i = 0; i < n; i++) if (ring[i] == id) return 1;
     ring[*pos] = id; *pos = (*pos + 1) % n; return 0;
 }
+/* ---- Squeak's Sticky Blombs (item type 32: StickyBomb, StickyBombUlti and their skins; the name table at 0xae6b94..0xae6cf8) */
+static int g_sticky_ring[64], g_sticky_pos, g_sticky_last = -1;   /* ids of the blombs already blown (no second area) */
+static long g_nsticky, g_nsticky_fuse;
+/* in place of the bare `ret` 0xb6e388(item): the projectile hit calls it, then the item destroy 0xb6e0b0, for each blomb
+ * already stuck to the character a new one hits (b74b18..b74b24); here it spawns the blomb's TriggerAreaEffect */
+static void my_sticky_blow(uint8_t *it) {
+    uint8_t *d = it ? data_of(it) : NULL; void *trig = d ? PTR(d, 0x60) : NULL;
+    if (!g_superfix || !g_superfix_items || !trig || busy || !mode() || I32(d, 0x54) != STICKY_TYPE) return;
+    int t = now_of(it);
+    if (t < g_sticky_last) { for (int i = 0; i < 64; i++) g_sticky_ring[i] = 0; }   /* a new battle: ids restart */
+    g_sticky_last = t;
+    if (seen(g_sticky_ring, 64, &g_sticky_pos, I32(it, 8))) return;
+    busy = 1;
+    uint8_t *a = spawn_area_at(it, trig, PTR(it, 0xb0), I32(it, 0xb8), 0, U64(it, 0xe0), it + 0x150);
+    busy = 0;
+    g_nsticky++;
+    if (g_superfix_dbg) LOG("[superfix] blomb %d (data %d) on %p blown -> area %p (type %d) at %d,%d dmg %d tick %d, HP taken %ld\n", I32(it, 8),
+                            I32(d, 0x20), PTR(it, 0x138), a, I32(trig, 0x118), I32(it, 0x38), I32(it, 0x3c), I32(it, 0xe0), t, g_last_hit);
+}
+/* after each update of a blomb: one stuck to a character (+0x138, set by the attach 0xb6e5b4 at the hit b74db0) rides on it
+ * (the client's update has no type-32 follow; [guess] at its centre, the attach's angle +0x140 is not used); once Value2 ms
+ * (fuse getter 0xb6b484, 1150: the type-32 fuse the client itself stores in +0x9c at b6ca98) have passed since its start
+ * tick +0xd4 (the hit sets it at b74dc0), it blows (above) and is destroyed (0xb6e0b0), the hit's own sequence */
+static void sticky_update(uint8_t *it, uint8_t *d, void *trig) {
+    (void)d; (void)trig;
+    for (int i = 0; i < 64; i++) if (g_sticky_ring[i] == I32(it, 8) && g_sticky_last <= now_of(it)) return;   /* blown */
+    uint8_t *ch = PTR(it, 0x138);
+    if (ch && *(uint8_t **)ch == B(0x1209020) && I32(ch, 0x3c4) > 0)
+        ((void (*)(void *, int, int, int))B(0xb6a61c))(it, ((geti_t)B(0xb6a628))(ch), ((geti_t)B(0xb6a630))(ch), ((geti_t)B(0xb6a638))(it));
+    int fuse = ((geti_t)B(0xb6b484))(it);
+    if ((now_of(it) - I32(it, 0xd4)) * 50 < fuse) return;   /* 50 ms a tick */
+    g_nsticky_fuse++;
+    my_sticky_blow(it);
+    ((void (*)(void *))B(0xb6e0b0))(it);
+}
 static void my_item_update(uint8_t *it, void *x1, void *x2, void *x3) {
     uint8_t *d = it ? data_of(it) : NULL;
     int on = g_superfix && g_superfix_items && d && !busy && mode();
@@ -110,6 +153,7 @@ static void my_item_update(uint8_t *it, void *x1, void *x2, void *x3) {
         g_sign_last = t;
         if (I32(it, 0xd4) <= t && !seen(g_sign_ring, 64, &g_sign_pos, I32(it, 8))) { fire = 2; g_nsign++; }
     }
+    if (type == STICKY_TYPE) { sticky_update(it, d, trig); return; }
     if (!fire) return;
     busy = 1;
     uint8_t *a = spawn_area_at(it, trig, PTR(it, 0xb0), I32(it, 0xb8), 0, U64(it, 0xe0), it + 0x150);
@@ -176,11 +220,14 @@ void superfix_items_install(void) {
     else LOG("[superfix] items: 0xb6b8e0 is not the item update: trigger areas off\n");
     if (*(uint32_t *)B(0xb28f84) == 0xd101c3ff) hook_enter(g_libg, 0xb28f84, on_area_expire);   /* sub sp, sp, #0x70 */
     else LOG("[superfix] items: 0xb28f84 is not the area expire: chain areas off\n");
+    if (*(uint32_t *)B(0xb6e388) == 0xd65f03c0 && *(uint32_t *)B(0xb74b1c) == 0x97ffe61b)   /* ret; bl 0xb6e388 (the hit's only call) */
+        hook_replace(g_libg, 0xb6e388, (void *)my_sticky_blow);
+    else LOG("[superfix] items: 0xb6e388 is not the blomb stub: a second blomb on a character does not blow the first\n");
     void hook_bl(Module *m, uint64_t off, void *fn);
     if (*(uint32_t *)B(0xb74bfc) == 0xaa0003f4 && *(uint32_t *)B(0xb74c00) == 0x97ffe66d)   /* mov x20, x0; bl 0xb6e5b4 */
         hook_bl(g_libg, 0xb74c00, (void *)superfix_hugger_thunk);
     else LOG("[superfix] items: 0xb74c00 is not the hugger attach: Otis' super damage off\n");
-    LOG("[superfix] items installed (item trigger areas, area chains, hugger hit)\n");
+    LOG("[superfix] items installed (item trigger areas, sticky blombs, area chains, hugger hit)\n");
 }
-void superfix_items_status(void) { LOG("[superfix] items: trigger areas %ld (fuse) + %ld (sign); chain areas %ld (items %ld, %ld expired early); hugger hits %ld\n",
-                                       g_ntrig, g_nsign, g_nchain, g_nchain_item, g_nchain_early, g_nhug); }
+void superfix_items_status(void) { LOG("[superfix] items: trigger areas %ld (fuse) + %ld (sign); blombs blown %ld (%ld by their fuse); chain areas %ld (items %ld, %ld expired early); hugger hits %ld\n",
+                                       g_ntrig, g_nsign, g_nsticky, g_nsticky_fuse, g_nchain, g_nchain_item, g_nchain_early, g_nhug); }

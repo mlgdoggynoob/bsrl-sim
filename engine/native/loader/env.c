@@ -449,6 +449,7 @@ static int mech_pop(void *sim, uint8_t *c, int before);   /* Meg's mech at 0 HP:
 static int just_popped(uint8_t *c);                       /* ... and takes no other hit in that tick */
 static uint8_t *split_link(void *sim, uint8_t *c, int before, void *atk, int a1, int *lost);   /* R-T's legs at 0 HP: the head goes too (below) */
 void superfix_split_drop(uint8_t *head) __attribute__((weak));   /* superfix_moves.c: a knocked-out R-T head's legs go */
+void superfix_hit_event(uint8_t *victim, uint8_t *attacker, void *src) __attribute__((weak));   /* superfix_moves.c: Sirius's hit listener */
 static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *attacker, void *src, int a7,
                         int s0, int s1, void *s2, int s3, int s4, int s5, int s6, int s7, int s8, int s9) {
     int mode3 = I32(g_libg->base, 0x12eefb4) == 3;
@@ -508,6 +509,8 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
     int pop = vchar && mode3 && mech_pop(E.sim, victim, before);   /* the mech's HP is gone, Meg stands in its place */
     if (vchar && mode3) record_event(victim, attacker, pop ? before + 1 : before, pop ? 1 : I32(victim, 0x3c4));   /* no kill */
     if (stalk_heal > 0 && vchar) stalk_heal_after(attacker, stalk_heal, before - I32(victim, 0x3c4));
+    if (superfix_hit_event && vchar && mode3 && !E.in_own_call && dmg > 0 && before > 0 && attacker && src)   /* his hit event (char +0x280) */
+        superfix_hit_event(victim, attacker, src);
     if (!pop && ow >= 0 && I32(victim, 0x3c4) <= 0 && resp_mate(E.sim, ow)) {   /* knocked out while a teammate lives */
         E.resp_at[ow] = I32(E.sim, 0x10) + RESP_TICKS; E.resp_ai[ow] = U8(victim, 0x469); E.resp_n++;
         /* area round: it loses its power cubes (Duo Showdown: a respawned brawler starts at 0 cubes) and their +400 max HP
@@ -1175,7 +1178,7 @@ static void split_gas(void *sim) {   /* each storm second: living legs on a stor
         if (E.ngq < NBE_MAXP) { E.gq[E.ngq++] = (GasHit){I32(c, 8), dmg, SPLIT_GAS_PCT, 0, mx, 0, 0}; g_split_gas++; }
     }
 }
-static long g_dig_changes, g_dig_surface;
+static long g_dig_changes, g_dig_surface, g_dig_oc;
 static uint64_t dig_change(uint8_t *old, void *nd, uint64_t a2, uint64_t a3) {
     if (!dig_ok() || !old) return 0;
     void *sim = E.sim; int x = I32(old, 0x38), y = I32(old, 0x3c), id = I32(old, 8), dmg = 0; void *surf = NULL;
@@ -1185,6 +1188,10 @@ static uint64_t dig_change(uint8_t *old, void *nd, uint64_t a2, uint64_t a3) {
     g_dig_changes++;
     int v = ((int (*)(void *))B(0xab404c))(PTR(nc, 0x10));           /* DiggerDrill UniquePropertyValue1 */
     v = ((int (*)(int, void *))B(0xbb2514))(v, nc + 0x48);            /* modifiers, as the folded code */
+    /* hypercharged (overcharge_digger 307, Digger_overcharge Value2 300, "Driller ... lasts for longer!"; the hypercharge went to
+     * the new form with the change, hyper_char_changed): no libg code reads Value2 (the card's readers 0xc6e754 / 0xb7bc04 take
+     * Value / Value3). RE-IMPLEMENTED: [?] Value2 % of the timer (100 -> 300 ticks; the unit is a guess) */
+    { int hv = hyper_card_live(nc, 307, 2); if (hv > 100) { v = v * hv / 100; g_dig_oc++; } }
     I32(nc, 0xe14) = v; I32(nc, 0xe18) = v;
     if (surf && sim && g_native_charge == 1) {
         /* raw extra damage: env's damage root scales a character's hits (x2, cubes) itself. [?] whether the server adds the
@@ -1199,9 +1206,17 @@ static uint64_t dig_change(uint8_t *old, void *nd, uint64_t a2, uint64_t a3) {
             g_charge_areas++; g_dig_surface++;
         }
     }
-    if (g_dig_changes <= 5) LOG("[env] dig: Moe surfaced at %d,%d as %p (drill timer %d), surface area %p extra %d\n", x, y, nc, v, surf, dmg);
+    if (g_dig_changes <= 5) LOG("[env] dig: Moe surfaced at %d,%d as %p (drill timer %d, hypercharged %ld), surface area %p extra %d\n", x, y, nc, v, g_dig_oc, surf, dmg);
     return (uint64_t)nc;
 }
+/* Chuck's dash (not in this host): the super's dash to a post is its SecondarySkill (ConductorUltiSpawn -> ConductorUltiCharge,
+ * type 17), taken by the super use 0xb487c4 only with the input flag (ClientInput +0x18 -> w4) while the post finder
+ * 0xb6e3ec (a `mov x0, xzr` stub here, called each tick at 0xb40dd4) holds a post in char +0xd98 / +0x872. A finder plus that
+ * flag reached the swap, but no skill slot holds the secondary (the setup 0xb34440 makes weapon / super / hypercharged super /
+ * gadget slots; the use then faults on the null slot at 0xb48ab4), and even with a slot appended (slot ctor 0xb7aa98) the use
+ * consumed the super and set the slot's cooldown but never its active time (+0x10), so the charge start 0xb475cc was never
+ * reached. So Chuck's super always places a post, and the hypercharge (overcharge_conductor 308: unlimited dash range, the
+ * dash's OverchargedAreaEffectObject ConductorOverchargedArea) has nothing to act on. */
 static void sf_start_hook(uint64_t *ctx) {   /* 0xb475cc (the one-instruction ret stub = charge start) onEnter */
     if (I32(g_libg->base, 0x12eefb4) != 3 || !E.sim) return;
     uint8_t *ch = (uint8_t *)ctx[0]; int tx = (int)ctx[1], ty = (int)ctx[2], dmg = (int)ctx[3], speed = (int)ctx[6];
@@ -1650,11 +1665,31 @@ static void client_pos(int i, uint8_t *ch, int *x, int *y) {
     int k = (n - 5) & 7;      /* 4 ticks before the newest entry */
     *x = jround(X - CLIENT_LAG_F * (X - E.hx[i][k])); *y = jround(Y - CLIENT_LAG_F * (Y - E.hy[i][k]));
 }
+/* The super's charge over time (characters.csv ChargeUltiAutomatically, CharacterData getter 0xab3f40: Darryl / Edgar 132,
+ * Kit 200, Jae-Yong 600, Chuck 800, Shade 3000, small Bonnie 3500). In this build only the UI reads it (0x5a991c, 0x5aa514,
+ * 0x8c3de8: the super button's "charged" flash for a gain above it), the server code that adds it is compiled out.
+ * RE-IMPLEMENTED: player +0x54 rises by the rate per second ([?] the unit: charge per second of player +0x58's 4000, Darryl's
+ * full super in 30 s) at 20 ticks a second, while the brawler lives. A hypercharged Jae-Yong (overcharge_super_charge_rate 316,
+ * Alternator_overcharge Value 600: "Jae's Super has a reduced cooldown during Hypercharge") adds the card's Value to the rate
+ * ([?] added: 600 -> 1200, the super back in 3.3 s instead of 6.7 s). NB_AUTOCHARGE=0 turns it off (the earlier host). */
+#define CT_SUPER_CHARGE_RATE 316
+static int g_autocharge = 1; static int g_ac_rem[NBE_MAXP]; static long g_ac_ticks;
+static void auto_charge(int i, void *p, uint8_t *c) {
+    void *cd = ((void *(*)(void *))B(0xb6a384))(c);
+    int rate = cd ? ((int (*)(void *))B(0xab3f40))(cd) : 0;
+    if (rate <= 0) return;
+    if (hyper_active(p)) { int v = hyper_card_live(c, CT_SUPER_CHARGE_RATE, 1); if (v > 0) rate += v; }
+    int mx = I32(p, 0x58), sc = I32(p, 0x54);
+    if (mx <= 0 || sc >= mx) { g_ac_rem[i] = 0; return; }
+    int add = (g_ac_rem[i] + rate) / 20; g_ac_rem[i] = (g_ac_rem[i] + rate) % 20;   /* 20 ticks a second */
+    I32(p, 0x54) = sc + add < mx ? sc + add : mx; g_ac_ticks++;
+}
 static void hyper_tick(void *sim) {   /* hypercharge round: drain / end (hyper.c); an ended one re-sends the move at normal speed */
     int np; void **ps = players(sim, &np);
     for (int i = 0; i < np && i < NBE_MAXP; i++) {
         if (!ps[i]) continue;
         uint8_t *c = obj_by_id(sim, player_char_id(ps[i])); if (c && VTOF(c) != VT_CHAR) c = NULL;
+        if (g_autocharge && c && I32(c, 0x3c4) > 0 && !waiting(i)) auto_charge(i, ps[i], c);   /* before the drain: Jae's card */
         if (hyper_active(ps[i]) && hyper_tick_player(i, ps[i], c, c && I32(c, 0x3c4) > 0 && !waiting(i))) E.sent_valid[i] = 0;
         hyper_unswap(i, c);   /* the normal super back after a hypercharged one (hyper.c) */
         int alive = c && I32(c, 0x3c4) > 0 && !waiting(i);   /* gear round: the shield's regeneration; a bush change re-sends the move */
@@ -2910,6 +2945,7 @@ void env_install(void) {
     o_root = hook_replace(g_libg, 0xb422d0, my_root);
     o_mkarea = hook_replace(g_libg, 0xb2aefc, my_mkarea);   /* issue #22: heal areas at power 11 */
     if (getenv("NB_HEAL_SCALE")) g_heal_scale = atoi(getenv("NB_HEAL_SCALE"));
+    if (getenv("NB_AUTOCHARGE")) g_autocharge = atoi(getenv("NB_AUTOCHARGE"));   /* the super's charge over time (auto_charge) */
     o_charge = hook_replace(g_libg, 0xc420d8, my_charge);
     o_b29350 = hook_replace(g_libg, 0xb29350, my_b29350);   /* diversity round: null-owner guard */
     o_alive = hook_replace(g_libg, 0xc42ae8, my_alive);
