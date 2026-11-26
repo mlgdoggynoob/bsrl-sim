@@ -36,15 +36,23 @@
  *         heal, status and wall spawn then come from libg and the earlier rounds (superfix, spawnfix). ActivationDelay
  *         ticks (Tick: 20) are waited out first, and the area is placed where the brawler is then. A row's ShieldPercent
  *         for ShieldTicks (Tick: 50 % for 21) starts at the fire (superfix_status_shield, issue #55).
- *   SHOT  empty Type, no AreaEffect, a Skill whose BehaviorType is Attack with Projectiles (32 rows: Spike, Colt x2, Brock,
+ *   SHOT  empty Type, no AreaEffect, a Skill whose BehaviorType is Attack with Projectiles (31 rows: Spike, Colt x2, Brock,
  *         Shelly, Emz x2, ...; published PROJECTILE): NumBulletsInOneAttack of the skill's first projectile over Spread degrees
  *         centred on the aim, to CastingRange, with the skill's Damage scaled by the brawler's damage percent (0xb4b660, as the
- *         attack path scales it), spawned with the projectile spawn 0xb78190 (spawnfix.c) at kind 4. What the projectile
- *         does on hit or at its end (areas, items, summons, pull / push) is libg's and the earlier rounds'. A projectile
+ *         attack path scales it), spawned with the projectile spawn 0xb78190 (spawnfix.c) at kind 4. A skill with
+ *         SummonedCharacters or a SpawnedItem gets its projectiles armed the way libg's attack path arms them (arm_shot:
+ *         0xb703c8 / 0xb79130, which 0xb78190 alone skips), so the projectile's end spawns the summon (Bo's totem, Leon's
+ *         smoke, Starr Nova's fly area, Spike's cactus) or the item (Damian's microphone; issue #64). What the projectile
+ *         does on hit or at its end (areas, items, summons, pull / push) is then libg's and the earlier rounds'. A projectile
  *         row with DamageOnlyWithOneProj (Emz's spray) damages each target with one projectile of the volley only, through
  *         the attack path's sibling list (volley). The skill's timing (ActiveTime, MsBetweenAttacks waves) is not read:
  *         g_waves lists the cards whose description names more waves (Colt's Gunslinger_Reload: two shots, issue #55).
- *         Not applied: TwoGuns, AttackPattern.
+ *         Not applied: TwoGuns, AttackPattern. A skill with UseWeaponAmmo (Frank's Pull, Shelly's Clay Pigeons, ...) needs
+ *         and spends one weapon ammo bar per fire [?] (shot_ready, issue #64).
+ *   REWIND  Max's Speedy_Rewind (card 23000311 only; published PROJECTILE; issue #64): the skill's bolt at the aim, whose
+ *         end spawns its SpeedyRewindArea (libg); when the area runs out (3 s), or at a second fire while it is up (the
+ *         card's "reactivate"), the host teleports Max to it (superfix_teleport) and heals her back to her HP at the throw.
+ *         No cooldown while the rewind is pending; Max's death drops it. See the REWIND block.
  *   SKILL AREA  the same, but the skill has no projectile, only an AreaEffectObject (published SPAWN): Bull's Stomp (Attack:
  *         at the brawler), 8-Bit's Extra Credits (AimableArea: at the aim point at CastingRange).
  *   AUTO AIMER  Piper's Sniper_HandGun (repeat_shot; card 23000268 only; published PROJECTILE): one CustomObject projectile
@@ -86,12 +94,11 @@
  *         statuses in superfix's store (Jacky, Bonnie, Hank, Lou, Willow, Juju, Kit's box, Surge x2, Trunk, Moe), Draco's
  *         Last Stand, Sandy's sleep, Tara's and Buzz's bush vision. Its header lists what each one does and the guesses.
  * Readiness: a kind may have a ready() test (NEXT: not while a modifier is pending; HEAL: Meg out of her mech, Byron without
- * ammo; BUOY: the super full; SELF: an effect still running, a form gate); while it fails the gadget publishes a
+ * ammo; SHOT: a UseWeaponAmmo skill without an ammo bar; BUOY: the super full; SELF: an effect still running, a form gate); while it fails the gadget publishes a
  * cooldown of at least 1 and a fire is refused without spending a use. Cooldown: the accessory's +0xc4, else the Skill's
  * BonusSkillCooldown (getter 0xb0d878, the gadget value of the skill), else its Cooldown (ms / 50). A skill gadget whose
  * skill has MaxCharge > 1 (Shelly's Clay Pigeons, Colette's lifesteal shot: 3, "can be fired 3 times before cooldown")
  * fires that many times per cooldown, the skill's own Cooldown (ms) apart [?]; the cooldown starts after the last one.
- * Its UseWeaponAmmo (a shot costing weapon ammo [?]) is not applied.
  * Every other gadget publishes kind NONE (not usable): summons / turrets, the Charge skills (Brock's jump, Max's dash, ...),
  * weapon / super swaps, the masked rows (g_masked), the not-doable cards below, ... Each player gets GAD_USES uses per
  * battle (unlimited by default, as in the live game since February 2025) and the accessory's cooldown between uses.
@@ -168,6 +175,8 @@ typedef struct {
     int (*fire)(void *sim, Gad *g, uint8_t *ch, double deg, int tick);           /* 1 = activated (a use is spent) */
     int (*ready)(void *sim, Gad *g, uint8_t *ch);   /* optional precondition: 0 = not usable now (published as a cooldown of
                                                      * 1 tick, refused without spending a use); NULL = always */
+    int (*again)(void *sim, Gad *g, uint8_t *ch, int tick);   /* optional: a fire while the last use is still running (Max's
+                                                     * reactivation), tried before the cooldown test; 1 = handled (no use) */
 } GadImpl;
 struct Gad {
     int pid, type, card, uses, cd, cd_until, used; void *ad; const GadImpl *im;
@@ -194,6 +203,9 @@ struct Gad {
     int hp_prev, hp_lost[100];                        /* damage taken per tick (ring by tick % 100), for HEAL_TAKEN */
     int buoy_ch;                                           /* BUOY: the brawler's id at the fire while its next super has not
                                                             * landed yet (0 = none; gadget_buoy_nostun) */
+    int rw_ch, rw_area, rw_until, rw_x, rw_y, rw_hp, rw_at;   /* REWIND: the brawler's id while a rewind is pending (0 = none),
+                                                            * the bolt's marker area's id (0 = not found yet), the tick of the
+                                                            * rewind, where the bolt lands, HP at the throw, tick of the throw */
 };
 static Gad g_gad[NBE_MAXP]; static int g_rep_log;
 static long g_fired[8], g_areas, g_areas_lost;
@@ -323,8 +335,42 @@ static int dmg_scaled(uint8_t *ch, int dmg) {
 }
 /* one projectile from the brawler along `deg` (math degrees) to `range` units, through the projectile spawn 0xb78190 as
  * spawnfix.c calls it (owner twice, no lateral offset, no inherited hit list) -> 1 = spawned */
-static long g_shots;
+static long g_shots, g_armed_summon, g_armed_item;
 static void *g_last_shot;   /* the projectile the last shoot() spawned (NULL = none), for volley's sibling list */
+static void *g_arm_sd;      /* SHOT: the gadget's skill while shot_volley fires (its summon / item ride on each projectile) */
+#define SD_NUMSPAWNS 0xb0dd5c   /* NumSpawns (skills.csv; column word 0x1241000+896) */
+#define SD_MAXSPAWNS 0xb0dd6c   /* MaxSpawns (+900) */
+#define SD_SUMMON 0xb0ddf8      /* SummonedCharacters[i] (SkillData +0x80, count +0x8c) -> CharacterData* */
+#define SD_ITEM 0xb0de70        /* SpawnedItem (SkillData +0xd8) -> ItemData* */
+/* issue #64: what libg's attack path hands each projectile of a skill that summons or drops an item, done for a SHOT
+ * gadget's projectiles (shoot() spawns them directly, so the skill's Attack handler and the character's attack tick, which
+ * do it in the game, never run for them). The projectile's end (0xb75998: 0xb75b00 -> 0xb77344, 0xb75b28 -> item factory
+ * 0xb55684) then spawns the summon / item where it lands, as for Nita's bear or Jessie's turret.
+ *   summon: the attack tick's 0xb703c8(proj, SummonedCharacters[0], NumSpawns, MaxSpawns, +0xacc, +0xad4, char byte +0xaf1,
+ *     owner CharacterData +636 < 1, 0, 0, 0, 0) (0xb4cab8..0xb4cb20; the Attack handler's setSummon 0xb5a6b4 is where the
+ *     character's fields come from). The two bonus words (char +0xacc / +0xad4, summon HP and damage bonuses the Attack
+ *     handler scales from the level) are 0 [?]: this build's level scale 0xb565a8 is the identity and the host has no gear
+ *     that adds to them.
+ *   item: the attack path's 0xb79130(proj, SpawnedItem, NumSpawns, 0xb6e680(ch, skill) (MaxSpawns plus bonuses), damage,
+ *     second damage word, 0 (any end reason), 1) (0xb4f288..0xb4f2a4, from char +0xacc / +0xad0 that the Attack handler
+ *     sets through 0xb5a6ec at 0xb7ed38: the damage and the skill's getter 0xb0dc14); here the projectile's damage and
+ *     0xb0dc14(skill). */
+static void arm_shot(uint8_t *ch, void *sd, uint8_t *p) {
+    void *cd = ((void *(*)(void *, int))B(SD_SUMMON))(sd, 0), *it = ((void *(*)(void *))B(SD_ITEM))(sd);
+    int n = sd_get(sd, SD_NUMSPAWNS);
+    if (cd) {
+        uint8_t *ocd = ((void *(*)(void *))B(0xb6a384))(ch); int mx = sd_get(sd, SD_MAXSPAWNS);
+        ((void (*)(void *, void *, int, int, int, int, int, int, long, long, long, long))B(0xb703c8))(
+            p, cd, n > 0 ? n : 1, mx > 0 ? mx : 1, 0, 0, U8(ch, 0xaf1), ocd && I32(ocd, 636) < 1, 0, 0, 0, 0);
+        g_armed_summon++;
+    }
+    if (it) {
+        int mx = ((int (*)(void *, void *))B(0xb6e680))(ch, sd);
+        ((void (*)(void *, void *, int, int, int, int, int, int))B(0xb79130))(p, it, n > 0 ? n : 1, mx > 0 ? mx : 1, I32(p, 0xd4), sd_get(sd, 0xb0dc14), 0, 1);
+        g_armed_item++;
+    }
+    if ((cd || it) && g_armed_summon + g_armed_item <= 6) LOG("[gadget] shot %p carries summon %p / item %p (count %d)\n", p, cd, it, n);
+}
 static int shoot(void *sim, uint8_t *ch, void *pd, double deg, int range, int dmg) {
     g_last_shot = NULL;
     if (!pd || !PTR(ch, 0x20)) return 0;
@@ -332,6 +378,7 @@ static int shoot(void *sim, uint8_t *ch, void *pd, double deg, int range, int dm
     int tx = (int)floor(X + range * cos(r) + 0.5), ty = (int)floor(Y + range * sin(r) + 0.5);
     void *p = ((SpawnProj)B(0xb78190))(X, Y, ch, ch, pd, tx, ty, dmg, dmg, 0, 0, NULL, sim, 0, GAD_PROJ_KIND, NULL);
     if (p) g_shots++;
+    if (p && g_arm_sd) arm_shot(ch, g_arm_sd, p);
     g_last_shot = p;
     if (g_shots <= 4) LOG("[gadget] shot %p to %d,%d dmg %d (proj +0xd4 %d)\n", p, tx, ty, dmg, p ? I32(p, 0xd4) : -1);
     return p != NULL;
@@ -377,11 +424,26 @@ static int shot_volley(void *sim, Gad *g, uint8_t *ch, double deg) {
     int n = sd_get(sd, SD_NBULLETS), cr = sd_get(sd, SD_RANGE), range = cr > 0 ? cr * 100 : 1000;
     n = n < 1 ? 1 : n > 16 ? 16 : n;   /* NumBulletsInOneAttack 1..5 in the gadget rows */
     if (pd && U8(pd, PD_INDIRECT)) range = aimed_range(range, g->dist);   /* issue #55: Griff's coins land where aimed */
-    return volley(sim, ch, pd, deg, n, sd_get(sd, SD_SPREAD), range, dmg_scaled(ch, sd_get(sd, SD_DAMAGE)));
+    g_arm_sd = sd;   /* issue #64: each projectile carries the skill's summon / item (arm_shot) */
+    int k = volley(sim, ch, pd, deg, n, sd_get(sd, SD_SPREAD), range, dmg_scaled(ch, sd_get(sd, SD_DAMAGE)));
+    g_arm_sd = NULL;
+    return k;
+}
+/* issue #64: a skill with UseWeaponAmmo (SkillData +0x238, the byte the loader stores at 0xb0bd2c) costs one weapon ammo
+ * bar and needs one, as Byron's heal does (heal_ready). [?] the amount: the column is a flag, and no card text names the
+ * cost. SHOT rows with the flag: Frank's HammerDude_Pull, Shelly's ShotgunGirl_Focus, Colt's Gunslinger_BigBullet, Emz's
+ * Mummy_Acid, Meg's MechaDude_ReloadTower, the Percenter rows and FutureGirl_ProjectileGadget. */
+#define SD_USE_AMMO 0x238
+static int shot_ready(void *sim, Gad *g, uint8_t *ch) {
+    (void)sim; void *sd = PTR(g->ad, AD_SKILL);
+    if (!ch || I32(ch, 0x3c4) <= 0) return 0;
+    if (sd && U8(sd, SD_USE_AMMO)) { uint8_t *sk = ammo_skill(ch); if (!sk || I32(sk, 0x18) < 1000 * (1 + env_pending_attacks(g->pid))) return 0; }
+    return 1;
 }
 static int shot_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
-    if (I32(ch, 0x3c4) <= 0 || g->burst_left) return 0;
+    if (I32(ch, 0x3c4) <= 0 || g->burst_left || !shot_ready(sim, g, ch)) return 0;
     if (shot_volley(sim, g, ch, deg) <= 0) return 0;
+    if (U8(PTR(g->ad, AD_SKILL), SD_USE_AMMO)) I32(ammo_skill(ch), 0x18) -= 1000;
     for (unsigned k = 0; k < sizeof g_waves / sizeof *g_waves; k++)
         if (g_waves[k].card == g->card && g_waves[k].waves > 1) {
             g->burst_id = I32(ch, 8); g->burst_left = g_waves[k].waves - 1; g->burst_gap = g_waves[k].gap > 0 ? g_waves[k].gap : 1;
@@ -393,6 +455,92 @@ static void burst_tick(void *sim, Gad *g, int tick) {   /* the later waves, alon
     uint8_t *ch = env_obj_by_id(sim, g->burst_id);
     if (!ch || I32(ch, 0x3c4) <= 0) { g->burst_left = 0; return; }
     while (g->burst_left > 0 && tick >= g->burst_next) { shot_volley(sim, g, ch, g->burst_deg); g->burst_left--; g->burst_next += g->burst_gap; }
+}
+
+/* ---- REWIND: Max's Sneaky Sneakers (Speedy_Rewind, issue #64; published PROJECTILE). Text: "Max throws a lightning bolt. If
+ * she reactivates the Gadget, or after 3 seconds, she blinks back to the lightning bolt and heals any damage taken since."
+ * The skill (SpeedyRewindBonusSkill) throws SpeedyRewindProjectile (Indirect, ForceValidTile) to the aim, pulled back to a
+ * walkable tile (superfix_valid_spot); at its end libg's projectile end (0xb75afc -> 0xb76c0c, iteration 0: the getter
+ * 0xafa7f4, ProjectileData +0x128) spawns the skin's SpawnAreaEffectObject, SpeedyRewindArea (TimeMs 3000, type Effect, a
+ * marker that deals nothing), as it spawns Griff's bomb explosion. The host finds that area with libg's finder
+ * 0xb2b1b0(data, Max) (the first area of that data and player); if none shows up within REWIND_FIND ticks it spawns one
+ * itself at the landing point (0xb35c40, as AREA). The rewind, at the throw + TimeMs or at a fire while it is pending (the
+ * reactivation: the swapped-in SpeedyRewindBonusSkillBlink, BehaviorType DestroyArea; GadImpl.again, no use spent): Max is
+ * teleported to the area (superfix_teleport, superfix_moves.c), healed the HP lost since the throw (0xb41554) and the area
+ * ends (end tick +0xd8 = now; libg's area tick then expires it). A reactivation before the area is found waits for it
+ * (at most REWIND_FIND ticks). Max dead or another character: no rewind, the area ends.
+ * Not used: the card's character component Brawler_SpeedyRewind (type 32, vtable 0x120a880), whose skill-used 0xb9bb84
+ * listens to the area's expire and does the same rewind in the client. It keeps raw pointers to Max and the area, and
+ * nothing in this libg lets go of it when Max dies (0xb9bc8c's only caller is 0xb9bb84 itself), so a death with a pending
+ * rewind could run its expire handler 0xb9be00 on a freed character.
+ * Cooldown: none while the rewind is pending (the gadget publishes ready, so the policy can reactivate; the throw skill has
+ * NoBonusSkillCooldown); the full BonusSkillCooldown (300 ticks) starts at the rewind, or when Max dies or changes before it
+ * (the blink skill's FullBonusSkillCooldownOnDeath). */
+#define CARD_REWIND 23000311       /* cards.csv Speedy_Rewind (a data id, as g_masked) */
+#define PD_SPAWN_AREA 0x128        /* ProjectileData +0x128: the skin's SpawnAreaEffectObject (createReferences 0xaf9074) */
+#define AREA_END 0xd8              /* area end tick (shouldExpire 0xb28d4c) */
+#define AREA_TIME_MS 0x124         /* AreaEffectData TimeMs */
+#define REWIND_FIND 4              /* ticks the host waits for the bolt's area (29000 u/s: it lands the tick after the throw) */
+void superfix_valid_spot(void *sim, int x0, int y0, int *tx, int *ty) __attribute__((weak));   /* superfix_moves.c */
+int superfix_teleport(uint8_t *ch, int tx, int ty) __attribute__((weak));
+static long g_rewinds, g_rewind_again, g_rewind_done, g_rewind_drop, g_rewind_own;
+static int g_cls_card;             /* the card being classified (gadget_reset_player) */
+static int is_area(uint8_t *o) {   /* a live area: item vtable, data of type 17 (as gadget_root_post), not expired (+0xf4) */
+    int vt = VTOF(o); uint8_t *d = vt == VT_ITEM || vt == VT_ITEM2 ? PTR(o, 0x10) : NULL;
+    return d && I32(d, 0x20) / 1000000 == 17 && !U8(o, 0xf4);
+}
+static int rewind_classify(void *ad, int type) {
+    void *sd = type == ACC_PLAIN ? PTR(ad, AD_SKILL) : NULL, *pd = sd ? skill_proj(sd) : NULL;
+    return g_cls_card == CARD_REWIND && !PTR(ad, AD_AREA) && pd && PTR(pd, PD_SPAWN_AREA);
+}
+static int rewind_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+    if (I32(ch, 0x3c4) <= 0 || g->rw_ch || !PTR(ch, 0x20)) return 0;
+    void *sd = PTR(g->ad, AD_SKILL), *pd = skill_proj(sd), *ad_ = PTR(pd, PD_SPAWN_AREA);
+    int cr = sd_get(sd, SD_RANGE), range = aimed_range(cr > 0 ? cr * 100 : 800, g->dist), X = I32(ch, 0x38), Y = I32(ch, 0x3c);
+    double r = deg * M_PI / 180; int tx = (int)floor(X + range * cos(r) + 0.5), ty = (int)floor(Y + range * sin(r) + 0.5);
+    if (superfix_valid_spot) superfix_valid_spot(sim, X, Y, &tx, &ty);   /* ForceValidTile */
+    int d = (int)floor(hypot(tx - X, ty - Y) + 0.5);
+    if (!shoot(sim, ch, pd, deg, d > 0 ? d : 1, 0)) return 0;   /* the bolt (29000 u/s: it lands in a tick) */
+    g->rw_ch = I32(ch, 8); g->rw_area = 0; g->rw_at = tick; g->rw_x = tx; g->rw_y = ty; g->rw_hp = I32(ch, 0x3c4);
+    g->rw_until = tick + (I32(ad_, AREA_TIME_MS) > 0 ? I32(ad_, AREA_TIME_MS) / 50 : 60);
+    if (g_rewinds++ < 6) LOG("[gadget] rewind: bolt to %d,%d at tick %d, rewind at tick %d, hp %d\n", tx, ty, tick, g->rw_until, g->rw_hp);
+    return 1;
+}
+static uint8_t *rewind_area(void *sim, Gad *g, uint8_t *ch, int tick) {   /* the bolt's marker area, NULL = none (yet / any more) */
+    if (g->rw_area) { uint8_t *a = env_obj_by_id(sim, g->rw_area); return a && is_area(a) ? a : NULL; }
+    void *ad_ = PTR(skill_proj(PTR(g->ad, AD_SKILL)), PD_SPAWN_AREA);
+    uint8_t *a = ((void *(*)(void *, void *))B(0xb2b1b0))(ad_, ch);
+    if (a && !is_area(a)) a = NULL;
+    if (!a && tick >= g->rw_at + REWIND_FIND) {   /* the bolt spawned no area: the host's own at the landing point */
+        a = ((void *(*)(void *, void *, int, int, int, int, void *))B(0xb35c40))(ch, ad_, g->rw_x, g->rw_y, 0, 2, NULL);
+        if (a) g_rewind_own++;
+    }
+    if (a) g->rw_area = I32(a, 8);
+    return a;
+}
+static void rewind_tick(void *sim, Gad *g, int tick) {
+    uint8_t *ch = env_obj_by_id(sim, g->rw_ch);
+    if (!ch || I32(ch, 0x3c4) <= 0 || VTOF(ch) != VT_CHAR) {   /* dead or another character: no rewind, full cooldown */
+        uint8_t *a = g->rw_area ? env_obj_by_id(sim, g->rw_area) : NULL;
+        if (a && is_area(a)) I32(a, AREA_END) = tick;
+        g->rw_ch = 0; g->cd_until = tick + g->cd; g_rewind_drop++; return;
+    }
+    uint8_t *a = rewind_area(sim, g, ch, tick);
+    if (!g->rw_area && tick < g->rw_at + REWIND_FIND) return;   /* the bolt is still flying */
+    if (a && tick < g->rw_until) return;
+    int x = a ? I32(a, 0x38) : g->rw_x, y = a ? I32(a, 0x3c) : g->rw_y, lost = g->rw_hp - I32(ch, 0x3c4);
+    if (superfix_teleport) superfix_teleport(ch, x, y);
+    if (lost > 0) ((void (*)(void *, int, int, int, void *, int, int, int, long, long))B(0xb41554))(ch, g->pid, lost, 1, NULL, 0, 0, 0, 0, 0);
+    if (a) I32(a, AREA_END) = tick;
+    if (g_rewind_done++ < 6) LOG("[gadget] rewind done at tick %d (thrown at %d): char at %d,%d, hp %d (%d at the throw)\n", tick, g->rw_at,
+                                 I32(ch, 0x38), I32(ch, 0x3c), I32(ch, 0x3c4), g->rw_hp);
+    g->rw_ch = 0; g->cd_until = tick + g->cd;
+}
+static int rewind_again(void *sim, Gad *g, uint8_t *ch, int tick) {   /* the reactivation: the rewind now */
+    if (!g->rw_ch || !ch || I32(ch, 8) != g->rw_ch || I32(ch, 0x3c4) <= 0) return 0;
+    g->rw_until = tick; g_rewind_again++;
+    rewind_tick(sim, g, tick);   /* now, unless the bolt's area is still awaited (then within REWIND_FIND ticks) */
+    return 1;
 }
 
 /* ---- SKILL AREA: the gadget's skill has no projectile, only an AreaEffectObject: an Attack skill's area at the brawler
@@ -416,7 +564,6 @@ static int skill_area_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick)
 #define AD_RANGE 0xa93348          /* Range (column slot 0x123f000+2032, filled by the column-index init that ends at 0xa93244) */
 #define AD_RANGE_U 300             /* accessory Range is in tiles: the client's aim guide (bl 0xa93348 at 0x876558) draws it as
                                     * Range x 3 in the 100 u steps of CastingRange, i.e. 300 u per tile (Piper: 7 -> 2100 u) */
-static int g_cls_card;             /* the card being classified (gadget_reset_player) */
 static int auto_aim_classify(void *ad, int type) {
     return type == ACC_REPEAT && g_cls_card == CARD_AUTO_AIMER && custom_proj(ad) && ad_get(ad, AD_RANGE) > 0;
 }
@@ -904,7 +1051,8 @@ static const GadImpl g_impl[] = {
     {NBE_GAD_DASH, dash_classify, dash_fire},
     {NBE_GAD_HEAL, heal_classify, heal_fire, heal_ready},
     {NBE_GAD_SPAWN, area_classify, area_fire},
-    {NBE_GAD_PROJECTILE, shot_classify, shot_fire},
+    {NBE_GAD_PROJECTILE, rewind_classify, rewind_fire, NULL, rewind_again},
+    {NBE_GAD_PROJECTILE, shot_classify, shot_fire, shot_ready},
     {NBE_GAD_SPAWN, skill_area_classify, skill_area_fire},
     {NBE_GAD_PROJECTILE, auto_aim_classify, auto_aim_fire},
     {NBE_GAD_PROJECTILE, rep_classify, rep_fire},
@@ -921,13 +1069,6 @@ static const GadImpl g_impl[] = {
  * by the shipped tables): left unusable (kind NONE) so the policy cannot spend a fire on them. bsrl-sim super_audit.MASKED
  * lists the same rows. */
 static const int g_masked[] = {
-    23000263,   /* BowDude_Totem: the projectile flies, the totem summon never spawns */
-    23000311,   /* Speedy_Rewind: its projectile is a marker; the rewind (teleport back) is not implemented */
-    23000351,   /* HammerDude_Pull: no pull, no damage on the target */
-    23000399,   /* AssaultShotgun_Bomb: no explosion, no damage */
-    23000408,   /* Ninja_InvisibleArea: the invisibility area summon never spawns */
-    23001247,   /* Gladiator_Amp: the healing item never spawns */
-    23001255,   /* MagicalGirl_FlyArea: the area summon never spawns */
     23000294,   /* TntDude_Stun: armed and consumed, but the explosion's damage reaches env.c's root with no source object, so
                  * the hit struct's stun (+0x10) is never read: no stun */
     23000522,   /* ShieldTank_Pull: consumed (0xb4e314), no pull */
@@ -955,6 +1096,9 @@ void gadget_clear(void) {
     if (g_buoy_nostun) LOG("[gadget] reserve buoy: %ld torpedoes without the landing stun\n", g_buoy_nostun);
     g_buoy_nostun = 0;
     if (g_rep_charged) LOG("[gadget] repeat: %ld enemy hits gave super charge\n", g_rep_charged);
+    if (g_rewinds) LOG("[gadget] rewind: %ld bolts, %ld reactivations, %ld rewinds, %ld dropped (death / changed), %ld areas spawned by the host\n", g_rewinds, g_rewind_again, g_rewind_done, g_rewind_drop, g_rewind_own);
+    if (g_armed_summon + g_armed_item) LOG("[gadget] shots carrying a summon %ld / an item %ld\n", g_armed_summon, g_armed_item);
+    g_rewinds = g_rewind_again = g_rewind_done = g_rewind_drop = g_rewind_own = g_armed_summon = g_armed_item = 0;
     g_rep_charged = 0; memset(g_rshot, 0, sizeof g_rshot); memset(g_rshot_k, 0, sizeof g_rshot_k);
     memset(g_gad, 0, sizeof g_gad); g_nsleep = 0; gself_clear();
 }
@@ -994,10 +1138,11 @@ void gadget_reset_player(int i, void *acc) {
 int gadget_use(void *sim, int i, uint8_t *ch, double deg, double dist, int tick) {
     if (i < 0 || i >= NBE_MAXP || !g_gad[i].im) return 0;
     Gad *g = &g_gad[i]; g->dist = dist;
+    if (g->im->again && g->im->again(sim, g, ch, tick)) return 1;   /* Max's reactivation: no use, no cooldown test */
     if (g->uses <= 0 || tick < g->cd_until || !ch) return 1;
     if (g->im->ready && (g->not_ready || !g->im->ready(sim, g, ch))) return 1;   /* published as not ready: refused, nothing spent */
     if (g->im->fire(sim, g, ch, deg, tick)) {
-        g->uses--; g->used++; g->cd_until = tick + g->cd;
+        g->uses--; g->used++; g->cd_until = g->rw_ch ? tick : tick + g->cd;   /* REWIND: no cooldown while the rewind is pending */
         if (g->charge_max > 1) {   /* a shot of a MaxCharge window: the next one after charge_gap, the cooldown after the last */
             if (--g->charges > 0) g->cd_until = tick + g->charge_gap; else g->charges = g->charge_max;
         }
@@ -1012,6 +1157,7 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
         if (g_gad[i].area_at && tick >= g_gad[i].area_at) area_spawn(sim, &g_gad[i]);
         if (g_gad[i].rep_n) rep_tick(sim, &g_gad[i], tick);
         if (g_gad[i].burst_left) burst_tick(sim, &g_gad[i], tick);
+        if (g_gad[i].rw_ch) rewind_tick(sim, &g_gad[i], tick);
         if (g_gad[i].im && g_gad[i].type == ACC_HEAL_TAKEN) taken_tick(sim, &g_gad[i], tick);
         if (g_gad[i].im && g_gad[i].type == ACC_NEXT) next_tick(sim, &g_gad[i], tick);
         if (g_gad[i].im && g_gad[i].im->ready) g_gad[i].not_ready = !g_gad[i].im->ready(sim, &g_gad[i], char_of(sim, i));

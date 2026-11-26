@@ -6,15 +6,18 @@
      with its test). Only DASH, HEAL and SUPER effects are in the response; for SPAWN, PROJECTILE, STATUS and SHIELD the
      test passes on the spent use alone, and their effects are checked by super_audit --gadget (areas, projectiles, next
      attack) and status_check battles 5-8 (statuses, shields). A kind whose precondition does not hold (gadget.c
-     ready(): a NEXT modifier already pending, Meg out of her mech, Byron without ammo, Buzz's super full, a sleep / last
-     stand / vision still running, a form gate) reads as a cooldown of 1 tick, so it is not ready and a fire spends
-     nothing. The effect has to show in at least EFFECT_SHARE of the activations of each kind: a dash aimed into a wall
+     ready(): a NEXT modifier already pending, Meg out of her mech, Byron or a UseWeaponAmmo SHOT skill without an ammo
+     bar, Buzz's super full, a sleep / last stand / vision still running, a form gate) reads as a cooldown of 1 tick, so
+     it is not ready and a fire spends nothing. Max's Speedy_Rewind (gadget.c REWIND, REWIND_CARD; `judge_rewind`): the
+     throw spends a use and starts no cooldown (the gadget stays ready while the rewind is pending), a fire while it is
+     pending is the reactivation, which spends nothing and starts the cooldown (the rewind happened); random play fires
+     a pending one now and then (REWIND_P) so the reactivation is exercised. The effect has to show in at least EFFECT_SHARE of the activations of each kind: a dash aimed into a wall
      stops short and enemy fire can outweigh a heal over time, and the check plays random agents in a real battle;
   3. fire 3 on a gadget that is not ready (no use left / cooldown / kind not implemented) spends nothing; a ready gadget
      whose row has RequireEnemyInRange (`needs_enemy`) may refuse with no enemy in Range, which spends nothing either;
   4. env_v5.Env.gadget (obs_v5 self 3) agrees with the response;
   5. volley damage (issue #54), a scripted scene on the same boot after the random battles: every brawler with a SHOT
-     gadget (super_audit.all_gadgets kind "shot", gadget.c SHOT, published PROJECTILE) stands on a super_audit.find_spots
+     gadget (super_audit.all_gadgets kind "shot", gadget.c SHOT / REWIND, published PROJECTILE) stands on a super_audit.find_spots
      spot on super_audit.MAP (storm off, native AI off) with an enemy target ADJ units in front along its corridor.
      Teleport + heal, one main attack (fire 1) aimed at the target, HIT_WATCH ticks; teleport + heal again, one gadget
      use (fire 3) aimed the same way, HIT_WATCH ticks. Damage = the target's HP lost (or the shooter's damage_dealt
@@ -64,6 +67,9 @@ AA_MAIN_SHARE = 0.25   # "far less than one main attack": the data gives 5 % of 
 AA_PUSH_MIN = 100.0    # units farther from the shooter, as super_audit.PUSH_MIN: above walk jitter and setup rounding
                        # (PushbackStrength 70, Shelly's super's knockback)
 AA_STILL = 50.0        # the unhit control's largest move: setup rounding only (AI off, told to stand)
+REWIND_CARD = 23000311   # cards.csv Speedy_Rewind (gadget.c CARD_REWIND)
+REWIND_TICKS = 60        # the rewind's own end (SpeedyRewindArea TimeMs 3000): a pending rewind is older than this never
+REWIND_P = 0.3           # chance per step that random play reactivates a pending rewind
 DESC_OPEN = {"JetpackGirl_JumpAttack": 46}   # desc_audit mismatches with an open fix (card -> issue); #54 closed Piper's and
 # Leaper's. Janet's recoil (NEXT SubType 15) is libg's own knockback branch; "even over walls" is not checked yet
 
@@ -128,6 +134,17 @@ def judge(a, b):
     if b["cd"] <= 0 and a["charges"] > 1: bad.append("no cooldown started")
     if EFFECT.get(KIND[a["kind"]]) is None: bad.append("no effect test for kind %s (add one to gadget_check.EFFECT)" % KIND[a["kind"]])
     return bad
+
+
+def judge_rewind(a, b, pending):
+    """Max's Speedy_Rewind (gadget.c REWIND): snapshots before / after a fire 3 on a ready gadget, pending = a rewind of this
+    player's was pending at the fire -> failures. A throw spends a use and starts no cooldown (the reactivation must stay
+    possible); the reactivation spends nothing and starts the cooldown (the rewind happened)"""
+    if pending:
+        bad = [] if b["used"] == a["used"] and b["charges"] == a["charges"] else ["reactivation spent a use: used %d -> %d" % (a["used"], b["used"])]
+        return bad + ([] if b["cd"] > 0 else ["reactivation started no cooldown (no rewind)"])
+    bad = [x for x in judge(a, b) if x != "no cooldown started"]
+    return bad + (["the throw started a cooldown (no reactivation possible)"] if b["cd"] > 0 and not bad else [])
 
 
 def effect(a, c):
@@ -343,6 +360,12 @@ def _check():
     assert effect(s(kind=P.GAD_SUPER, sc=500), s(sc=3000))[0] and not effect(s(kind=P.GAD_SUPER, sc=500), s(sc=500))[0]
     assert WANT["SUPER"](s(sc=0)) and not WANT["SUPER"](s(sc=3000))
     assert judge(s(cd=5), s(cd=4)) == [] and judge(s(cd=5), s(cd=4, used=1)) == ["not ready, yet a use was spent"]
+    rw = dict(kind=P.GAD_PROJECTILE, card=REWIND_CARD)   # Max: the throw keeps the gadget ready, the reactivation rewinds
+    assert judge_rewind(s(**rw), s(**rw, charges=2, used=1), False) == []
+    assert judge_rewind(s(**rw), s(**rw, charges=2, used=1, cd=300), False) == ["the throw started a cooldown (no reactivation possible)"]
+    assert judge_rewind(s(**rw), s(**rw, cd=300), True) == []
+    assert judge_rewind(s(**rw), s(**rw), True) == ["reactivation started no cooldown (no rewind)"]
+    assert judge_rewind(s(**rw), s(**rw, charges=2, used=1, cd=300), True)[0].startswith("reactivation spent a use")
     assert judge(s(kind=P.GAD_NONE, charges=0), s(kind=P.GAD_NONE, charges=0)) == []
     assert volley(720, 5 * 1800, 12000) == (False, "attack 720, gadget 9000 of 12000 hp (12.5 x, limit 4 x)")   # issue #54: Piper's Auto Aimer
     assert volley(720, 720, 4000)[0] and volley(1000, 4000, 5000)[0] and not volley(1000, 4001, 5000)[0]
@@ -383,6 +406,7 @@ def main():
     roster = [x for x in a.roster.split(",") if x] or None
     env = E.Env(1, E.make_battle_fn(10, roster=roster, gadgets=True), ticks=2, fair=True, max_ticks=4000)
     rng = np.random.default_rng(0); pend = {}; fails = []; done = collections.Counter(); refused = collections.Counter()
+    rw = {}   # agent id -> tick of Max's throw while a rewind is pending (gadget.c REWIND)
     gate = needs_enemy()
     settle = {}; eff = collections.Counter(); eff_ok = collections.Counter(); eff_what = collections.defaultdict(list)
     seen = collections.Counter(); t0 = None; steps = 0
@@ -402,23 +426,28 @@ def main():
                 if req and now["card"] not in (0, req): fails.append("player %d: requested card %d, host has %d" % (p, req, now["card"]))
                 seen[("card" if now["card"] else "no card", KIND[now["kind"]])] += 1
                 if g[k] != ready(now): fails.append("Env.gadget %s but the response says %s" % (g[k], ready(now)))
+                if aid in rw and (now["cd"] > 0 or now["tick"] - rw[aid] > REWIND_TICKS or now["card"] != REWIND_CARD or not now["alive"] or now["out"]):
+                    rw.pop(aid)   # rewound (cooldown), timed out, or Max gone
                 if aid in pend:
                     b0 = pend.pop(aid)
                     if b0["tick"] < now["tick"] and not now["out"] and now["card"] == b0["card"]:   # same battle, still in play
                         if ready(b0) and b0["card"] in gate and now["used"] == b0["used"] and now["charges"] == b0["charges"]:
                             refused[KIND[b0["kind"]] + " (no enemy in range)"] += 1; continue   # RequireEnemyInRange
-                        bad = judge(b0, now)
+                        again = b0.get("rw_pending", False)
+                        bad = judge_rewind(b0, now, again) if ready(b0) and b0["card"] == REWIND_CARD else judge(b0, now)
                         fails += ["player %d %s: %s" % (p, KIND[b0["kind"]], m) for m in bad]
-                        (done if ready(b0) else refused)[KIND[b0["kind"]]] += 1
-                        if ready(b0) and not bad: settle[aid] = b0
+                        (done if ready(b0) else refused)[KIND[b0["kind"]] + (" (rewind reactivation)" if again else "")] += 1
+                        if ready(b0) and b0["card"] == REWIND_CARD and not again and not bad: rw[aid] = b0["tick"]
+                        if ready(b0) and not bad and not again: settle[aid] = b0
                 if aid in settle and now["tick"] - settle[aid]["tick"] >= SETTLE:
                     b0 = settle.pop(aid)
                     if now["card"] == b0["card"] and now["alive"] and not now["out"]:
                         ok, what = effect(b0, now); kn = KIND[b0["kind"]]; eff[kn] += 1; eff_ok[kn] += ok; eff_what[kn].append(what)
                 kind = KIND[now["kind"]]
                 want = WANT.get(kind, lambda s: True)(now)
-                if aid not in settle and ((ready(now) and want and eff[kind] < a.per_kind) or (not ready(now) and rng.random() < 0.05)):
-                    act[k, 1] = 3; pend[aid] = now
+                if aid not in settle and ((ready(now) and want and eff[kind] < a.per_kind) or (not ready(now) and rng.random() < 0.05)
+                                          or (aid in rw and ready(now) and rng.random() < REWIND_P)):
+                    act[k, 1] = 3; pend[aid] = dict(now, rw_pending=aid in rw)
             if fails: break
             env.send(ids, act)
             impl = {k for (c, k) in seen if k != "NONE"}

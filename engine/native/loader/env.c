@@ -2148,9 +2148,11 @@ static void hook_listener(void *sim);
 static void hits_mark(void); void hits_dump(const char *why);
 static long g_streams_freed; int g_free_snap_stream = 1;   /* --keep-snap-streams: 0 (keeps the game's per-tick leak, see my_deliver) */
 static void apply_teams(void *sim);
+void superfix_summon_area_clear(void) __attribute__((weak));   /* superfix.c */
 void env_on_build(void *battle, void *sim) {   /* a new battle was built: forget the old one */
     g_lead_n = 0; g_lead_skip = 0;
     gadget_clear();   /* gadget round: the old battle's accessories are freed; its table must not reach the intro ticks */
+    if (superfix_summon_area_clear) superfix_summon_area_clear();   /* issue #64: character ids restart in the new battle */
     int gen = E.gen + 1, hr = E.have_reset, seed = E.reset_seed, gas = E.gas_on, act = E.act_tick, sa = E.seed_applied, rr = E.reset_req;
     int ga_ok = E.gas_args_ok, a4 = E.ga4, a5 = E.ga5, a7 = E.ga7, s0 = E.gs0;
     NbeCmd cur = E.cur;
