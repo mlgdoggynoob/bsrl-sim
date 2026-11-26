@@ -140,19 +140,23 @@ static void make_item(uint8_t *a, uint8_t *pr, void *idata, int x, int y) {
     }
 }
 static int angle_of(int dx, int dy) { return (dx | dy) ? ((i2_t)B(0xd00960))(dx, dy) : 0; }
-/* Projectile::end(proj, reason) 0xb75998: reason 1 = range/time end, 2 / 4 = hit a character, 3 = hit a wall, 5 = removed.
+/* Projectile::end(proj, reason) 0xb75998: reason 1 = range/time end, 3 = stopped by a wall or a character it does not
+ * pierce (see spawnfix_proj_hit below), 2 / 4 = other stops (Bibi's split balls at a PayloadTrack tile), 5 = removed.
  * The shipped code ends with `if (reason != 3 && hasChainBullet) getChainBullet();` (0xb76114..0xb76118: the result is dropped,
  * the server's spawn call is compiled out). Re-implemented for the plain cases (ChainsToEnemies = 0, ExecuteChainSpecialCase 0..2). */
 static const int g_ret_parents[] = {
 #include "ret_codes.h"
     0};
+/* the list holds skin row ids (6000xxx): the data's own id +0x20; d+0x58 is its logic row in this build (125000xxx, which
+ * the list never matched: Griff's notes were not sent back), kept for a build where it is the skin row */
 static int is_return_parent(uint8_t *d) {
-    if (!d || !PTR(d, 0x58)) return 0;
-    int id = ((int (*)(void *))B(0xac3a80))(PTR(d, 0x58));
-    for (int i = 0; g_ret_parents[i]; i++) if (g_ret_parents[i] == id) return 1;
+    if (!d) return 0;
+    int id = I32(d, 0x20), id2 = PTR(d, 0x58) ? ((int (*)(void *))B(0xac3a80))(PTR(d, 0x58)) : 0;
+    for (int i = 0; g_ret_parents[i]; i++) if (g_ret_parents[i] == id || g_ret_parents[i] == id2) return 1;
     return 0;
 }
 static long g_nchain_enemy, g_nchain_ret;
+void *hyper_chain_extra(void *owner, uint8_t *child, int reason, int *n);   /* hyper.c */
 typedef int (*i1p_t)(void *);
 /* nearest living enemy hero of projectile `pr` within `range` of (x,y), farther than `minr` (the one just hit) */
 static void *nearest_enemy(uint8_t *pr, int x, int y, int range, int minr) {
@@ -171,12 +175,28 @@ static void *nearest_enemy(uint8_t *pr, int x, int y, int range, int minr) {
     }
     return best;
 }
+/* env.c's damage root hook: the last object a projectile damaged and when. A non-piercing projectile that stops on an
+ * enemy ends with reason 3 (live traces: Bibi's hypercharged ball BaseballOverchargedUltiProjectile, one end call at the
+ * hit tick, 370 u from the target = ball Radius 250 + the character's; Bea's 7 hypercharged bees), the reason the shipped
+ * end skips for the chain. Their descriptions split them on a hit (TID_BASEBALL_OVERCHARGE_DESC "splits when hitting an
+ * enemy", TID_BEE_SNIPER_OVERCHARGE_DESC "and on hit"), so a reason-3 end in the tick of a recorded hit by that
+ * projectile spawns the chain, and the enemy hit goes in the children's hit list (below). */
+static void *g_hit_proj, *g_hit_ch; static int g_hit_tick = -1; static long g_nchain_hit3;
+void spawnfix_proj_hit(void *src, void *victim) {
+    if (!src || !victim || !g_sim || (int)((uint8_t *)PTR(src, 0) - g_libg->base) != 0x1209318) return;   /* VT_PROJ */
+    g_hit_proj = src; g_hit_ch = victim; g_hit_tick = I32(g_sim, 0x10);
+}
 static void on_explode(uint64_t *c) {
     uint8_t *pr = (uint8_t *)c[0]; int reason = (int)c[1];
+    int hit3 = reason == 3 && pr && pr == g_hit_proj && g_sim && g_hit_tick == I32(g_sim, 0x10);
     g_cur_proj = pr; g_cur_tick = g_sim ? I32(g_sim, 0x10) : -1;
-    if (g_spawn_dbg && pr && PTR(PTR(pr, 0x10), 0x180)) LOG("[spawnfix] explode call reason %d end90 %d\n", reason, I32(pr, 0x90));
-    if (!g_spawn_fix || !g_spawn_chain || !mode() || !pr || rec || I32(pr, 0x90) != 0 || reason == 3 || reason == 5 || reason == 0) return;
+    if (g_spawn_dbg && pr && PTR(PTR(pr, 0x10), 0x180)) LOG("[spawnfix] explode call reason %d%s end90 %d tick %d at %d,%d\n", reason, hit3 ? " (at a hit)" : "", I32(pr, 0x90), g_cur_tick, I32(pr, 0x38), I32(pr, 0x3c));
+    if (!g_spawn_fix || !g_spawn_chain || !mode() || !pr || rec || I32(pr, 0x90) != 0 || reason == 5 || reason == 0) return;
     uint8_t *d = PTR(pr, 0x10); if (!d) return;
+    /* reason 3 (the shipped code's `reason != 3`): a chain only at a recorded hit (hit3, above: Bibi's split, Bea's) or for
+     * ExecuteChainSpecialCase 2, the rows that chain on every contact (Bea's hypercharged split "at max distance (and on
+     * hit)"; Mr. P's suitcase hopping over what it hits) */
+    if (reason == 3 && !hit3 && I32(d, 0x1b4) != 2) return;
     uint8_t *child = PTR(d, 0x180); if (!child) return;
     if (g_spawn_dbg) LOG("[spawnfix] explode with chain child: reason %d n %d spec %d toen %d tick %d\n", reason, I32(d, 0x1a4), I32(d, 0x1b4), d[0x1a0] & 1, g_cur_tick);
     int n = I32(d, 0x1a4), spec = I32(d, 0x1b4), spread = I32(d, 0x1ac), cd = I32(d, 0x1b0), toen = d[0x1a0] & 1;
@@ -194,6 +214,12 @@ static void on_explode(uint64_t *c) {
     } else if (n < 1) {   /* boomerang return to the owner */
         if (!is_return_parent(d)) { g_nchain_skip[2]++; return; }
         tx[0] = I32(owner, 0x38); ty[0] = I32(owner, 0x3c); nspawn = 1; g_nchain_ret++;
+        int more; uint8_t *mc = hyper_chain_extra(owner, child, reason, &more);   /* a hypercharge card's extra notes */
+        for (int k = 0; mc && k < more && k < 4; k++) {
+            rec = 1;
+            if (((spawn_t)B(0xb78190))(x, y, owner, owner, mc, tx[0], ty[0], dmg, dmg2, 0, 0, NULL, sim, 0, kind, NULL)) g_nchain_proj++;
+            rec = 0;
+        }
     } else {
         if (spec > 3) { g_nchain_skip[3]++; return; }
         nspawn = n > 8 ? 8 : n;
@@ -203,12 +229,18 @@ static void on_explode(uint64_t *c) {
             tx[i] = x + ((vx * dist) >> 10); ty[i] = y + ((vy * dist) >> 10);
         }
     }
-    g_nchain++;
+    g_nchain++; g_nchain_hit3 += hit3;
     for (int i = 0; i < nspawn; i++) {
         rec = 1;
         void *p = (void *)((spawn_t)B(0xb78190))(x, y, owner, owner, child, tx[i], ty[i], dmg, dmg2, 0, 0, NULL, sim, 0, kind, NULL);
         rec = 0;
         if (p) g_nchain_proj++;
+        if (p && hit3) {   /* the split balls leave the enemy just hit: its id goes in their hit list as the hit code puts it
+                            * (0xb73094..0xb730b4: id vector proj +0x160, ticks-left vector +0x170, 99999 = never again) */
+            int id = ((int (*)(void *))B(0xb6a5d4))(g_hit_ch), never = 99999;
+            ((void (*)(void *, int *))B(0x90320c))((uint8_t *)p + 0x160, &id);
+            ((void (*)(void *, int *))B(0x770ecc))((uint8_t *)p + 0x170, &never);
+        }
         if (g_spawn_dbg && i < 2) LOG("[spawnfix] chain %d/%d reason %d%s base %d spread %d dist %d -> %d,%d proj %p\n", i, nspawn, reason, toen ? " enemy" : (n < 1 ? " return" : ""), base, spread, dist, tx[i], ty[i], p);
     }
 }
@@ -282,4 +314,4 @@ void spawnfix_install(void) {
     hook_enter(g_libg, 0xb29494, on_area);
     LOG("[spawnfix] installed (BulletExplosion children)\n");
 }
-void spawnfix_status(void) { spawnfix_walldiag("status"); LOG("[spawnfix] BulletExplosion areas %ld, child projectiles %ld; chains %ld (enemy %ld, return %ld, walls %ld areas/%ld tiles, items %ld), child projectiles %ld, skipped (no owner %ld, no enemy %ld, count 0 not a return %ld, special>3 %ld)\n", g_nbe, g_nbe_proj, g_nchain, g_nchain_enemy, g_nchain_ret, g_nwall_areas, g_nwall_tiles, g_nitem, g_nchain_proj, g_nchain_skip[0], g_nchain_skip[1], g_nchain_skip[2], g_nchain_skip[3]); }
+void spawnfix_status(void) { spawnfix_walldiag("status"); LOG("[spawnfix] BulletExplosion areas %ld, child projectiles %ld; chains %ld (enemy %ld, return %ld, at a reason-3 hit %ld, walls %ld areas/%ld tiles, items %ld), child projectiles %ld, skipped (no owner %ld, no enemy %ld, count 0 not a return %ld, special>3 %ld)\n", g_nbe, g_nbe_proj, g_nchain, g_nchain_enemy, g_nchain_ret, g_nchain_hit3, g_nwall_areas, g_nwall_tiles, g_nitem, g_nchain_proj, g_nchain_skip[0], g_nchain_skip[1], g_nchain_skip[2], g_nchain_skip[3]); }

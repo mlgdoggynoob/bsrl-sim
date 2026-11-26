@@ -1,0 +1,106 @@
+# Piper's hypercharged super dealt 0 damage (bsrl-sim issue #56), a diff on top of hyper_supers_fix.patch.
+# While hypercharged, libg's own charge-start call site (0xb7c030, isOvercharged) passes skills.csv OverchargedSpawnedItem
+# OverchargedBoxOfBombs (items.csv row 145) to the leap, and libg's item code (0xb6c498) drops its Value 6 bombs as the skin's
+# OverchargedSpawnedItem or else "OverchargedBomb" (row 146, 18000146); env.c only exploded PiperdefBomb (18000035).
+# env.c: sf_bomb_state explodes both (LEAP_BOMB); encode.c: the hypercharged box and bomb are item feature 4 like the normal
+# ones; superfix_items.c: skips OverchargedBomb's TriggerAreaEffect as it does BOMB_ITEM's. Paths relative to engine/.
+diff --git a/native/loader/encode.c b/native/loader/encode.c
+index 7a726c6..227cbf7 100644
+--- a/native/loader/encode.c
++++ b/native/loader/encode.c
+@@ -19,6 +19,8 @@
+ #define CUBE_ITEM 18000009
+ #define BOMB_BOX_ITEM 18000011
+ #define BOMB_ITEM 18000035
++#define OC_BOMB_BOX_ITEM 18000145   /* OverchargedBoxOfBombs / OverchargedBomb: Piper's hypercharged super */
++#define OC_BOMB_ITEM 18000146
+ #define K_ENEMY 9
+ #define K_PROJ 16
+ #define K_BOX 6
+@@ -196,7 +198,7 @@ int enc_encode(const EncMap *m, const EncState *s, int pidx, float *vec, float *
+          * area round: [5] of those rows = data id - 16999999 (area skin row + 1, items row + 1000001: radius / kind tables
+          * in Python), of the other items z / 1500 as before */
+         int area = r[1] / 1000000 == 17, mine = area && r[2] >= 0 && team_of(s, r[2]) == myteam;
+-        int ae = area || r[1] == BOMB_ITEM || r[1] == BOMB_BOX_ITEM;
++        int ae = area || r[1] == BOMB_ITEM || r[1] == BOMB_BOX_ITEM || r[1] == OC_BOMB_ITEM || r[1] == OC_BOMB_BOX_ITEM;
+         double v[6] = {1.0, dx, dy, (double)(r[1] == CUBE_ITEM), mine ? -1.0 : (double)ae, ae ? (double)(r[1] - 16999999) : (r[5] > 0 ? r[5] : 0) / 1500.0};
+         rows[n].key = dx * dx + dy * dy; rows[n].seq = n; for (int j = 0; j < 6; j++) rows[n].v[j] = (float)v[j]; n++;
+     }
+diff --git a/native/loader/env.c b/native/loader/env.c
+index 4c78b9a..0961827 100644
+--- a/native/loader/env.c
++++ b/native/loader/env.c
+@@ -8,8 +8,8 @@
+  *   - Showdown rules: storm damage (20 %/s of max HP, +5 %/s after 5 s, applied before the snapshot of the tick after
+  *     the check, through the damage root 0xb422d0), no regen in gas, elimination tracker / Brawlers left / native
+  *     end at <= 1 alive or one team left (duo / trio), power cubes (+400 HP, +10 % damage incl. the popup), damage model (P11 x2 + travel curve; heal areas x2, #22),
+- *     super-charge fix, Piper's leap re-implementation + BoxOfBombs + bomb damage, skill block in the air, client
+- *     guard, alive guard, bot 'hold'/native control, local_ai.
++ *     super-charge fix, Piper's leap re-implementation + BoxOfBombs + bomb damage (hypercharged: OverchargedBomb too),
++ *     skill block in the air, client guard, alive guard, bot 'hold'/native control, local_ai.
+  *   - soft reset: StartLoading clone re-injected through 0x816ff8 with the seed (+ the B3 determinism patch).
+  * Every agent mechanism keeps the agent's numbers; differences are listed in work/NOTES.md. */
+ #include "nbhost.h"
+@@ -47,7 +47,11 @@ enum { VT_CHAR = 0x1209020, VT_CHAR2 = 0x1208d58, VT_ITEM = 0x1209240, VT_ITEM2
+ #define VTOF(o) ((int)((uint8_t *)PTR(o, 0) - g_libg->base))
+ #define BOX_ID 16000120
+ #define CUBE_ITEM 18000009
+-#define BOMB_ITEM 18000035
++#define BOMB_ITEM 18000035      /* PiperdefBomb (items.csv row 35): what BoxOfBombs drops for the default skin */
++#define OC_BOMB_ITEM 18000146   /* OverchargedBomb (row 146): what the hypercharged super's OverchargedBoxOfBombs drops */
++/* a leap bomb: libg's own item code (0xb6c1c8 / 0xb6c498) drops box Value bombs (BoxOfBombs 4, OverchargedBoxOfBombs 6)
++ * of the skin's item (skin_confs Items / OverchargedSpawnedItem) or else "Bomb" / "OverchargedBomb"; env.c explodes each */
++#define LEAP_BOMB(id) ((id) == BOMB_ITEM || (id) == OC_BOMB_ITEM)
+ 
+ int g_env_on;                 /* --env PATH given */
+ int g_env_spf = 4;            /* --steps-per-frame (client mode: state-only steps run per client frame) */
+@@ -994,13 +998,13 @@ static void sf_explode(void *sim, Bomb *b) {
+     if (pl) I32(pl, 0x54) = charge0;
+     E.sf_pops++;
+ }
+-static void sf_bomb_state(void *sim) {   /* afterState: detect popped bombs */
++static void sf_bomb_state(void *sim) {   /* afterState: detect popped bombs (LEAP_BOMB: normal and hypercharged) */
+     int tick = I32(sim, 0x10);
+     if (tick - E.last_bomb_tick > 200) { E.nbombs = 0; return; }
+     Bomb now[64]; int nn = 0, n; void **v = objvec(sim, &n);
+     for (int i = 0; i < n && nn < 64; i++) {
+         uint8_t *o = v[i]; if (!o) continue; int vo = VTOF(o); if (vo != VT_ITEM) continue;
+-        uint8_t *d = PTR(o, 0x10); if (!d || I32(d, 0x20) != BOMB_ITEM) continue;
++        uint8_t *d = PTR(o, 0x10); if (!d || !LEAP_BOMB(I32(d, 0x20))) continue;
+         int id = I32(o, 8), x = I32(o, 0x38), y = I32(o, 0x3c), owner = -1, known = 0;
+         for (int k = 0; k < E.nbombs; k++) if (E.bombs[k].id == id) { owner = E.bombs[k].owner; known = 1; }
+         if (!known) {
+diff --git a/native/loader/superfix_items.c b/native/loader/superfix_items.c
+index 3206e7a..2ed188e 100644
+--- a/native/loader/superfix_items.c
++++ b/native/loader/superfix_items.c
+@@ -10,8 +10,8 @@
+  * destroy 0xb6e0b0 uses for DestroyAreaEffect (b6e0f8..b6e1e0): create 0xb29360(data, skin 0xc70e4c(item, 0, 0xb6a718(item)))
+  * -> position 0xba7dc8 / 0xb6a61c -> +0x80/+0x84/+0x88 -> owner/kind 0xb29340 -> damage pair +0xe8 = item +0xe0 ->
+  * modifiers 0xb2b2d4(area, item +0x150, 0) -> object manager 0xb63198 -> start 0xb29494. Bo's Mine (Bo_def_ulti2_area).
+- * Piper's bomb 18000035 is left to env.c (sf_bomb_state / sf_explode). ConductorSign (type 53, Chuck) has no trigger in
+- * the client (its update b6bcf0 only counts +0x9c down while +0x2bc, never set here, is 0): its TriggerAreaEffect
++ * Piper's bombs 18000035 / 18000146 (hypercharged) are left to env.c (sf_bomb_state / sf_explode). ConductorSign (type 53,
++ * Chuck) has no trigger in the client (its update b6bcf0 only counts +0x9c down while +0x2bc, never set here, is 0): its TriggerAreaEffect
+  * ConductorSignArea (Damage) is spawned once, on the sign's first update that runs (the update is skipped while
+  * +0xd4 > now), i.e. when the post lands.
+  *
+@@ -45,7 +45,8 @@ static int now_of(void *o) { uint8_t *sim = ((getp_t)B(0xb6a378))(o); return sim
+ int g_superfix_items = 1;
+ static long g_ntrig, g_nsign, g_nchain, g_nchain_item, g_nchain_early;
+ static int busy;   /* our own spawns run 0xb29494 / update code again: no nested spawn */
+-#define BOMB_ITEM 18000035                  /* Piper's bomb: env.c sf_bomb_state / sf_explode explode it */
++#define BOMB_ITEM 18000035                  /* Piper's bombs (normal, hypercharged OverchargedBomb): env.c */
++#define OC_BOMB_ITEM 18000146               /* sf_bomb_state / sf_explode explode them */
+ #define FUSE_TYPES 0x4802020200005040ULL    /* b6cf0c: item types with a trigger fuse */
+ 
+ static long hp_sum(uint8_t *src) {   /* debug: HP of every character (vtable 0x1209020) in src's object manager */
+@@ -91,7 +92,7 @@ static void my_item_update(uint8_t *it, void *x1, void *x2, void *x3) {
+     o_item_update(it, x1, x2, x3);
+     if (!on) return;
+     int type = I32(d, 0x54), id = I32(d, 0x20); void *trig = PTR(d, 0x60);
+-    if (!trig || id == BOMB_ITEM) return;
++    if (!trig || id == BOMB_ITEM || id == OC_BOMB_ITEM) return;
+     static int ring2[64], pos2;   /* debug: where each trap lies once armed (the audit's target stands still) */
+     if (g_superfix_dbg && type >= 0 && type < 64 && ((FUSE_TYPES >> type) & 1) && I32(it, 0x94) <= 0 && !seen(ring2, 64, &pos2, I32(it, 8))) {
+         uint8_t *mgr = PTR(it, 0x20); void **arr = mgr ? PTR(mgr, 0x28) : NULL; int cnt = mgr ? I32(mgr, 0x34) : 0; long best = -1;

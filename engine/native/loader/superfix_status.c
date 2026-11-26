@@ -440,6 +440,23 @@ static AreaRec *area_rec(uint8_t *a, uint8_t *d, int t, int first) {   /* this a
     }
     return &g_ar[k];
 }
+/* SameAreaEffectCanNotDamageMs (area data +0x164, the loader's column read at 0xa95a04): a character an area of this data
+ * touched is left alone by every area of the same data for that long. Max's drinks (SpeedyOverchargedArea2, 1000 ms):
+ * two drinks landing next to each other (two teammates side by side, or a teammate beside Max) give 25 %, not 50 %. */
+typedef struct { void *d; int id, from, until; } Imm;
+#define IMM_MAX 64
+static Imm g_imm[IMM_MAX]; static int g_nimm; static long g_nimm_skip;
+static int same_area_immune(uint8_t *d, uint8_t *o, int t) {   /* 1 = skip o; else o is marked now */
+    int ms = I32(d, 0x164), id = I32(o, 8);
+    if (ms <= 0) return 0;
+    for (int i = 0; i < g_nimm; i++)
+        if (g_imm[i].d == d && g_imm[i].id == id && t >= g_imm[i].from && t < g_imm[i].until) { g_nimm_skip++; return 1; }
+    int k = -1;
+    for (int i = 0; i < g_nimm && k < 0; i++) if (g_imm[i].until <= t || g_imm[i].from > t) k = i;   /* a lapsed slot */
+    if (k < 0) k = g_nimm < IMM_MAX ? g_nimm++ : 0;
+    g_imm[k] = (Imm){d, id, t, t + (ms + 49) / 50};   /* 50 ms ticks */
+    return 0;
+}
 /* issue #19 leftovers: area types the area apply 0xb29494 drops at its type gate (mask 0x10400440000015 at 0xb29600 after
  * env.c's Dot / Hot patch, plus the list at 0xb296b4) and nothing else in libg reads. Type ints from the loader 0xa96604.
  *   SmokeScreen 1 (Sandy's super, Leon's NinjaInvisibleArea, Daredevil's hide gadget): the owner's team inside is invisible
@@ -457,7 +474,8 @@ static AreaRec *area_rec(uint8_t *a, uint8_t *d, int t, int first) {   /* this a
  *     AllyChargeSuper 29 (personal passive areas; Buster for 29): the owner, while an enemy / a teammate brawler is inside.
  * Issue #19 final (libg reads none of these types; Max's drink projectiles: superfix.c my_spawn_area):
  *   ChargeSuper 18 (Max's hypercharged drink, SpeedyOverchargedArea2: "granting them 25% Super charge"): once, every brawler
- *     of the owner's team inside gets CustomValue (1000 = 25 % of the 4000 maximum) through 0xb4f7f8.
+ *     of the owner's team inside (Max too: the area has no owner rule) gets CustomValue (1000 = 25 % of the 4000 maximum)
+ *     through 0xb4f7f8, once per SameAreaEffectCanNotDamageMs (same_area_immune) however many drinks land on it. [?] Max.
  *   GiveUlti 57 (Max's hypercharged main attack hit, SpeedyOverchargedBuddyWeaponArea at Max): once, every teammate brawler
  *     inside (not Max) gets Damage (300 = 7.5 %; the card text shows Damage "ultiChargeAsPercent") through 0xb4f7f8. [?]
  *     that the owner is left out.
@@ -551,6 +569,7 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
         } else if (((type == 31 || type == 18) && same && hero) || (type == 57 && same && hero && o != owner)) {
             int amount = type == 57 ? I32(d, 0x134) : I32(d, 0x13c);
             if ((type == 18 || type == 57) && superfix_area_reach && superfix_area_reach(a, d, o) < 0) continue;
+            if (same_area_immune(d, o, t)) continue;
             ((void (*)(void *, int, int, int))B(0xb4f7f8))(o, amount, 5, ((geti_t)B(0xb6a884))(a)); g_ncharge++;
             if (g_superfix_dbg && type != 31) LOG("[superfix] st: charge area %d type %d: ch %d +%d tick %d\n", data_id(d), type, I32(o, 8), amount, t);
         }
@@ -565,7 +584,8 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
 void superfix_status_area(uint8_t *a) {
     if (!g_superfix || !mode() || !a) return;
     uint8_t *d = ((getp_t)B(0xb6a384))(a);
-    if (d && (I32(d, 0x118) == 16 || I32(d, 0x118) == 24 || I32(d, 0x118) == 43)) {   /* issue #19: Stun / Silence / HpBasedStun areas (superfix_cc.c) */
+    if (d && (I32(d, 0x118) == 16 || I32(d, 0x118) == 24 || I32(d, 0x118) == 43 || I32(d, 0x160) > 0)) {   /* issue #19: Stun / Silence / HpBasedStun areas
+        * and any area with StunTicks (+0x160: Mico's hypercharged landing; libg reads it only when it loads the table) (superfix_cc.c) */
         extern void superfix_cc_area(uint8_t *, uint8_t *) __attribute__((weak)); if (superfix_cc_area) superfix_cc_area(a, d);
         return;
     }
@@ -628,8 +648,8 @@ void superfix_status_install(void) {
 void superfix_status_status(void) {
     LOG("[superfix] status: added %ld, refreshed %ld, full %ld, ended %ld, removed %ld, live %d; damage %ld, heal %ld; "
         "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
-        "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld, "
-        "spin bullets %ld\n",
+        "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld "
+        "(same-area skips %ld), spin bullets %ld\n",
         g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal, g_narea_apply, g_narea_hits, g_nmount, g_nstun,
-        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nspin);
+        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nimm_skip, g_nspin);
 }

@@ -16,3 +16,14 @@
     6001677, /* FuryOverchargedUltiProjectile -> FuryOverchargedUltiProjectileReturn */
     6001928, /* MegaBossBlackholeSpreadProjectile -> MegaBossBlackholeSpreadProjectileReturn */
     6000603, /* WhirlwindProjectile -> WhirlwindProjectile2 */
+    /* Griff's super notes (BoomerangType 1): the ChainBullet *2 (TravelType 11, waits TravelTypeVariable ticks) flies back;
+     * the hypercharged one's extra notes at max range: hyper.c hyper_chain_extra */
+    6001007, /* AssaultShotgunUltiProjectile -> AssaultShotgunUltiProjectile2 */
+    6001012, /* AssaultShotgunOverchargedUltiProjectile -> AssaultShotgunOverchargedUltiProjectile2 */
+    6001017, /* Griff002UltiProjectile -> Griff002UltiProjectile2 */
+    6001021, /* Griff003UltiProjectile -> Griff003UltiProjectile2 */
+    6001025, /* Griff004UltiProjectile -> Griff004UltiProjectile2 */
+    6001029, /* Griff005UltiProjectile -> Griff005UltiProjectile2 */
+    6001033, /* Griff006UltiProjectile -> Griff006UltiProjectile2 */
+    6001828, /* MegaBossAssaultShotgunUltiProjectile -> MegaBossAssaultShotgunUltiProjectile2 */
+    6001830, /* MegaBossAssaultShotgunOverchargedUltiProjectile -> MegaBossAssaultShotgunOverchargedUltiProjectile2 */

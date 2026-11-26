@@ -4,10 +4,10 @@
 # CustomValue1 % to the item (Belle's trap); Gale's WindWall is masked (no push rule in this libg).
 # Check: python -m super_audit --gadget, python -m super_audit --gadget --gadget-slot 1, python -m gadget_check
 diff --git a/native/loader/env.c b/native/loader/env.c
-index 4c78b9a..99837c8 100644
+index d560b08..909f6fe 100644
 --- a/native/loader/env.c
 +++ b/native/loader/env.c
-@@ -1484,7 +1484,7 @@ static void fire_input(void *sim, int pidx, uint8_t *ch, int super, double deg,
+@@ -1537,7 +1537,7 @@ static void fire_input(void *sim, int pidx, uint8_t *ch, int super, double deg,
  /* diversity round: gadget input (kind 8 -> 0xc2cef4 -> 0xb27c58(player+0x190, char, x, y, 0)); the aim as a displacement of
   * 1000 u (like a relative attack input). NOTE: 0xb27c58 is a bare ret in this libg: the input reaches the game, nothing happens.
   * gadget round: a gadget with a host implementation (gadget.c) is activated there instead. */
@@ -16,7 +16,7 @@ index 4c78b9a..99837c8 100644
  void gadget_clear(void); void gadget_reset_player(int i, void *acc); void gadget_tick(void *sim, int tick);
  void *env_obj_by_id(void *sim, int id) { return obj_by_id(sim, id); }   /* for gadget.c */
  /* gadget.c's dash: the native charge mover (as native_charge_start) with charge type 1, but no active-skill slot (+0x6d8 = 0)
-@@ -1497,8 +1497,8 @@ int env_dash_start(uint8_t *ch, int tx, int ty, int speed) {
+@@ -1550,8 +1550,8 @@ int env_dash_start(uint8_t *ch, int tx, int ty, int speed) {
      U8(ch, 0x490) = 1; I32(ch, 0x508) = 1; I32(ch, 0x6d8) = 0;
      return I32(ch, 0x41c);
  }
@@ -27,7 +27,7 @@ index 4c78b9a..99837c8 100644
      double r = deg * M_PI / 180; apply_input(sim, pidx, 8, jround(1000 * cos(r)), jround(1000 * sin(r)), NULL);
  }
  /* hypercharge round: NbeAction.fire 4 -> libg's activation 0xc42584 (hyper.c); the move is re-sent at the hypercharged speed */
-@@ -1547,7 +1547,7 @@ static int client_intents(void *sim, int i, uint8_t *ch, const NbeAction *a) {
+@@ -1600,7 +1600,7 @@ static int client_intents(void *sim, int i, uint8_t *ch, const NbeAction *a) {
      }
      if (a->fire == 1) { fire_input_at(sim, i, ch, 0, a->aim_deg, 1, cx, cy); E.cl_attacks++; }
      else if (a->fire == 2) { fire_input_at(sim, i, ch, 1, a->aim_deg, a->super_dist > 0 && a->super_dist <= 1 ? a->super_dist : 1, cx, cy); E.cl_attacks++; }
@@ -36,7 +36,7 @@ index 4c78b9a..99837c8 100644
      else if (a->fire == 4) hyper_input(sim, i, ch);                /* hypercharge round */
      else if (a->fire >= 200) skill_idx_input(sim, i, ch, a->fire - 200, a->aim_deg);   /* rl round (tests) */
          else if (a->fire >= 100) apply_input(sim, i, a->fire - 100, 1, 1, NULL);   /* rl round: raw input kind (tests) */
-@@ -1594,7 +1594,7 @@ static void apply_actions(void *sim, const NbeCmd *c) {
+@@ -1647,7 +1647,7 @@ static void apply_actions(void *sim, const NbeCmd *c) {
              apply_input(sim, i, 2, cx, cy, NULL);
              E.moving[i] = 0; E.last_dir[i] = -1; E.sent_valid[i] = 0;
          }
@@ -46,21 +46,21 @@ index 4c78b9a..99837c8 100644
          else if (a->fire >= 200) skill_idx_input(sim, i, ch, a->fire - 200, a->aim_deg);   /* rl round (tests) */
          else if (a->fire >= 100) apply_input(sim, i, a->fire - 100, 1, 1, NULL);   /* rl round: raw input kind (tests) */
 diff --git a/native/loader/gadget.c b/native/loader/gadget.c
-index 243afd0..2169dd9 100644
+index 6d98a39..c6e4318 100644
 --- a/native/loader/gadget.c
 +++ b/native/loader/gadget.c
-@@ -46,8 +46,8 @@
-  *         at the main attack's range and damage (the reading of the values is this host's, see repeat_fire).
-  *   SPIN  spin_shoot with a CustomObject projectile (TntDude, BarrelBot, KickerDude_Mines; PROJECTILE): volleys around the
-  *         brawler for ActiveTicks (spin_fire). The two rows without a projectile (KickerDude_Sweep, Painter_Push) are AREA.
+@@ -50,8 +50,8 @@
+  *         it. No enemy in range: refused (RequireEnemyInRange; no use, no cooldown). The push on hit is the projectile's own
+  *         PushbackStrength, applied by libg's projectile hit (0xb7816c -> knockback 0xb49834). Not applied: ActiveTicks (5)
+  *         and CustomValue2 (5).
 - *   ITEM  spawn rows whose CustomObject is an items.csv row (Bolt's trap, Gale's wind wall; SPAWN): the item at the
 - *         brawler through the item factory 0xb55684.
 + *   ITEM  spawn rows whose CustomObject is an items.csv row (Belle's trap; SPAWN; Gale's wind wall is masked): the item at the
 + *         brawler through the item factory 0xb55684, with the main attack's Damage x CustomValue1 % as its damage.
   *   SUPER charge_ulti (R-T; published SUPER): the super charge to CustomValue1 % of its maximum.
   *   HEAL_NOW  heal_attached_and_self (Kit) and heal_damage_taken (Kenji) (HEAL): an instant heal through libg's heal 0xb41554.
-  * Every other gadget publishes kind NONE (not usable): next_attack_change, summons / turrets, status buffs, shields,
-@@ -67,6 +67,7 @@
+  * Every other gadget publishes kind NONE (not usable): repeat_shot and spin_shoot rows with a CustomObject projectile
+@@ -74,6 +74,7 @@
  
  #define I32(p, o) (*(volatile int32_t *)((uint8_t *)(p) + (o)))
  #define PTR(p, o) (*(void *volatile *)((uint8_t *)(p) + (o)))
@@ -68,7 +68,7 @@ index 243afd0..2169dd9 100644
  #define B(off) ((uint8_t *)g_libg->base + (off))
  extern Module *g_libg;
  extern int32_t g_div_gadget[NBE_MAXP];   /* env.c: the RESET's requested gadget cards (offline.c puts them in the configs) */
-@@ -108,6 +109,8 @@ struct Gad {
+@@ -115,6 +116,8 @@ struct Gad {
      int spin_id, spin_next, spin_end, spin_ang;            /* spin_shoot: char id, next volley tick, end tick, volley angle */
      int burst_id, burst_left, burst_next, burst_gap, burst_deg;   /* SHOT waves after the first (g_waves): char id, volleys
                                                                     * still to fire, next tick, ticks between, angle */
@@ -77,7 +77,7 @@ index 243afd0..2169dd9 100644
      int hp_prev, hp_lost[100];                        /* damage taken per tick (ring by tick % 100), for HEAL_TAKEN */
  };
  static Gad g_gad[NBE_MAXP];
-@@ -189,6 +192,7 @@ static int sd_get(void *sd, uint64_t getter) { return ((AdGet)B(getter))(sd); }
+@@ -196,6 +199,7 @@ static int sd_get(void *sd, uint64_t getter) { return ((AdGet)B(getter))(sd); }
  #define SD_SPREAD 0xb0dc6c
  #define SD_NBULLETS 0xb0dd0c
  #define SD_RANGE 0xb0d948      /* CastingRange, tiles x 100 */
@@ -85,7 +85,7 @@ index 243afd0..2169dd9 100644
  #define SD_COOLDOWN 0xb0d868
  #define SD_PROJ 0x58           /* SkillData +0x58 ProjectileData* array, +0x64 its size (createReferences, getter 0xb0dbb0) */
  #define SD_AREA 0xa0           /* SkillData +0xa0 AreaEffectObject (AreaEffectData*) */
-@@ -245,11 +249,15 @@ static int shot_classify(void *ad, int type) {
+@@ -265,11 +269,15 @@ static int shot_classify(void *ad, int type) {
  static const struct { int card, waves, gap; } g_waves[] = {
      {23000273, 2, 2},   /* Gunslinger_Reload: "fires two quick shots", MsBetweenAttacks 100 ms = 2 ticks */
  };
@@ -104,7 +104,7 @@ index 243afd0..2169dd9 100644
  }
  static int shot_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
      if (I32(ch, 0x3c4) <= 0 || g->burst_left) return 0;
-@@ -268,15 +276,16 @@ static void burst_tick(void *sim, Gad *g, int tick) {   /* the later waves, alon
+@@ -288,15 +296,16 @@ static void burst_tick(void *sim, Gad *g, int tick) {   /* the later waves, alon
  }
  
  /* ---- SKILL AREA: the gadget's skill has no projectile, only an AreaEffectObject: an Attack skill's area at the brawler
@@ -124,9 +124,9 @@ index 243afd0..2169dd9 100644
      g->area_x = (int)floor(I32(ch, 0x38) + cr * cos(r) + 0.5); g->area_y = (int)floor(I32(ch, 0x3c) + cr * sin(r) + 0.5);
      area_spawn(sim, g);
      return 1;
-@@ -322,17 +331,22 @@ static void spin_tick(void *sim, Gad *g, int tick) {
-     while (g->spin_end && tick >= g->spin_next && g->spin_next < g->spin_end) spin_volley(sim, g, ch);
+@@ -380,17 +389,22 @@ static void spin_tick(void *sim, Gad *g, int tick) {
  }
+ #endif
  
 -/* ---- ITEM: spawn rows whose CustomObject is an items.csv row (Bolt's ElectroTrap, Gale's WindWall): the item at the
 +/* ---- ITEM: spawn rows whose CustomObject is an items.csv row (Belle's ElectroTrap, Gale's WindWall): the item at the
@@ -150,7 +150,7 @@ index 243afd0..2169dd9 100644
      if (it) g_items++;
      return it != NULL;
  }
-@@ -400,6 +414,9 @@ static const int g_masked[] = {
+@@ -461,6 +475,9 @@ static const int g_masked[] = {
      23001255,   /* MagicalGirl_FlyArea: the area summon never spawns */
      /* issue #55: the game's description disagrees with what the kind does (python -m desc_audit) */
      23000293,   /* Barkeep_HealPotion: a heal for allies; REPEAT fires it as main-attack damage at the policy's aim */
@@ -160,7 +160,7 @@ index 243afd0..2169dd9 100644
  };
  static int masked(int card) { for (unsigned k = 0; k < sizeof g_masked / sizeof *g_masked; k++) if (g_masked[k] == card) return 1; return 0; }
  
-@@ -427,9 +444,9 @@ void gadget_reset_player(int i, void *acc) {
+@@ -488,9 +505,9 @@ void gadget_reset_player(int i, void *acc) {
  
  /* NbeAction.fire 3 for player i at sim tick `tick`: -> 1 = the host handled it (activated, or refused: no use left / cooldown /
   * the effect could not start), 0 = no implementation for this gadget (the caller sends the raw input kind 8 as before) */
