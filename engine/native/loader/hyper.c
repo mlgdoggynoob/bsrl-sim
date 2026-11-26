@@ -29,9 +29,9 @@
  * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value); the card-object stub 0xb39704 answers Melodie's card at
  * its one overcharge_axe_juggler call site (hyper_axe_card: her hypercharge notes). Hypercharges whose card Type
  * no libg call site asks for (code compiled out) are re-implemented: Lumi's side blasts (my_spawn), Griff's extra notes
- * (hyper_chain_extra, from spawnfix.c), Colette's spirit (hyper_spirit_damage, from env.c's charge contact), Carl's
- * flame trail (hyper_trail_tick, from env.c's hyper_tick) and Gus's spirits (hyper_proj_end / hyper_spirits_tick);
- * Damian's burning ground is libg's own component code, reached through env.c's charge_end_event; Fang's wall pass and
+ * (hyper_chain_extra, from spawnfix.c), Colette's spirit (hyper_spirit_damage, from env.c's charge contact) and Gus's
+ * spirits (hyper_proj_end / hyper_spirits_tick); Carl's flame trail is libg's card component, whose tick hyper_trail_tick
+ * runs (from env.c's hyper_tick); Damian's burning ground is libg's own component code, reached through env.c's charge_end_event; Fang's wall pass and
  * popcorn are env.c's (fang_oc_super); Alli's boost, whose one libg reader is unreachable here, is
  * hyper_stalk (from env.c's damage root); Tick's dead
  * head gets its summoner for its mine chain (hyper_dead_pet_owner, from superfix_items.c). Also here: Ruffs' +25 % (an area's
@@ -526,30 +526,42 @@ int hyper_spirit_damage(uint8_t *ch, int d) {
     return 0;
 }
 /* overcharge_whirlwind (Carl, Whirlwind_overcharge: "Carl gains a flame trail while using his Super. The trail burns on
- * contact, causing damage over time"): no card-value reader asks for type 285 (no 0xb5281c / 0xc427d8 call with w1 #0x11d)
- * and no battle code spawns the card's AreaEffect (the list card +0x78, count +0x84, filled by the loader at 0xaa33ec;
- * WhirlwindUlti has no Overcharged* area): the trail is server code. Here, while a super that started hypercharged runs
- * (skill instance 1: +8 its ActiveTime left in ms, 3000 at the start and 50 less per tick, or +0x30 running; +0x31 its
- * overcharged latch), the card's AreaEffect (WhirlwindOverchargedAreaEffect, a
- * StatusEffect area: WhirlwindUltiTrailFire on enemies, 4 s, Radius 270, superfix_status.c applies it) is spawned at Carl
- * through the shipped helper 0xb35c40 (kind 2, as the skill execute passes) each time he is farther than its Radius from the
- * last one, the spacing of the charge trails (env.c). [?] the server's spacing. */
+ * contact, causing damage over time"): libg's own trail code. The character init 0xb59de0 gives the holder of a card of type
+ * 285 (0xb5a12c) a component (ctor 0xba0fe0: +8 the character, +0x38 the card, +0x40 the last spawn's tick, -1 = none,
+ * +0x44 / +0x48 its spot; vtable 0x120b1e8) whose tick (vtable +0x40 = 0xba1028) libg never calls, as the other
+ * components' (superfix_moves.c's R-T, superfix_status.c's Draco). That tick, while the super that started hypercharged
+ * runs (skill instance 1: +8 its ActiveTime left > 0 and +0x31 its overcharged latch), spawns the card's AreaEffect (the
+ * list card +0x78, WhirlwindOverchargedAreaEffect: a StatusEffect area, WhirlwindUltiTrailFire on enemies, TimeMs 4000,
+ * Radius 270; superfix_status.c applies it) at Carl through the shipped helper 0xb35c40 (kind 10) when it has spawned none
+ * yet, when the last one's TimeMs has passed, or when Carl is more than Radius x 150 % from the last one (405 u). Here it
+ * runs once per tick for a hypercharge holder of that card (from env.c's hyper_tick); without the component (a character
+ * made before the card was in the config) the same rule runs here. */
 #define CT_WHIRLWIND 285
-#define AREA_STATUS 36   /* AreaEffectData +0x118: StatusEffect */
-static struct { int id, x, y; } g_trail[NBE_MAXP]; static long g_ntrail;
+#define AREA_STATUS 36        /* AreaEffectData +0x118: StatusEffect */
+#define TRAIL_TICK 0xba1028   /* the component's tick (vtable 0x120b1e8 +0x40) */
+static struct { int id, x, y, tick; } g_trail[NBE_MAXP]; static long g_ntrail, g_ntrail_comp;
 void hyper_trail_tick(int i, uint8_t *ch) {
     if (i < 0 || i >= NBE_MAXP || !ch || I32(ch, 0x3c4) <= 0 || !PTR(ch, 0x20)) return;
     uint8_t *card = g_card_ch[i] == ch && I32(ch, 8) == g_card_id[i] ? g_card[i] : NULL;
     if (!card || I32(card, 0x100) != CT_WHIRLWIND) return;
+    int nc = I32(ch, 0xa6c); void **c = PTR(ch, 0xa60);
+    for (int k = 0; c && k < nc && k < 64; k++)
+        if (c[k] && PTR(c[k], 8) == ch && (*(void ***)c[k])[0x40 / 8] == (void *)B(TRAIL_TICK)) {
+            ((void (*)(void *))B(TRAIL_TICK))(c[k]);
+            if (g_ntrail_comp++ == 0) LOG("[hyper] flame trail: player %d runs libg's trail component\n", i);
+            return;
+        }
     uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464);
-    if (!sk || n < 2 || !sk[1] || (I32(sk[1], 8) <= 0 && !U8(sk[1], 0x30)) || !(U8(sk[1], 0x31) & 1)) { g_trail[i].id = 0; return; }
+    if (!sk || n < 2 || !sk[1] || I32(sk[1], 8) < 1 || !(U8(sk[1], 0x31) & 1)) return;
     void **al = PTR(card, 0x78); uint8_t *ad = al && I32(card, 0x84) > 0 ? al[0] : NULL;
-    if (!ad || I32(ad, 0x118) != AREA_STATUS) return;
-    int x = I32(ch, 0x38), y = I32(ch, 0x3c); long r = I32(ad, 0x12c), dx = x - g_trail[i].x, dy = y - g_trail[i].y;
-    if (g_trail[i].id == I32(ch, 8) && dx * dx + dy * dy <= r * r) return;
-    void *a = ((void *(*)(void *, void *, int, int, int, int, void *))B(0xb35c40))(ch, ad, x, y, 0, 2, NULL);
-    g_trail[i].id = I32(ch, 8); g_trail[i].x = x; g_trail[i].y = y;
-    if (a && g_ntrail++ < 10) LOG("[hyper] flame trail: player %d area %d at %d,%d (r %ld)\n", i, I32(ad, 0x20), x, y, r);
+    uint8_t *sim = ((void *(*)(void *))B(0xb6a378))(ch);
+    if (!ad || !sim || I32(ad, 0x118) != AREA_STATUS) return;
+    int x = I32(ch, 0x38), y = I32(ch, 0x3c), now = I32(sim, 0x10);
+    long r = I32(ad, 0x12c) * 150 / 100, dx = x - g_trail[i].x, dy = y - g_trail[i].y;   /* 0xba10e4: Radius x 150 % */
+    if (g_trail[i].id == I32(ch, 8) && (long)(now - g_trail[i].tick) * 50 < I32(ad, 0x124) && dx * dx + dy * dy <= r * r) return;   /* +0x124 TimeMs */
+    void *a = ((void *(*)(void *, void *, int, int, int, int, void *))B(0xb35c40))(ch, ad, x, y, 0, 10, NULL);
+    g_trail[i].id = I32(ch, 8); g_trail[i].x = x; g_trail[i].y = y; g_trail[i].tick = now;
+    if (a && g_ntrail++ < 10) LOG("[hyper] flame trail: player %d area %d at %d,%d (no component)\n", i, I32(ad, 0x20), x, y);
 }
 static void hyper_pets_clear(void) { memset(g_pet, 0, sizeof g_pet); memset(g_card, 0, sizeof g_card); memset(g_card_ch, 0, sizeof g_card_ch); memset(g_trail, 0, sizeof g_trail); }
 #define SNAP_MAX 1024
@@ -805,7 +817,8 @@ static void *hyper_axe_card(uint8_t *ch, int type) {
  * superfix.c's own heal both call 0xb41554(ch, source player, amount, 1, projectile data, ...), wrapped here) that goes past
  * max HP gives the healed character a shield of the excess; it shrinks linearly to 0 over Value ticks after the last
  * overheal (a new overheal adds to what is left) and takes damage before HP (hyper_shield_absorb, env.c my_root).
- * [?] Value 100 read as ticks (5 s, the hypercharge's own length): 100 s would be no decay. */
+ * Value 100 is ticks: the card text's <VALUE1> for type 238 is Value through the ticks-to-seconds formatter 0xa18e8c
+ * (card description 0x90c024: Value / 20) -> "5 seconds". */
 #define CT_DEAD_MARIACHI 238
 #define OSH_MAX 16
 static struct { uint8_t *ch; int id, hp, start, end; } g_osh[OSH_MAX];
