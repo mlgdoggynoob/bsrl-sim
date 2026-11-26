@@ -32,8 +32,10 @@
  *   (my_lifesteal_pct), Taunt +0x132 / Fear +0x133 for env.c (superfix_status_taunt), and the area types the area apply
  *   drops (area_extra: SmokeScreen, DamageBoost, Heal, HealRegen, Cleanse, super charge areas; issue #19 final: ChargeSuper,
  *   GiveUlti, EnragerOverchargeSuper, SwitchSkill, BulletSpin, HotAndOverheals).
- * Not modelled: DamageBoostTargetCurrentHealthPercent +0x114, boolean attributes other than Fear (Kaze's HasStormVision),
- *   CancelOn* conditions. Those statuses are stored (so their duration and target are right) but change nothing.
+ * DamageBoostTargetCurrentHealthPercent +0x114 (Alli's super): env.c's damage root (superfix_status_hp_boost), CancelOnChargeEnd
+ *   +0xa6 at the charge end (my_charge_end).
+ * Not modelled: boolean attributes other than Fear (Kaze's HasStormVision),
+ *   the other CancelOn* conditions. Those statuses are stored (so their duration and target are right) but change nothing.
  *   0xba3274 (called at stop / charge end / respawn) and the other manager stubs are left alone.
  *
  * StatusEffect areas (AreaEffectData +0x118 == 36: Max, Jae-Yong, Najia's jars, Kaze's storm, slows ...): the area apply
@@ -69,6 +71,8 @@ enum { SE_DUR = 0x98, SE_RATE = 0xa0, SE_SRCDEATH = 0xa8, SE_FIRST = 0xab, SE_ST
        SE_RECV_BP = 0x11c, SE_RECV_BA = 0x120,
        /* issue #19 leftovers (stores at 0xba4198 / 0xba41c4 / 0xba42a0 / 0xba4478; Fear is a BooleanAttributes word, 0xba4bc8) */
        SE_LIFESTEAL = 0x10c, SE_SRC_LIFESTEAL = 0x110, SE_RELOAD = 0x124,
+       /* DamageBoostTargetCurrentHealthPercent (store 0xba41f0), CancelOnChargeEnd (byte, store 0xba3ac0) */
+       SE_HPBOOST = 0x114, SE_CANCEL_CHARGE_END = 0xa6,
        /* bytes */
        SE_CCIMM = 0x12a, SE_LOSECTL = 0x131, SE_TAUNT = 0x132, SE_FEAR = 0x133, SE_STASIS = 0x137, SE_SILENCE = 0x138,
        SE_FULLSTUN = 0x139 };
@@ -351,6 +355,24 @@ void superfix_status_cancel(uint8_t *ch, int within) {
         if (s->ch == ch && s->ch_id == id && s->src_ch == ch && t < s->until && t - s->start <= within) s->until = t; }
 }
 typedef struct { int spd_bp, spd_ba, spd_rp, spd_ra, dmg_bp, dmg_rp, recv_bp, recv_ba; } StMods;
+/* Alli's super (StalkerUltiDamageTargetCurrentHpBoost: DamageBoostTargetCurrentHealthPercent 25, CancelOnChargeEnd): the
+ * character's largest live DamageBoostTargetCurrentHealthPercent, for env.c's damage root (the client's own use of it, the
+ * area apply at 0xb2a314, reads an aggregate +0x96c that only the network decode writes; env.c applies it to every hit
+ * instead, so +0x96c stays 0). CancelOnChargeEnd: the charge tick 0xb3ae74 calls the manager's 0xba3274(char +0x890), a bare
+ * `ret`, where a charge ends (0xb3e16c, after it clears the active charge +0x6d8); my_charge_end ends those statuses after that tick
+ * ("the next main attack", her dash). The other 0xba3274 calls (0xb41060, 0xb41148, 0xb4a168) are left alone. */
+static int st_field(uint8_t *ch, int off, uint8_t *src);
+int superfix_status_hp_boost(uint8_t *ch) { return st_field(ch, SE_HPBOOST, NULL); }
+static long g_ncharge_end;
+static void my_charge_end(void *cont) {
+    if (!g_superfix || !cont || (uint64_t)__builtin_return_address(0) != (uint64_t)B(0xb3e170)) return;
+    uint8_t *ch = (uint8_t *)cont - 0x890; int t = now_tick(ch), id = I32(ch, 8);
+    for (int i = 0; i < g_nst; i++) { St *s = &g_st[i];
+        if (s->ch == ch && s->ch_id == id && t < s->until && U8(s->data, SE_CANCEL_CHARGE_END)) {
+            s->until = t + 1; g_ncharge_end++;   /* through this tick: the charge's last hit comes after this call */
+            if (g_superfix_dbg) LOG("[superfix] st: %d on ch %d ends with the charge, tick %d\n", data_id(s->data), id, t);
+        } }
+}
 int superfix_status_mods(uint8_t *ch, StMods *m) {
     memset(m, 0, sizeof *m);
     if (!g_superfix || !mode() || !ch || (!g_nst && !g_nzn)) return 0;
@@ -690,6 +712,9 @@ void superfix_status_install(void) {
     hook_replace(g_libg, 0xba3260, (void *)my_status_remove);
     hook_replace(g_libg, 0xba3264, (void *)my_status_remove);
     hook_enter(g_libg, 0xb3941c, on_char_update);
+    if (*(uint32_t *)B(0xba3274) == 0xd65f03c0 && *(uint32_t *)B(0xb3e16c) == 0x94019442)   /* ret; bl 0xba3274 */
+        hook_replace(g_libg, 0xba3274, (void *)my_charge_end);
+    else LOG("[superfix] status: charge-end notify 0xba3274 bytes differ, CancelOnChargeEnd left out\n");
     /* issue #19 leftovers: the reload and lifesteal queries (both `mov w0, wzr; ret`) */
     if (*(uint32_t *)B(0xb38e04) == 0x2a1f03e0 && *(uint32_t *)B(0xb38e08) == 0xd65f03c0) hook_replace(g_libg, 0xb38e04, (void *)my_reload_pct);
     else LOG("[superfix] status: reload query 0xb38e04 bytes differ, reload statuses left out\n");
@@ -702,7 +727,8 @@ void superfix_status_status(void) {
     LOG("[superfix] status: added %ld, refreshed %ld, full %ld, ended %ld, removed %ld, live %d; damage %ld, heal %ld; "
         "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
         "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld "
-        "(same-area skips %ld), spin bullets %ld; Pierce marked shots %ld, second-wave shots %ld (dropped %ld)\n",
+        "(same-area skips %ld), spin bullets %ld, charge-end cancels %ld; Pierce marked shots %ld, second-wave shots %ld (dropped %ld)\n",
         g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal, g_narea_apply, g_narea_hits, g_nmount, g_nstun,
-        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nimm_skip, g_nspin, g_npierce_mark, g_npierce_wave2, g_npierce_drop);
+        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nimm_skip, g_nspin, g_ncharge_end,
+        g_npierce_mark, g_npierce_wave2, g_npierce_drop);
 }

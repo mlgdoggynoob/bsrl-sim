@@ -195,6 +195,7 @@ static int bush_at(void *sim, int x, int y);   /* the live tile map has a bush a
 typedef struct { int spd_bp, spd_ba, spd_rp, spd_ra, dmg_bp, dmg_rp, recv_bp, recv_ba; } StMods;
 int superfix_status_speed(uint8_t *ch, int base) __attribute__((weak));
 int superfix_status_mods(uint8_t *ch, StMods *m) __attribute__((weak));
+int superfix_status_hp_boost(uint8_t *ch) __attribute__((weak)); int hyper_stalk(uint8_t *ch, int idx);
 int superfix_status_blocked(uint8_t *ch) __attribute__((weak));
 int superfix_status_silenced(uint8_t *ch) __attribute__((weak));
 int superfix_status_taunt(uint8_t *ch, int *x, int *y) __attribute__((weak));   /* issue #19: 1 taunted, 2 feared */
@@ -412,6 +413,32 @@ static void record_event(uint8_t *victim, uint8_t *attacker, int before, int aft
     }
     if (vi >= 0 && vi < NBE_MAXP && known) E.taken[vi] += removed;
 }
+/* Alli: the hit's boost from her super's status (DamageBoostTargetCurrentHealthPercent, superfix_status_hp_boost), as libg's
+ * own area-hit code computes it (0xb2a314..0xb2a39c, unreachable here: its aggregate +0x96c is network state): 0xc70898(pct,
+ * -1, hypercharged, 0xb4b660(attacker) damage boost, 500, damage, target) = the target's HP x pct / 100, at least 500 (power
+ * 1: x scale, the agent's x 2) and at most the hit's own damage, both raised by that boost. Hypercharged (hyper_stalk): Value1
+ * % of the target's max HP, and *heal = Value2, the % of the HP the hit removed that heals her (stalk_heal_after). From the
+ * damage root and the charge contact (her dash). Returns the damage to add. */
+static int stalk_boost(void *att, void *vic, int dmg, int scale, int *heal) {
+    *heal = 0;
+    if (!superfix_status_hp_boost || !E.sim || !att || !vic || VTOF(att) != VT_CHAR || VTOF(vic) != VT_CHAR ||
+        I32(vic, 0x84) == I32(att, 0x84)) return 0;
+    int pct = superfix_status_hp_boost(att); if (pct <= 0) return 0;
+    int hv = hyper_stalk(att, 1), oc = hv > 0, ab = ((int (*)(void *))B(0xb4b660))(att);
+    int add = ((int (*)(int, int, int, int, int, int, void *))B(0xc70898))(oc ? hv : pct, -1, oc, ab, 500 * scale, dmg, vic);
+    if (oc) *heal = hyper_stalk(att, 2);
+    E.st_dmg++;
+    static int nlog; if (nlog++ < 20) LOG("[status] hp boost: attacker %d pct %d hyper %d: %d +%d (target hp %d / %d)\n", I32(att, 8),
+                                          oc ? hv : pct, oc, dmg, add, I32(vic, 0x3c4), I32(vic, 0x3c8));
+    return add > 0 ? add : 0;
+}
+static void stalk_heal_after(void *att, int pct, int removed) {
+    int hp = I32(att, 0x3c4), mx = I32(att, 0x3c8), h = removed * pct / 100;
+    if (h <= 0 || hp <= 0 || hp >= mx) return;
+    I32(att, 0x3c4) = hp + h < mx ? hp + h : mx;
+    static int nlog; if (nlog++ < 20) LOG("[status] hp boost heal: attacker %d +%d (%d %% of %d), hp %d -> %d\n", I32(att, 8), h, pct,
+                                          removed, hp, I32(att, 0x3c4));
+}
 static int mech_pop(void *sim, uint8_t *c, int before);   /* Meg's mech at 0 HP: she ejects (below, after dig_ok) */
 static int just_popped(uint8_t *c);                       /* ... and takes no other hit in that tick */
 static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *attacker, void *src, int a7,
@@ -454,6 +481,8 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
         if (vm && (mv.recv_bp || mv.recv_ba)) nd = nd * (100 + mv.recv_bp) / 100 + mv.recv_ba;
         if (nd != dmg) { if (a3 == dmg) a3 = (int)nd; dmg = (int)nd; E.st_dmg++; }
     }
+    int stalk_heal = 0;
+    if (dmg > 0) { int add = stalk_boost(attacker, victim, dmg, E.charge_level == 2 ? 2 : 1, &stalk_heal); if (add) { if (a3 == dmg) a3 += add; dmg += add; } }
     if (dmg > 0 && mode3 && E.sim && victim) {   /* gear round (issue #51): LowHealthDamage of the attacker, then the victim's shield */
         int ai, vi; void *pa = owner_player(E.sim, attacker, &ai), *pv = owner_player(E.sim, victim, &vi);
         if (pa || pv) {
@@ -468,6 +497,7 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
     if (waiting(ow)) { I32(victim, 0x3c4) = before; E.charge_level = saved_level; return r; }   /* respawning: invulnerable */
     int pop = vchar && mode3 && mech_pop(E.sim, victim, before);   /* the mech's HP is gone, Meg stands in its place */
     if (vchar && mode3) record_event(victim, attacker, pop ? before + 1 : before, pop ? 1 : I32(victim, 0x3c4));   /* no kill */
+    if (stalk_heal > 0 && vchar) stalk_heal_after(attacker, stalk_heal, before - I32(victim, 0x3c4));
     if (!pop && ow >= 0 && I32(victim, 0x3c4) <= 0 && resp_mate(E.sim, ow)) {   /* knocked out while a teammate lives */
         E.resp_at[ow] = I32(E.sim, 0x10) + RESP_TICKS; E.resp_ai[ow] = U8(victim, 0x469); E.resp_n++;
         /* area round: it loses its power cubes (Duo Showdown: a respawned brawler starts at 0 cubes) and their +400 max HP
@@ -966,7 +996,9 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
             /* a super's hits do not recharge that super (as the leap bombs: sf_explode restores the owner's charge) */
             int np_; void **ps_ = players(sim, &np_); uint8_t *pl_ = j->owner >= 0 && j->owner < np_ ? ps_[j->owner] : NULL;
             int charge0 = pl_ ? I32(pl_, 0x54) : 0;
+            int sh = 0; if (j->dmg > 0) d += stalk_boost(ch, c, d, 2, &sh);   /* Alli's dash after her super */
             if (j->dmg > 0) o_root(c, j->owner, d, d, 0, ch, NULL, 1, x, y, NULL, 0, 0, 0, 1, 0, 0, 0);
+            if (sh > 0) stalk_heal_after(ch, sh, hp0 - I32(c, 0x3c4));
             /* Colette's hypercharged dash: her spirit's hit follows on the same enemy (hyper.c hyper_spirit_damage) */
             int sp = j->dmg > 0 && j->ulti && I32(c, 0x3c4) > 0 && I32(c, 0x84) != I32(ch, 0x84) ? hyper_spirit_damage(ch, d) : 0;
             if (sp > 0) o_root(c, j->owner, sp, sp, 0, ch, NULL, 1, x, y, NULL, 0, 0, 0, 1, 0, 0, 0);

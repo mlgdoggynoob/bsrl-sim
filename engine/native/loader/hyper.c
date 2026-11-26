@@ -31,7 +31,8 @@
  * (hyper_chain_extra, from spawnfix.c), Colette's spirit (hyper_spirit_damage, from env.c's charge contact), Carl's
  * flame trail (hyper_trail_tick, from env.c's hyper_tick) and Gus's spirits (hyper_proj_end / hyper_spirits_tick);
  * Damian's burning ground is libg's own component code, reached through env.c's charge_end_event; Fang's wall pass and
- * popcorn are env.c's (fang_oc_super); Tick's dead
+ * popcorn are env.c's (fang_oc_super); Alli's boost, whose one libg reader is unreachable here, is
+ * hyper_stalk (from env.c's damage root); Tick's dead
  * head gets its summoner for its mine chain (hyper_dead_pet_owner, from superfix_items.c). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
  * MechaDudeBig) have a separate super instead (characters.csv OverchargedUltimateSkill): the game builds it as the brawler's
  * third skill instance (char+0x458[2], 0xb34560) but what picks it for a super cast is compiled out; here instances 1
@@ -276,8 +277,10 @@ static void oc_heal_areas(uint8_t *ch) {
  * Checked and left at -1 (types above 210): overcharge_ruffs 263 (+Value % damage, read by the projectile hit 0xb29bd0 that
  * Ruffs' supply drop never reaches: its explosion area deals the damage), _door_man 272 (portal count, Value 2 = the default
  * 2; the shield Value2 has no reader), _mecha_dude 281 (Value 0 / 0, which the reader 0xb7d030 skips), _geisha 296 (Value2 %
- * on the skill's ChargeSpeed, 0 for GeishaUlti), _stalker 319 (read at 0xb2a340 only while the character's stalk bonus
- * +0x96c is set, which nothing in this build writes). */
+ * on the skill's ChargeSpeed, 0 for GeishaUlti). overcharge_stalker 319 (Alli 25 / 20): libg reads it at 0xb2a340 only
+ * while the character's stalk aggregate +0x96c is set, which only the network decode writes; env.c's damage root asks it
+ * through hyper_stalk instead (Value1 % of the target's max HP in place of the super's % of its current HP, Value2 % of the
+ * damage dealt healed). */
 #define CT_PROJ_SPAWN 177    /* overcharge_projectile_spawn (the `mov w8, #N` per Type string in the card loader 0xaa3000..) */
 #define CT_PET_BUFF 179      /* overcharge_pet_buff_stats */
 #define CT_PATTERN_OVERRIDE 202   /* overcharge_attack_pattern_override (the parse at 0xaa66e4) */
@@ -286,6 +289,7 @@ static void oc_heal_areas(uint8_t *ch) {
                               * range"): while hypercharged and mounted (CharacterData UniqueProperty 28), the dragon's attack
                               * fires NumBulletsInOneAttack + Value2 flames (Attack handler 0xb7e3dc: 4 -> 8 at Spread 90) and
                               * reaches Value more tiles (the range bonus 0xc6e4d4 -> 0xc6e958) */
+#define CT_STALKER 319      /* overcharge_stalker */
 #define CT_DIGGER 307        /* overcharge_digger (Moe 10 / 300 / 100 / 5, "Driller has longer range and lasts for longer"):
                               * the dive's ChargeSpeed + Value3 % (skill fire 0xb7bc14: 2500 -> 5000), its range bonus + Value
                               * tiles (0xc6e754), and the Driller's (UniqueProperty 32) attack Value4 more tiles (0xc6e998:
@@ -318,6 +322,7 @@ static const int CARD_TYPES[] = {
     209,   /* overcharge_sniper, Piper (1 / 2500): ChargeSpeed Value2 (1500 -> 2500, 0xb7bbfc): "departs at an increased speed";
             * Value is not asked (no call site): the terrain breaking is not here */
     CT_DRAGON_RIDER, CT_DIGGER,
+    CT_STALKER,   /* overcharge_stalker, Alli (25 / 20): hyper_stalk (env.c's damage root) */
 };
 static void *g_card[NBE_MAXP];   /* player i's hypercharge card (cfg +0x28), set at hyper_use */
 static uint8_t *g_card_ch[NBE_MAXP]; static int g_card_id[NBE_MAXP];   /* the brawler holding it (object, id), kept after the end */
@@ -333,6 +338,14 @@ static int my_card_value(uint8_t *ch, int type, int idx) {
         }
     return -1;
 }
+
+/* Alli's hypercharge (Stalker_overcharge 25 / 20, TID_STALKER_OVERCHARGE_DESC "Alli's Super damages for <VALUE1>% of enemies
+ * max health. Damaging enemies heals Alli for <VALUE2>% of damage dealt."): Value<idx> of the card while ch's hypercharge is
+ * active, else -1. Her super's boost (StalkerUltiDamageTargetCurrentHpBoost, 25 % of the target's current HP on the next
+ * hit) is env.c's; there the hypercharged boost takes Value1 % of the target's max HP, as libg's own reader does (0xb2a340:
+ * the card value replaces the status percent and 0xc70898's w2 = isOvercharged picks max HP +0x3c8 over HP +0x3c4), and
+ * heals her Value2 % of the HP that hit removed. [?] that the heal is for the boosted hit only: Value2 has no reader. */
+int hyper_stalk(uint8_t *ch, int idx) { return is_oc_char(ch) ? my_card_value(ch, CT_STALKER, idx) : -1; }
 
 /* Pets of a hypercharged super. The projectile end 0xb75b24 calls 0xb77344(projectile), which spawns the projectile's
  * character (+0x1c0: its SpawnCharacter or the skill's summon, Charlie's cocoon, Jessie's turret, Juju's Gris-Gris, Ash's
