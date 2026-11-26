@@ -233,6 +233,10 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
 - `bolt_overdrive.patch` (a diff on top of `no_trains.patch`): Bolt's super gets the speed (+20 %, RockSpeedUpMovement) and
   the damaging trail (RockUltiTrail) of his Brawler_Rock component, whose tick 0xb99070 is a bare `ret` (`superfix_status.c`
   `rock_tick`, while the super's 80-tick self status is on him; the trail spacing copies Carl's 0xba1028 [?]).
+- `facing_sync.patch` (a diff on top of `bolt_overdrive.patch`, from nirkt's nb_gpu_compositing 116e3c4): brawlers turn to
+  their aim / walking direction in rendered frames (`env.c` `facing_sync` copies the simulation's facing +0x324 and walking
+  direction +0x320 into the client's characters, which the offline snapshot never sends). Rendering only; off unless
+  `NBHOST_FACING=1`, which `policy_video.py` sets (docs/RECORDING.md).
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
