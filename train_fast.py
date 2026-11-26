@@ -86,7 +86,7 @@ def parse(argv=None):
     ap.add_argument("--eval-team", type=int, default=1, help="team size of the eval battles (1 = solo, as before)")
     ap.add_argument("--gen", type=int, default=0, help="1 = instances boot generated layouts (env_v5.use_genmaps), played with --p-gen")
     ap.add_argument("--p-gen", type=float, default=0.5)
-    ap.add_argument("--star-powers", type=int, default=0, help="1 = players carry a star power card the probe found read by this build (star_audit.LIVE; issue #20; not in the observation)")
+    ap.add_argument("--star-powers", type=int, default=0, help="1 = players carry a star power card this build runs (libg reads it: star_audit.LIVE, or the host re-implements it: star_check.LIVE; issues #20, #47; not in the observation)")
     ap.add_argument("--gears", type=int, default=0, help="1 = players carry two gears of their brawler whose effect gear_check confirmed (gear_check.LIVE; issue #51; not in the observation)")
     ap.add_argument("--gadgets", type=int, default=0, help="1 = players carry a gadget, the policy sees it ready (self 3) and may use it (obs v5.7, issue #3; needs a host that activates its kind)")
     ap.add_argument("--hyper", type=int, default=0, help="1 = players carry their hypercharge card, the policy sees it ready (self 4) and may activate it (obs v5.8, issue #4; needs a host with hyper.c)")
