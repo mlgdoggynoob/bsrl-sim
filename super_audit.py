@@ -4,6 +4,7 @@ some of it re-implemented in nirkt's env.c / spawnfix.c). Output is a per-brawle
     python -m super_audit [--n 2] [--only BullDude,Sniper]     # live: boots --n hosts (60-90 s each)
     python -m super_audit --check                              # classification self-check, no host
     python -m super_audit --hyper --only Jester,Twins          # the hypercharged supers (hypercharge first, host hyper.c)
+    python -m super_audit --attack                             # the main attacks (fire 1 in place of the super)
     python -m super_audit --hyper-desc [--live DIR]            # offline: hypercharge descriptions vs tables and live audits
 
 Setup (one battle per 10 brawlers, map MAP = the most open Showdown map, storm off, every player's native AI off):
@@ -68,7 +69,13 @@ item gadget (a trap, a tornado) acts on an enemy that comes to it, so its target
 description (`expected_gadget`: damage, push and heal that texts.csv names are expected too, issue #55; the other effects it
 names are listed as not checked live). A thrown shot whose projectiles hit nobody in flight and whose areas deal no damage
 (Damian's wall, Wendy's grenade, Spike's cactus) does not expect its skill's Damage (`thrown_harms`). --gadget-slot 1 audits
-each brawler's second such gadget. Output: super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*)."""
+each brawler's second such gadget. Output: super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*).
+--attack (main attack round): the same scene, but each shooter fires its main attack (fire 1, aimed at the target; the host
+always throws it at full range) in place of the super, with no super fill. Expected effects come from the brawler's
+characters.csv WeaponSkill row read as a super's (`expected(attack=True)`, Meg: her mech's weapon); consumed = the attack's
+ammo (state2 skill 0 word, NbeResp ammo) dropped, or damage dealt. A thrown attack (an Indirect projectile: Dynamike, Barley,
+Tick, ...) lands at full range, so its target stands at min(CastingRange, DIST_MAX) on both attempts (`throw`). No LONG_WATCH.
+Output: super_audit_attack.json / .md."""
 import argparse, collections, functools, json, os, re, sys, threading, time
 import numpy as np
 
@@ -181,18 +188,19 @@ def hyper_owner(name):
     return None
 
 
-def expected(name, hyper=False):
+def expected(name, hyper=False, attack=False):
     """the brawler's super from the tables -> dict(skill, type (BehaviorType), kind (finer group label), range (units),
     charge (bool), expect (effects that must be seen), notes). A brawler in START_FORM (Meg: the client spawns her in her
     mech) gets its start form's super, with a note. hyper: its hypercharged super (hyper_skill); expect adds
     hyper_cast (the host cast it while hypercharged, with this skill's data where characters.csv names an
     OverchargedUltimateSkill) and hyper (one of the projectiles / summons / areas / items only the hypercharged super has,
-    `hyper_names`, when it has any); a brawler with no card (`hyper_owner` None) keeps its normal super, no_hyper=True"""
+    `hyper_names`, when it has any); a brawler with no card (`hyper_owner` None) keeps its normal super, no_hyper=True. attack (--attack): its main attack (characters.csv WeaponSkill) in place of its super"""
     if name in START_FORM:
-        out = expected(START_FORM[name], hyper)
-        out["notes"].append(f"spawns as {START_FORM[name]}: its super is audited; the eject and the change back: charge_check")
+        out = expected(START_FORM[name], hyper, attack)
+        out["notes"].append(f"spawns as {START_FORM[name]}: its {'attack' if attack else 'super'} is audited; the eject and the change back: charge_check")
         return out
-    T = _tables(); ch = T["char"][name]; sk_name = ch.get("UltimateSkill", ""); s = T["skill"].get(sk_name, {})
+    T = _tables(); ch = T["char"][name]; sk_name = ch.get("WeaponSkill" if attack else "UltimateSkill", ""); s = T["skill"].get(sk_name, {})
+    if attack: return expected_skill(sk_name, s)
     if hyper and not hyper_owner(name):   # no hypercharge card (Wendy, Nori, the SuperNova forms): its normal super, class no_hyper
         out = expected_skill(sk_name, s); out["no_hyper"] = True
         out["notes"].append("no hypercharge card (cards.csv MetaType 6) for it or the brawler it is a form of: no hypercharge")
@@ -261,6 +269,7 @@ def expected_skill(sk_name, s):
            "steer": steer, "cast": _num(s, "CastingTime"), "expect": ex,
            "post_hit": POST_HIT_SHIELD if bt == "ProjectileShield" else 0,
            "land": charge and s.get("ChargeType") == "16",   # Bonnie: she hits where she lands, aimed at the target (not past it)
+           "throw": any(r.get("Indirect") == "true" for r in pl),   # --attack: a thrown attack lands at full range (env.c fire 1)
            "projectiles": projs, "summons": summons, "areas": areas, "items": items, "notes": notes}
     return out
 
@@ -465,7 +474,7 @@ def describe(m, missing=()):
     if m.get("crashed"): return "host crashed with it as the only shooter"
     if not m.get("spawned", True): return "brawler not spawned (host rejected it)"
     if not m.get("filled", True): return "super could not be filled (super max %s)" % m.get("super_max")
-    if not m.get("consumed"): return "super charge not consumed"
+    if not m.get("consumed"): return "attack ammo not used" if m.get("attack") else "super charge not consumed"
     p = []
     if m.get("damage", 0) > 0: p.append("%d damage%s" % (m["damage"], " (foreign summon near: not counted)" if m.get("foreign_near") else ""))
     if m.get("move", 0) >= MOVE_MIN or m.get("leaping"): p.append("moved %d u%s" % (m.get("move", 0), " (leap)" if m.get("leaping") else ""))
@@ -547,10 +556,10 @@ class Job:
 
 
 class Auditor:
-    def __init__(self, names, n=1, retry=True, log_dir=None, seed=0, host_args=(), verbose=True, hyper=False, gadget=False, slot=0):
+    def __init__(self, names, n=1, retry=True, log_dir=None, seed=0, host_args=(), verbose=True, hyper=False, gadget=False, slot=0, attack=False):
         from nbpc import diversity as D
-        self.D = D; self.hyper = hyper; self.gadget = gadget; self.retry = retry; self.verbose = verbose
-        self.info = {b: expected_gadget(b, slot) if gadget else expected(b, hyper) for b in names}
+        self.D = D; self.hyper = hyper; self.gadget = gadget; self.attack = attack; self.retry = retry; self.verbose = verbose
+        self.info = {b: expected_gadget(b, slot) if gadget else expected(b, hyper, attack) for b in names}
         self.results = {b: [] for b in names}; self.lock = threading.Lock(); self.inflight = 0
         self.queue = collections.deque(Job(b) for b in names); self.seed = 93000000 + seed
         self.spots = find_spots(MAP)
@@ -591,10 +600,10 @@ class Auditor:
     def worker(self, idx):
         from nbpc.instance import Instance, InstanceDead
         inst = Instance(idx, tag=f"sa{os.getpid()}", log_dir=self.log_dir, bell=True, extra_args=self.host_args)
-        def boot():
-            t = time.time(); inst.start(); inst.wait_ready(); self.log(f"instance {idx} ready in {time.time() - t:.0f} s")
-        boot()
+        def boot():   # 1800 s: a loaded machine (other hosts on the same cores) boots well past 300 s
+            t = time.time(); inst.start(); inst.wait_ready(timeout=1800); self.log(f"instance {idx} ready in {time.time() - t:.0f} s")
         try:
+            boot()
             while True:
                 jobs = self.take()
                 if jobs is None:
@@ -668,6 +677,7 @@ class Auditor:
             d = float(np.clip(DIST_F[min(j.attempt, 1)] * inf["range"], DIST_MIN, DIST_MAX))
             if j.attempt and len(dirs) == 1: d = float(np.clip(d * 0.6, DIST_MIN, DIST_MAX))
             if inf["type"] == "ProjectileShield": d = SHIELD_D   # the target shoots from beyond the shield line
+            if self.attack and inf.get("throw"): d = float(min(inf["range"], DIST_MAX))   # fire 1 throws at full range
             tx, ty = x + dx * d, y + dy * d
             if inf.get("ring") and inf["range"] > inf["ring"]:   # no damage inside InnerRadius (Kaze): land past the target
                 d = float(np.clip(inf["range"] - inf["ring"], DIST_MIN, DIST_MAX))
@@ -684,7 +694,7 @@ class Auditor:
         stp(acts, 1)
         for _ in range(12): stp()
         sh = [s for _, s, _ in run]
-        if self.gadget: r = stp(ticks=1); gu0 = {s: int(r.gad_used[s]) for s in sh}   # no super: the gadget is fired below
+        if self.gadget or self.attack: r = stp(ticks=1); gu0 = {s: int(r.gad_used[s]) for s in sh}   # no super: fired below
         else: inst.setup(super_fill=sh, hyper_fill=sh if self.hyper else ()); r = stp(ticks=1)
         if self.hyper:   # --hyper: activate (fire 4), then the super below is the hypercharged one
             acts = dict(idle)
@@ -701,12 +711,12 @@ class Auditor:
             M[j] = dict(geo[j], spawned=True, filled=bool(p.super_max > 0 and p.super_charge >= p.super_max), super_max=int(p.super_max),
                         sc0=int(p.super_charge), sc_min=int(p.super_charge), hp0=int(p.hp), hp_max=int(p.hp), max_hp=int(p.max_hp),
                         pre_damaged=bool(p.hp < p.max_hp), x0=int(p.x), y0=int(p.y), tx0=int(q.x), ty0=int(q.y), thp0=int(q.hp), thp_min=int(q.hp),
-                        move=0, push=0, pull=0, leaping=False, projectiles={}, summons={}, areas={}, items={},
+                        ammo0=int(p.ammo), ammo_min=int(p.ammo), move=0, push=0, pull=0, leaping=False, projectiles={}, summons={}, areas={}, items={},
                         changed=False, data0=int(ch[0, 1]) if len(ch) else NIL, ulti0=int(ch[0, 15]) if len(ch) else NIL,
                         ulti_active=False, foreign_near=False, target_dead=False, s=s, t=t)
         m_x0, m_y0 = (lambda j: M[j]["x0"]), (lambda j: M[j]["y0"])
         acts = dict(idle)
-        for j, s, t in run: acts[s] = (-1, 3, geo[j]["aim"], geo[j]["super_dist"]) if self.gadget else (-1, 2, geo[j]["aim"], geo[j]["super_dist"])
+        for j, s, t in run: acts[s] = (-1, 1 if self.attack else 3 if self.gadget else 2, geo[j]["aim"], geo[j]["super_dist"])
         r = stp(acts, 1); n = 1
         if self.hyper:
             for j, s, t in run: M[j]["hyper_on"] = hy0[s][0] > 0
@@ -716,7 +726,7 @@ class Auditor:
                 m, p, q = M[j], r.pl[s], r.pl[t]
                 m["sc_min"] = min(m["sc_min"], int(p.super_charge)); m["hp_max"] = max(m["hp_max"], int(p.hp))
                 m["thp_min"] = min(m["thp_min"], int(q.hp) if q.alive else 0); m["target_dead"] |= bool(not q.alive or q.eliminated)
-                m["leaping"] |= bool(p.leaping)
+                m["leaping"] |= bool(p.leaping); m["ammo_min"] = min(m["ammo_min"], int(p.ammo))
                 if p.alive: m["move"] = max(m["move"], int(np.hypot(p.x - m["x0"], p.y - m["y0"])))
                 if q.alive and not q.eliminated:
                     if self.info[j.name].get("walk_in"):   # walking in: pushed back = away from the shooter's spot again
@@ -745,7 +755,7 @@ class Auditor:
                     elif own not in (s, t) and cid not in bid.values():   # someone else's summon near this pair
                         if min(np.hypot(row[3] - m["tx0"], row[4] - m["ty0"]), np.hypot(row[3] - m["x0"], row[4] - m["y0"])) < 2000:
                             m["foreign_near"] = True
-            if n >= max([WATCH] + [LONG_WATCH.get(j.name, 0) for j, _, _ in run]): break
+            if n >= max([WATCH] + [LONG_WATCH.get(j.name, 0) for j, _, _ in run if not self.attack]): break
             acts = dict(idle)
             for j, s, t in run:   # steered supers (FlyJump, Ww): once cast, the shooter walks to the target (16 joystick directions)
                 p, q = r.pl[s], r.pl[t]; inf = self.info[j.name]
@@ -770,6 +780,7 @@ class Auditor:
             m = M[j]
             m["consumed"] = bool(m["filled"] and m["sc_min"] < m["super_max"] / 2)
             if self.gadget: m["consumed"] = int(r.gad_used[s]) > gu0[s]; m["filled"] = True   # the host counted a use
+            if self.attack: m.update(consumed=m["ammo_min"] < m["ammo0"] or m.get("dd", 0) > 0, filled=True, attack=True)   # ammo spent
             m["damage"] = max(m["thp0"] - m["thp_min"], m.get("dd", 0))
             m["heal"] = m["hp_max"] - m["hp0"]
             m["pre_hit"] = m["max_hp"] - m["hp0"]                     # the target's shot before the super
@@ -1259,6 +1270,7 @@ def _check():
     assert best(at)["class"] == "works" and best([{"class": "crash"}, {"class": "not_fired"}])["class"] == "not_fired"
     d = describe(m(damage=1960, move=2100, areas=[{"name": "BullSlowArea", "radius": 300}], expect=["move"]), ["push"])
     assert "1960 damage" in d and "moved 2100" in d and "BullSlowArea r300" in d and d.endswith("missing: push"), d
+    assert describe(m(consumed=False, attack=True)) == "attack ammo not used"
     assert describe(m(consumed=False)) == "super charge not consumed" and "not testable" in describe(m(pre_damaged=False, expect=["heal"]))
     rows = [{"name": "BullDude", "display": "Bull", "kind": "Charge 1", "class": "partial", "what": d},
             {"name": "Shaman", "display": "Nita", "kind": "Attack: summon", "class": "works", "what": "summons: ShamanPet"},
@@ -1296,6 +1308,10 @@ def _check():
         assert hy["PowerLeveler"]["skill"] == "PowerLevelerUltiOvercharged" and not hy["PowerLeveler"]["own_skill"]
         assert hy["ShotgunGirl"]["skill"] == "ShotgunGirlUlti" and "hyper_cast" in hy["ShotgunGirl"]["expect"]
         assert "hyper_cast" not in inf["Jester"]["expect"]
+        at = {h: expected(h, attack=True) for h in ("ShotgunGirl", "TntDude", "Undertaker", "MechaDude", "Rock")}   # --attack: WeaponSkill
+        assert at["ShotgunGirl"]["skill"] == "ShotgunGirlWeapon" and at["ShotgunGirl"]["expect"] == ["projectile", "damage"], at["ShotgunGirl"]
+        assert at["TntDude"]["throw"] and not at["ShotgunGirl"]["throw"] and {"move", "damage"} <= set(at["Undertaker"]["expect"])
+        assert at["MechaDude"]["skill"] == _tables()["char"]["MechaDudeBig"]["WeaponSkill"] and at["Rock"]["expect"] == [], at["Rock"]
         assert hyper_owner("Sniper") == "Sniper" and hyper_owner("MechaDudeBig") == "MechaDude" and hyper_owner("GeishaTransformed") == "Geisha"
         assert hyper_owner("FutureGirl") is None and hyper_owner("KatanaKid") is None and hyper_owner("SuperNovaCactus") is None
         assert expected("FutureGirl", hyper=True).get("no_hyper") and "hyper_cast" not in expected("FutureGirl", hyper=True)["expect"]
@@ -1361,6 +1377,8 @@ def main():
                     "gadget (fire 3) in place of the super; writes super_audit_gadget.json / .md")
     ap.add_argument("--gadget-slot", type=int, default=0, help="--gadget: which of a brawler's implemented gadgets (0 = first, 1 = "
                     "second: Gene, Colt, ...); slot 1 writes super_audit_gadget_2.json / .md")
+    ap.add_argument("--attack", action="store_true", help="the main attacks: fire each brawler's attack (fire 1) in place of the "
+                    "super, expect its WeaponSkill's effects; writes super_audit_attack.json / .md")
     ap.add_argument("--hyper-desc", action="store_true", help="offline (no host): each hypercharge's game description as claims, "
                     "checked against the tables and the live --hyper / normal audits; writes super_audit_hyper_desc.json / .md")
     ap.add_argument("--live", default="", help="--hyper-desc: folder of super_audit.json / super_audit_hyper.json (default --out, "
@@ -1376,8 +1394,8 @@ def main():
     bad = [x for x in names if x not in _tables()["char"] or (a.gadget and x not in audit_gadgets(a.gadget_slot))]
     if bad: sys.exit(f"unknown brawlers{' (or no implemented gadget in that slot)' if a.gadget else ''}: {bad}")
     au = Auditor(names, n=a.n, retry=not a.no_retry, seed=a.seed, host_args=a.host_args.split(), hyper=a.hyper, gadget=a.gadget,
-                 slot=a.gadget_slot)
-    stem = ("super_audit_gadget" + ("_%d" % (a.gadget_slot + 1) if a.gadget_slot else "")) if a.gadget else "super_audit_hyper" if a.hyper else "super_audit"
+                 slot=a.gadget_slot, attack=a.attack)
+    stem = ("super_audit_gadget" + ("_%d" % (a.gadget_slot + 1) if a.gadget_slot else "")) if a.gadget else "super_audit_hyper" if a.hyper else "super_audit_attack" if a.attack else "super_audit"
     nf = sum(x in forms for x in names)
     au.log(f"{len(names) - nf} brawlers + {nf} forms, {a.n} instances, {au.npair} pairs per phase on {MAP}")
     res = au.run()
@@ -1387,12 +1405,13 @@ def main():
         old = {r["name"]: r for r in json.load(open(jp)).get("brawlers", [])}
         old.update({r["name"]: r for r in rows}); rows = [old[k] for k in sorted(old)]
     bt = [t / max(k, 1) for k, t in au.timing]
-    meta = {"map": MAP, "hyper": a.hyper, "watch_ticks": WATCH, "instances": a.n, "seconds": round(time.time() - au.t0),
+    meta = {"map": MAP, "hyper": a.hyper, "attack": a.attack, "watch_ticks": WATCH, "instances": a.n, "seconds": round(time.time() - au.t0),
             "battles": len(au.timing), "battle_s": round(float(sum(t for _, t in au.timing)), 2),
             "battle_s_per_brawler": round(float(np.mean(bt)), 3) if bt else None, "host_args": a.host_args, "time": time.strftime("%F %T")}
     json.dump({"meta": meta, "brawlers": rows}, open(jp, "w"), indent=1)
     md = markdown(rows, a.hyper)
     if a.gadget: md = md.replace("# Super audit", "# Gadget audit (gadget slot %d, fire 3 in place of the super)" % (a.gadget_slot + 1), 1)
+    if a.attack: md = md.replace("# Super audit", "# Main attack audit (fire 1 in place of the super; expected: the WeaponSkill row)", 1)
     open(os.path.join(a.out, stem + ".md"), "w").write(md + "\n")
     print(md)
     au.log(f"wrote {jp} and {stem}.md; {meta['battles']} battles in {meta['battle_s']} s ({meta['battle_s_per_brawler']} s per brawler-attempt)")
