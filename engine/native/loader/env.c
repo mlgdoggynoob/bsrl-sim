@@ -185,6 +185,7 @@ int hyper_tick_player(int i, void *p, uint8_t *ch, int alive); int hyper_damage(
 int hyper_speed(int i, void *p, uint8_t *ch); void hyper_publish(NbeResp *r, void **ps, int np);
 int hyper_pet_damage(void *attacker, int d); int hyper_pet_speed(uint8_t *ch);   /* hyper.c: pets of a hypercharged super */
 void hyper_pets_tick(void *sim); int hyper_spirit_damage(uint8_t *ch, int d);   /* hyper.c: Colette's spirit (overcharge_pet_charge) */
+void hyper_trail_tick(int i, uint8_t *ch);   /* hyper.c: Carl's flame trail (overcharge_whirlwind) */
 /* gear round (bsrl-sim issue #51): gear.c */
 extern int32_t g_div_gear[NBE_MAXP][2]; void gear_clear(void); void gear_reset_player(int i, void *cfg); void gear_install(void);
 int gear_damage(uint8_t *ach, int ai, uint8_t *vch, int vi, int d, int storm); int gear_speed(int i, uint8_t *ch, int base, int bush);
@@ -849,13 +850,26 @@ static void charge_land(void *sim, ChargeJob *j, uint8_t *ch, int x, int y) {
     }
     if (pl_) I32(pl_, 0x54) = charge0;
 }
+/* The character's charge-end event (char +0x2b0, a list of delegates; its argument +0x2a0 = the end area, +0x2a8 = the
+ * charging slot +0x6d8): libg fires it at 0xb3f078 (0xb4fef0) right after the end-of-charge area 0xb4fc0c makes from
+ * +0x538, a path the native charge does not take, so its subscribers never ran. They are character components, e.g.
+ * Damian's (Brawler_Gladiator, registered at 0xb923b0, handler 0xb9344c): while he is hypercharged it spawns his
+ * component's AreaEffects[1] (GladiatorOverchargedUltiAreaEffect: Dot 600 / s, Radius 1500, 4 s: "sets the ground on fire
+ * when he lands"), else AreaEffects[2] (the arena's vfx area), through the shipped helper 0xb35c40. */
+static long g_charge_end_events;
+static void charge_end_event(uint8_t *ch, uint8_t *a) {
+    PTR(ch, 0x2a0) = a; I32(ch, 0x2a8) = I32(ch, 0x6d8);
+    ((void (*)(void *, void *))B(0xb4fef0))(ch + 0x2b0, ch + 0x2a0);
+    if (g_charge_end_events++ < 10) LOG("[env] charge-end event: character %d, end area %d\n", I32(ch, 8), I32(PTR(a, 0x10), 0x20));
+}
 static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge flag dropped: landing / end of the dash */
     if (j->area1 && j->type != 2 && j->type != 16 && j->type != 22) PTR(ch, 0x550) = j->old550;
     if (I32(ch, 0x3c4) <= 0) return;
     int x = I32(ch, 0x38), y = I32(ch, 0x3c);
     if (j->type == 3) charge_break(sim, ch, x, y, CHARGE_LAND_WALL_R);
     if (j->area1 && j->type == 2) charge_area(sim, ch, j->area1, x, y);
-    if (j->area_end) charge_area(sim, ch, j->area_end, x, y);   /* AreaEffect2AtEndOfCharge: Bull's slow, Nori, Ollie, Damian */
+    if (j->area_end) { uint8_t *ea = charge_area(sim, ch, j->area_end, x, y);   /* AreaEffect2AtEndOfCharge: Bull's slow, Nori, Ollie, Damian */
+        if (ea && I32(ch, 0x3c4) > 0) charge_end_event(ch, ea); }
     if (j->type == 16) charge_land(sim, j, ch, x, y);
     /* a negative ChargePushback pulls (LuchadorUlti's OverchargedChargePushback -100, the hypercharged super the game passes
      * as the start's x5): every enemy the charge hit is drawn to the landing point by the game's knockback, which for a
@@ -1473,6 +1487,7 @@ static void hyper_tick(void *sim) {   /* hypercharge round: drain / end (hyper.c
         if (hyper_active(ps[i]) && hyper_tick_player(i, ps[i], c, c && I32(c, 0x3c4) > 0 && !waiting(i))) E.sent_valid[i] = 0;
         hyper_unswap(i, c);   /* the normal super back after a hypercharged one (hyper.c) */
         int alive = c && I32(c, 0x3c4) > 0 && !waiting(i);   /* gear round: the shield's regeneration; a bush change re-sends the move */
+        if (alive) hyper_trail_tick(i, c);
         if (gear_tick_player(i, c, alive, c && alive && gear_has(i, 0) ? bush_at(sim, I32(c, 0x38), I32(c, 0x3c)) : 0)) E.sent_valid[i] = 0;
     }
 }

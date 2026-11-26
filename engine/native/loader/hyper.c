@@ -26,9 +26,11 @@
  * per-attack projectile, the Attack handler's summon) take the overcharged list here (hyper_proj_site, hyper_summon_bl),
  * a hypercharged brawler's Heal area heals here (oc_heal_areas), and the card-value stub 0xb5281c answers the hypercharge
  * card's values for the types in CARD_TYPES (Frank's and Glowy's full circle, Gene's 3 hands, Gale's 2 wider waves, Barley's
- * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value). Three hypercharges whose card Type
+ * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value). Four hypercharges whose card Type
  * no libg call site asks for (code compiled out) are re-implemented: Lumi's side blasts (my_spawn), Griff's extra notes
- * (hyper_chain_extra, from spawnfix.c) and Colette's spirit (hyper_spirit_damage, from env.c's charge contact); Tick's dead
+ * (hyper_chain_extra, from spawnfix.c), Colette's spirit (hyper_spirit_damage, from env.c's charge contact) and Carl's
+ * flame trail (hyper_trail_tick, from env.c's hyper_tick); Damian's burning ground is libg's own component code, reached
+ * through env.c's charge_end_event; Tick's dead
  * head gets its summoner for its mine chain (hyper_dead_pet_owner, from superfix_items.c). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
  * MechaDudeBig) have a separate super instead (characters.csv OverchargedUltimateSkill): the game builds it as the brawler's
  * third skill instance (char+0x458[2], 0xb34560) but what picks it for a super cast is compiled out; here instances 1
@@ -408,7 +410,33 @@ int hyper_spirit_damage(uint8_t *ch, int d) {
         }
     return 0;
 }
-static void hyper_pets_clear(void) { memset(g_pet, 0, sizeof g_pet); memset(g_card, 0, sizeof g_card); memset(g_card_ch, 0, sizeof g_card_ch); }
+/* overcharge_whirlwind (Carl, Whirlwind_overcharge: "Carl gains a flame trail while using his Super. The trail burns on
+ * contact, causing damage over time"): no card-value reader asks for type 285 (no 0xb5281c / 0xc427d8 call with w1 #0x11d)
+ * and no battle code spawns the card's AreaEffect (the list card +0x78, count +0x84, filled by the loader at 0xaa33ec;
+ * WhirlwindUlti has no Overcharged* area): the trail is server code. Here, while a super that started hypercharged runs
+ * (skill instance 1: +8 its ActiveTime left in ms, 3000 at the start and 50 less per tick, or +0x30 running; +0x31 its
+ * overcharged latch), the card's AreaEffect (WhirlwindOverchargedAreaEffect, a
+ * StatusEffect area: WhirlwindUltiTrailFire on enemies, 4 s, Radius 270, superfix_status.c applies it) is spawned at Carl
+ * through the shipped helper 0xb35c40 (kind 2, as the skill execute passes) each time he is farther than its Radius from the
+ * last one, the spacing of the charge trails (env.c). [?] the server's spacing. */
+#define CT_WHIRLWIND 285
+#define AREA_STATUS 36   /* AreaEffectData +0x118: StatusEffect */
+static struct { int id, x, y; } g_trail[NBE_MAXP]; static long g_ntrail;
+void hyper_trail_tick(int i, uint8_t *ch) {
+    if (i < 0 || i >= NBE_MAXP || !ch || I32(ch, 0x3c4) <= 0 || !PTR(ch, 0x20)) return;
+    uint8_t *card = g_card_ch[i] == ch && I32(ch, 8) == g_card_id[i] ? g_card[i] : NULL;
+    if (!card || I32(card, 0x100) != CT_WHIRLWIND) return;
+    uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464);
+    if (!sk || n < 2 || !sk[1] || (I32(sk[1], 8) <= 0 && !U8(sk[1], 0x30)) || !(U8(sk[1], 0x31) & 1)) { g_trail[i].id = 0; return; }
+    void **al = PTR(card, 0x78); uint8_t *ad = al && I32(card, 0x84) > 0 ? al[0] : NULL;
+    if (!ad || I32(ad, 0x118) != AREA_STATUS) return;
+    int x = I32(ch, 0x38), y = I32(ch, 0x3c); long r = I32(ad, 0x12c), dx = x - g_trail[i].x, dy = y - g_trail[i].y;
+    if (g_trail[i].id == I32(ch, 8) && dx * dx + dy * dy <= r * r) return;
+    void *a = ((void *(*)(void *, void *, int, int, int, int, void *))B(0xb35c40))(ch, ad, x, y, 0, 2, NULL);
+    g_trail[i].id = I32(ch, 8); g_trail[i].x = x; g_trail[i].y = y;
+    if (a && g_ntrail++ < 10) LOG("[hyper] flame trail: player %d area %d at %d,%d (r %ld)\n", i, I32(ad, 0x20), x, y, r);
+}
+static void hyper_pets_clear(void) { memset(g_pet, 0, sizeof g_pet); memset(g_card, 0, sizeof g_card); memset(g_card_ch, 0, sizeof g_card_ch); memset(g_trail, 0, sizeof g_trail); }
 #define SNAP_MAX 1024
 static int snap_chars(uint8_t *pr, void **out) {   /* the sim's character objects now */
     void *sim = ((void *(*)(void *))B(0xb6a378))(pr), *h = sim ? PTR(sim, 0) : NULL;
