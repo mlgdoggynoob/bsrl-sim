@@ -57,7 +57,8 @@
  *   HEAL_NOW  heal_attached_and_self (Kit) and heal_damage_taken (Kenji) (HEAL): an instant heal through libg's heal 0xb41554.
  *   REPEAT  repeat_shot and spin_shoot rows with a CustomObject projectile other than Piper's Auto Aimer (published PROJECTILE;
  *         issue #54 redo from the game data, see the REPEAT / SPIN block): Dynamike (spin), Gene, Mico, Barley's potion
- *         (repeat). Darryl, Fang's popcorn, Bea and Amber run the same code but stay in g_masked: no hit seen live.
+ *         (repeat). Darryl, Fang's popcorn, Bea and Amber run the same code but stay in g_masked (see there: their
+ *         projectiles need more than a plain spawn).
  * Every other gadget publishes kind NONE (not usable): next_attack_change, summons / turrets, status buffs, shields, Nori's
  * fish heal (needs his fish count), the Charge skills (Brock's jump, Max's dash, ...), ... Each player gets GAD_USES uses per battle (unlimited by default, as in the live game since February 2025) and
  * the accessory's cooldown between uses. The accessory's Type parses to the int at +0x24 (0xb2731c:
@@ -539,11 +540,12 @@ static const int g_masked[] = {
     23000408,   /* Ninja_InvisibleArea: the invisibility area summon never spawns */
     23001247,   /* Gladiator_Amp: the healing item never spawns */
     23001255,   /* MagicalGirl_FlyArea: the area summon never spawns */
-    /* REPEAT rows that fire but showed no hit live (super_audit --gadget, both attempts): */
-    23000260,   /* BarrelBot_Spin: the shot aimed straight at the target 300 / 875 u away passes it, no damage */
-    23000440,   /* KickerDude_Mines: every kernel lands at CustomValue4 (1500 u); the game scatters them, the spread is not in the data */
-    23000312,   /* BeeSniper_ExtraBee: the circling bees never reach the target 450 u away; the curve is not checked */
-    23000488,   /* FireDude_FlameShield: the orbiting flames never reach the target 450 u away; the orbit is not checked */
+    /* REPEAT rows whose shots fly but do not work (super_audit --gadget, then a traced test build): */
+    23000260,   /* BarrelBot_Spin: each shot stops ~1280 u out and hits only there (600 on a target 1500 u away); enemies it
+                 * passes on the way (300, 875 u) take nothing */
+    23000440,   /* KickerDude_Mines: the kernels rise and vanish ~670 u out; the mines they leave never pop, no damage */
+    23000312,   /* BeeSniper_ExtraBee: the circling bees spawn at the map origin (0, 0) and stay there, not around Bea */
+    23000488,   /* FireDude_FlameShield: the orbiting flames spawn at the map origin (0, 0) and stay there, not around Amber */
 };
 static int masked(int card) { for (unsigned k = 0; k < sizeof g_masked / sizeof *g_masked; k++) if (g_masked[k] == card) return 1; return 0; }
 

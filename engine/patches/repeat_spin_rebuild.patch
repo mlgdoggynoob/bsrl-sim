@@ -3,7 +3,7 @@
 # range, count and target rules the game's TID text formats from the same columns (value codes 50/51/54 = attack damage x
 # CV1/CV2/CV3 %, 59 = Hitpoints x CV2 %). Dynamike, Gene, Mico and Barley's potion are on (Barkeep_HealPotion and
 # HookDude_Homing leave g_masked); Darryl, Fang's popcorn, Bea and Amber run the same code but join g_masked: their shots
-# flew and never hit the target in super_audit --gadget. env.c gains env_repel_zone (ZONE_REPEL) for Gale's Twister item
+# fly but do not work (Darryl's stop ~1280 u out, Fang's kernels never pop, Bea's / Amber's circle at the map origin). env.c gains env_repel_zone (ZONE_REPEL) for Gale's Twister item
 # (Blower_Stopper leaves g_masked): enemies within 300 u are knocked away every 10 ticks for 5 s (radius, push are guesses).
 diff --git a/native/loader/env.c b/native/loader/env.c
 index 909f6fe..2e0edd8 100644
@@ -40,10 +40,10 @@ index 909f6fe..2e0edd8 100644
                  int s; for (s = 0; s < z->nside && z->side_id[s] != cid; s++) {}
                  if (s == z->nside) { if (s >= 16) continue; z->nside++; z->side_id[s] = cid; z->side[s] = dist < z->r; z->next[s] = now; continue; }
 diff --git a/native/loader/gadget.c b/native/loader/gadget.c
-index c6e4318..f5119ac 100644
+index c6e4318..f697b69 100644
 --- a/native/loader/gadget.c
 +++ b/native/loader/gadget.c
-@@ -50,16 +50,16 @@
+@@ -50,16 +50,17 @@
   *         it. No enemy in range: refused (RequireEnemyInRange; no use, no cooldown). The push on hit is the projectile's own
   *         PushbackStrength, applied by libg's projectile hit (0xb7816c -> knockback 0xb49834). Not applied: ActiveTicks (5)
   *         and CustomValue2 (5).
@@ -62,13 +62,14 @@ index c6e4318..f5119ac 100644
 - * ...), ... Each player gets GAD_USES uses per battle (unlimited by default, as in the live game since February 2025) and
 + *   REPEAT  repeat_shot and spin_shoot rows with a CustomObject projectile other than Piper's Auto Aimer (published PROJECTILE;
 + *         issue #54 redo from the game data, see the REPEAT / SPIN block): Dynamike (spin), Gene, Mico, Barley's potion
-+ *         (repeat). Darryl, Fang's popcorn, Bea and Amber run the same code but stay in g_masked: no hit seen live.
++ *         (repeat). Darryl, Fang's popcorn, Bea and Amber run the same code but stay in g_masked (see there: their
++ *         projectiles need more than a plain spawn).
 + * Every other gadget publishes kind NONE (not usable): next_attack_change, summons / turrets, status buffs, shields, Nori's
 + * fish heal (needs his fish count), the Charge skills (Brock's jump, Max's dash, ...), ... Each player gets GAD_USES uses per battle (unlimited by default, as in the live game since February 2025) and
   * the accessory's cooldown between uses. The accessory's Type parses to the int at +0x24 (0xb2731c:
   * spin_shoot 3, spawn 9, repeat_shot 13, heal_attached_and_self 50, charge_ulti 56, heal_damage_taken 58).
   *
-@@ -85,6 +85,7 @@ int env_dash_start(uint8_t *ch, int tx, int ty, int speed);   /* env.c: -> path
+@@ -85,6 +86,7 @@ int env_dash_start(uint8_t *ch, int tx, int ty, int speed);   /* env.c: -> path
                             * used "an unlimited amount of times in a match" (Supercell release notes, Feb 2025); the
                             * cooldown is the accessory's (accessories.csv Cooldown, e.g. Bibi 400 ticks = the 20 s of the
                             * Feb 2026 notes). NB_GAD_USES=3 restores the old 3 uses per battle (issue #22). */
@@ -76,7 +77,7 @@ index c6e4318..f5119ac 100644
  #define TICKS_PER_S 20    /* 50 ms ticks */
  enum { ACC_PLAIN = 0, ACC_DASH = 2, ACC_SPIN = 3, ACC_HEAL = 8, ACC_SPAWN = 9, ACC_REPEAT = 13, ACC_HEAL_SELF = 50,
         ACC_CHARGE_ULTI = 56, ACC_HEAL_TAKEN = 58 };   /* the `mov w8, #N` per Type string in 0xb2731c (spin_shoot 3, ...) */   /* accessory +0x24 type enum (0xb2731c's Type parser; 0 = empty Type) */
-@@ -113,14 +114,17 @@ struct Gad {
+@@ -113,14 +115,17 @@ struct Gad {
      int area_id, area_at;                                  /* area: char id, tick to spawn at (0 = none pending) */
      void *area_data; int area_x, area_y, area_here;        /* the area to spawn (NULL = the accessory's AreaEffect) and where
                                                              * (area_here 1 = at the brawler when it spawns, 0 = area_x / y) */
@@ -96,7 +97,7 @@ index c6e4318..f5119ac 100644
  static long g_fired[8], g_areas, g_areas_lost;
  
  /* ---- DASH */
-@@ -347,47 +351,104 @@ static int auto_aim_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+@@ -347,47 +352,104 @@ static int auto_aim_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
      return shoot(sim, ch, custom_proj(g->ad), a, range, auto_aim_dmg(ch, g->ad));
  }
  
@@ -238,7 +239,7 @@ index c6e4318..f5119ac 100644
  
  /* ---- ITEM: spawn rows whose CustomObject is an items.csv row (Belle's ElectroTrap, Gale's WindWall): the item at the
   * brawler, through the item factory 0xb55684 as the shipped character-owned item at 0xb583cc calls it (1 item, at most
-@@ -397,6 +458,14 @@ static void spin_tick(void *sim, Gad *g, int tick) {
+@@ -397,6 +459,14 @@ static void spin_tick(void *sim, Gad *g, int tick) {
   * CustomValue1 (Gale): 0. Spawns of characters (turrets, clones) and areas
   * (meteor, air strike) need summon / targeting code the host does not have: not usable. */
  static long g_items;
@@ -253,7 +254,7 @@ index c6e4318..f5119ac 100644
  static int item_classify(void *ad, int type) { return type == ACC_SPAWN && custom_item(ad); }
  static int item_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
      (void)deg; (void)tick;
-@@ -406,6 +475,7 @@ static int item_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+@@ -406,6 +476,7 @@ static int item_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
      void *it = ((void *(*)(void *, int, int, int, int, int, int, int, int, int, void *, void *, void *, int))B(0xb55684))(
          custom_item(g->ad), I32(ch, 0x38), I32(ch, 0x3c), 1, 1, dmg, dmg, I32(ch, 0x80), I32(ch, 0x84), 0, ch, ch, sim, 6);
      if (it) g_items++;
@@ -261,7 +262,7 @@ index c6e4318..f5119ac 100644
      return it != NULL;
  }
  
-@@ -452,10 +522,7 @@ static const GadImpl g_impl[] = {
+@@ -452,10 +523,7 @@ static const GadImpl g_impl[] = {
      {NBE_GAD_PROJECTILE, shot_classify, shot_fire},
      {NBE_GAD_SPAWN, skill_area_classify, skill_area_fire},
      {NBE_GAD_PROJECTILE, auto_aim_classify, auto_aim_fire},
@@ -273,7 +274,7 @@ index c6e4318..f5119ac 100644
      {NBE_GAD_SPAWN, item_classify, item_fire},
      {NBE_GAD_SUPER, super_classify, super_fire},
      {NBE_GAD_HEAL, heal_now_classify, heal_now_fire},
-@@ -468,16 +535,15 @@ static const int g_masked[] = {
+@@ -468,16 +536,16 @@ static const int g_masked[] = {
      23000263,   /* BowDude_Totem: the projectile flies, the totem summon never spawns */
      23000311,   /* Speedy_Rewind: its projectile is a marker; the rewind (teleport back) is not implemented */
      23000351,   /* HammerDude_Pull: no pull, no damage on the target */
@@ -287,15 +288,16 @@ index c6e4318..f5119ac 100644
 -    23000407,   /* Blower_Stopper: the WindWall item spawns but pushes nobody: this libg has no WindWall rule (ItemData +0x54 = 36
 -                 * is tested only by client draw code at 0x5371fc; the item tick 0xb6b8e0 never knocks back), and the push's
 -                 * reach and strength are not in the data (items.csv Value 600 only) */
-+    /* REPEAT rows that fire but showed no hit live (super_audit --gadget, both attempts): */
-+    23000260,   /* BarrelBot_Spin: the shot aimed straight at the target 300 / 875 u away passes it, no damage */
-+    23000440,   /* KickerDude_Mines: every kernel lands at CustomValue4 (1500 u); the game scatters them, the spread is not in the data */
-+    23000312,   /* BeeSniper_ExtraBee: the circling bees never reach the target 450 u away; the curve is not checked */
-+    23000488,   /* FireDude_FlameShield: the orbiting flames never reach the target 450 u away; the orbit is not checked */
++    /* REPEAT rows whose shots fly but do not work (super_audit --gadget, then a traced test build): */
++    23000260,   /* BarrelBot_Spin: each shot stops ~1280 u out and hits only there (600 on a target 1500 u away); enemies it
++                 * passes on the way (300, 875 u) take nothing */
++    23000440,   /* KickerDude_Mines: the kernels rise and vanish ~670 u out; the mines they leave never pop, no damage */
++    23000312,   /* BeeSniper_ExtraBee: the circling bees spawn at the map origin (0, 0) and stay there, not around Bea */
++    23000488,   /* FireDude_FlameShield: the orbiting flames spawn at the map origin (0, 0) and stay there, not around Amber */
  };
  static int masked(int card) { for (unsigned k = 0; k < sizeof g_masked / sizeof *g_masked; k++) if (g_masked[k] == card) return 1; return 0; }
  
-@@ -520,9 +586,7 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
+@@ -520,9 +588,7 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
      for (int i = 0; i < NBE_MAXP; i++) {
          if (g_gad[i].hot_end) heal_tick(sim, &g_gad[i], tick);
          if (g_gad[i].area_at && tick >= g_gad[i].area_at) area_spawn(sim, &g_gad[i]);

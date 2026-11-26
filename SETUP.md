@@ -192,7 +192,8 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   360 / n; 4: Amber's |CustomValue3| flames around her; 5: Mico's |CustomValue3| at the nearest enemy in Range). Barley's
   potion and Gene's homing hand leave `g_masked`; so does Gale's tornado (the WindWall item plus `env.c`'s repel zone,
   `env_repel_zone`). Darryl's spin, Fang's popcorn, Bea's bees and Amber's flames run the same code but stay in
-  `g_masked`: `super_audit --gadget` saw their shots fly and never hit the target. `python -m desc_audit`, `python -m super_audit --gadget`.
+  `g_masked`: their shots fly but do not work (Darryl's stop ~1280 u out and hit only there, Fang's kernels never pop,
+  Bea's bees and Amber's flames spawn at the map origin instead of circling the brawler). `python -m desc_audit`, `python -m super_audit --gadget`.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
