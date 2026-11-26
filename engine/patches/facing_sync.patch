@@ -1,0 +1,51 @@
+# Brawlers turn to their aim / walking direction in rendered frames (ported from nirkt's nb_gpu_compositing 116e3c4,
+# 2026-11-10), a diff on top of the other patches (after bolt_overdrive.patch). Paths relative to engine/.
+# env.c facing_sync: copies each character's facing (+0x324) and walking direction (+0x320) from the simulation into the client's
+# copy (+0x9c / +0x98) around every client update; the offline snapshot never sends them, so every brawler faced the camera.
+# Rendering only. Off unless NBHOST_FACING=1 (policy_video.py sets it), so training hosts are unchanged. The state column
+# (snap2 r[9], +0x328) is left as it was.
+diff --git a/native/loader/env.c b/native/loader/env.c
+index 65e5fb9..8107b0d 100644
+--- a/native/loader/env.c
++++ b/native/loader/env.c
+@@ -2640,17 +2640,38 @@ static void cl_frame_start(uint8_t *app) {
+ typedef void (*fn_cupd)(void *, float, float);
+ static fn_cupd o_cupd; static struct { void *c; float t, dt; double fd; int pending; } g_defer;
+ static long g_cs_calls, g_cs_sub;
++/* Facing (nirkt nb_gpu_compositing 116e3c4, 2026-11-10): the simulation turns every character (character +0x324 = facing: the
++ * attack's aim while attacking, else the walking direction; +0x320 = the walking direction; degrees), but the snapshot encoder
++ * 0xb360ac sends them (fields 86 / 87) only under "changed" conditions that never hold offline, so the client's copy (decoder
++ * 0xb2de2c: +0x9c / +0x98) stays 0 and every brawler faces the camera. facing_sync copies them into the client's characters
++ * around every client update, as a full snapshot would. Rendering only (the simulation is not touched). NBHOST_FACING=1: on;
++ * default off here so training hosts stay as they were (work/video/policy_video.py turns it on). */
++int g_facing_sync = -1;
++static void facing_sync(void) {
++    if (g_facing_sync < 0) { const char *e = getenv("NBHOST_FACING"); g_facing_sync = e && atoi(e) == 1;
++        LOG("[env] facing sync %s\n", g_facing_sync ? "on" : "off"); }
++    if (!g_facing_sync || g_env_simonly || !E.sim) return;
++    void *cm = client_mgr(); if (!cm) return;
++    void **a = PTR(cm, 0); int n = I32(cm, 0xc);
++    if (n < 0 || n > 4096 || (n && !a)) return;
++    for (int i = 0; i < n; i++) {
++        uint8_t *co = a[i]; if (!co) continue;
++        uint8_t *so = obj_by_id(E.sim, I32(co, 8)); if (!so || VTOF(so) != VT_CHAR) continue;
++        I32(co, 0x9c) = I32(so, 0x324); I32(co, 0x98) = I32(so, 0x320);
++    }
++}
+ static void cs_run(void *c, float t, float dt, double fd) {   /* client_substeps: round(fd*60) updates of 1/60 s */
+     /* no cap below the frame's game time: with longer intro frames (--intro-tpf) a 64 cap dropped client time (T4) */
+     int n = (int)llround(fd * 60); if (n < 1) n = 1; if (n > 4096) n = 4096;
+     double sub = fd / n, t0 = t - fd, mfd = fd < 0.1 ? fd : 0.1, ds = dt > 0 ? (sub < 0.1 ? sub : 0.1) * (dt / mfd) : 0;
+     g_cs_calls++; g_cs_sub += n;
+-    for (int i = 1; i <= n; i++) o_cupd(c, (float)(t0 + i * sub), (float)ds);
++    for (int i = 1; i <= n; i++) { facing_sync(); o_cupd(c, (float)(t0 + i * sub), (float)ds); }
++    facing_sync();
+ }
+ void *g_client_obj;   /* spawnfix: the client battle object of the last update */
+ static void my_cupd(void *c, float t, float dt) {   /* 0xc210b0 client battle update (once per frame by BattleMode) */
+     g_client_obj = c;
+-    if (g_env_simonly || !(g_frame_dt > 0)) { o_cupd(c, t, dt); return; }
++    if (g_env_simonly || !(g_frame_dt > 0)) { facing_sync(); o_cupd(c, t, dt); facing_sync(); return; }
+     if (g_frame_plan > 0) { g_defer.c = c; g_defer.t = t; g_defer.dt = dt; g_defer.fd = g_frame_dt; g_defer.pending = 1; return; }   /* client_defer */
+     cs_run(c, t, dt, g_frame_dt);
+ }
