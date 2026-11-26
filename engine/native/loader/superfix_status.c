@@ -93,6 +93,7 @@ typedef struct {
 } St;
 #define ST_MAX 512            /* 10 brawlers + summons x a few effects; Draco re-adds a 2-tick status every tick */
 static St g_st[ST_MAX]; static int g_nst;
+static long g_ntrail, g_nmech;
 static long g_nstun, g_nmount, g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_ndmg, g_nheal, g_narea_hits, g_narea_apply;
 
 static int now_tick(void *obj) { uint8_t *sim = ((getp_t)B(0xb6a378))(obj); return sim ? I32(sim, 0x10) : -1; }
@@ -277,6 +278,28 @@ static void on_char_update(uint64_t *ctx) {
                 (*(void ***)c[i])[0x40 / 8] == (void *)B(0xba0048)) { ((void (*)(void *))B(0xba0048))(c[i]); g_nmount++; }
     }
     pierce_tick(ch);   /* Pierce's second wave (above) */
+    {   /* Two more component ticks libg never calls (hypercharge wave, issue #56):
+         * - AreaEffectTrail (component type 19, ctor 0xb85514, tick 0xb855ac = vtable 0x1209568 +0x40; only
+         *   OverchargedRedirecterSnakePet has one in its CharacterData: "the snakes from those jars leave a poison trail",
+         *   TID_REDIRECTER_OVERCHARGE_DESC): every Values[0] (10) ticks it spawns its AreaEffects[0]
+         *   (RedirecterOverchargedSnakePetPoisonTrailArea, a StatusEffect area: above) where the character stood (0xb2adcc +
+         *   start 0xb29494). Run each tick.
+         * - Brawler_MechaDude (type 28, ctor 0xb94f94, tick 0xb95154): the ctor sets +76 for a mech built after tick 20 (Meg's
+         *   super); the tick's mech branch 0xb95214 then spawns, once, AreaEffects[0] (MechaDudeUltiSpawnExplosion) or, for
+         *   a hypercharged mech (isOvercharged), [1] and [2] (MechaDudeUltiSpawnExplosionHyperCharged and the ...StatusArea
+         *   slow: "enemies hit when Meg deploys the Mecha are slowed", TID_MECHA_DUDE_OVERCHARGE_DESC). Only that branch is
+         *   run (the tick's other branch, small Meg's charge over time, stays off as before). */
+        int nc = I32(ch, 0xa6c); void **c = PTR(ch, 0xa60);
+        for (int i = 0; c && i < nc && i < 64 && I32(ch, 0x3c4) > 0; i++) {
+            if (!c[i] || PTR(c[i], 8) != ch) continue;
+            void *tk = (*(void ***)c[i])[0x40 / 8];
+            if (I32(c[i], 0x10) == 19 && tk == (void *)B(0xb855ac)) { ((void (*)(void *))B(0xb855ac))(c[i]); g_ntrail++; }
+            else if (I32(c[i], 0x10) == 28 && tk == (void *)B(0xb95154) && U8(c[i], 76)) {
+                ((void (*)(void *))B(0xb95214))(c[i]); g_nmech++;
+                if (g_superfix_dbg) LOG("[superfix] mech deploy areas: ch %d tick %d\n", I32(ch, 8), t);
+            }
+        }
+    }
     int shield = 0, invis = 0, any = 0, cc = 0, lose = 0, stasis = 0, silence = 0, full = 0, taunt = 0, fear = 0;
     for (int i = 0; i < g_nst; i++) {
         St *s = &g_st[i];
@@ -727,8 +750,9 @@ void superfix_status_status(void) {
     LOG("[superfix] status: added %ld, refreshed %ld, full %ld, ended %ld, removed %ld, live %d; damage %ld, heal %ld; "
         "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
         "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld "
-        "(same-area skips %ld), spin bullets %ld, charge-end cancels %ld; Pierce marked shots %ld, second-wave shots %ld (dropped %ld)\n",
+        "(same-area skips %ld), spin bullets %ld, charge-end cancels %ld; Pierce marked shots %ld, second-wave shots %ld (dropped %ld); "
+        "trail ticks %ld, mech deploys %ld\n",
         g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal, g_narea_apply, g_narea_hits, g_nmount, g_nstun,
         g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nimm_skip, g_nspin, g_ncharge_end,
-        g_npierce_mark, g_npierce_wave2, g_npierce_drop);
+        g_npierce_mark, g_npierce_wave2, g_npierce_drop, g_ntrail, g_nmech);
 }

@@ -2069,19 +2069,21 @@ static void emulate_client_flags(void *sim, int32_t *a) {
 /* issue #19: how far an invisible brawler is seen from (0 = not invisible), per player index, for the encoder. The status
  * aggregate char +0x97c (superfix_status.c: 1 normal / 2 attacks_dont_reveal, 3 full) and Leon's super (a skill with
  * BehaviorType Invisibility, SkillData +0x1a8 == 3, while its instance runs, +8 > 0; BreakInvisibilityOnAttack: an attack
- * of his (weapon instance running) ends it until the super is over). */
+ * of his (weapon instance running) ends it until the super is over; not for a super cast hypercharged, the latch +0x31 that
+ * 0xb82d34 sets: "Leon stays invisible while attacking his enemies", TID_LEON_OVERCHARGE_DESC; NinjaUlti has no Overcharged
+ * column and the card is overcharge_default, so no libg code carries it). */
 #define INVIS_SEE 1200          /* NinjaUlti SeeInvisibilityDistance; the status rows name no distance */
 #define INVIS_FULL (1 << 28)    /* "full": not seen at any distance */
 static int g_inv_broken[NBE_MAXP];
 static int invis_reach(uint8_t *ch, int pi) {
-    int lvl = I32(ch, 0x97c), skill = 0;
+    int lvl = I32(ch, 0x97c), skill = 0, inv_oc = 0;   /* inv_oc: the super was cast hypercharged (skill instance +0x31 latch) */
     uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464);
     for (int k = 1; sk && k < n && k < 4; k++) if (sk[k] && I32(sk[k], 8) > 0) {
         uint8_t *d = ((uint8_t *(*)(void *, int))B(0xb7adfc))(sk[k], 0);
-        if (d && I32(d, 0x1a8) == 3) skill = 1;
+        if (d && I32(d, 0x1a8) == 3) { skill = 1; inv_oc |= U8(sk[k], 0x31) & 1; }
     }
     if (!skill) g_inv_broken[pi] = 0;
-    else if (sk && n > 0 && sk[0] && I32(sk[0], 8) > 0) g_inv_broken[pi] = 1;
+    else if (sk && n > 0 && sk[0] && I32(sk[0], 8) > 0 && !inv_oc) g_inv_broken[pi] = 1;
     if (skill && g_inv_broken[pi]) skill = 0;
     return lvl >= 3 ? INVIS_FULL : (lvl > 0 || skill) ? INVIS_SEE : 0;
 }

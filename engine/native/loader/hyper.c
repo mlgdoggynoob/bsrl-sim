@@ -26,7 +26,8 @@
  * per-attack projectile, the Attack handler's summon) take the overcharged list here (hyper_proj_site, hyper_summon_bl),
  * a hypercharged brawler's Heal area heals here (oc_heal_areas), and the card-value stub 0xb5281c answers the hypercharge
  * card's values for the types in CARD_TYPES (Frank's and Glowy's full circle, Gene's 3 hands, Gale's 2 wider waves, Barley's
- * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value). Hypercharges whose card Type
+ * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value); the card-object stub 0xb39704 answers Melodie's card at
+ * its one overcharge_axe_juggler call site (hyper_axe_card: her hypercharge notes). Hypercharges whose card Type
  * no libg call site asks for (code compiled out) are re-implemented: Lumi's side blasts (my_spawn), Griff's extra notes
  * (hyper_chain_extra, from spawnfix.c), Colette's spirit (hyper_spirit_damage, from env.c's charge contact), Carl's
  * flame trail (hyper_trail_tick, from env.c's hyper_tick) and Gus's spirits (hyper_proj_end / hyper_spirits_tick);
@@ -290,6 +291,7 @@ static void oc_heal_areas(uint8_t *ch) {
                               * fires NumBulletsInOneAttack + Value2 flames (Attack handler 0xb7e3dc: 4 -> 8 at Spread 90) and
                               * reaches Value more tiles (the range bonus 0xc6e4d4 -> 0xc6e958) */
 #define CT_STALKER 319      /* overcharge_stalker */
+#define CT_AXE_JUGGLER 266   /* overcharge_axe_juggler (hyper_axe_card) */
 #define CT_DIGGER 307        /* overcharge_digger (Moe 10 / 300 / 100 / 5, "Driller has longer range and lasts for longer"):
                               * the dive's ChargeSpeed + Value3 % (skill fire 0xb7bc14: 2500 -> 5000), its range bonus + Value
                               * tiles (0xc6e754), and the Driller's (UniqueProperty 32) attack Value4 more tiles (0xc6e998:
@@ -681,6 +683,22 @@ void hyper_spirits_tick(void *sim) {   /* after every tick: the spirits' hits */
         g_spirit[k].pr = I32(pr, 0x90) ? NULL : g_spirit[k].pr;   /* finished: its slot is free again */
     }
 }
+/* overcharge_axe_juggler (Melodie, AxeJuggler_overcharge 3 / 120: "Melodie adds up to <VALUE1> Hypercharge notes using Catchy
+ * Chorus. Hypercharge notes do <VALUE2> damage"): the skill fire's charge start (0xb7c378..0xb7c4a4) asks, for a hypercharged
+ * character, the card object of that type through 0xb39704(character, 266) — in this build a bare `mov x0, xzr; ret` (17 call
+ * sites, each for one card type; only 0xb7c388 asks 266). With a card it spawns the skill's OverchargedChainProjectile
+ * (AxeJugglerOverchargedProjectile2, the orbiting note) through 0xb78c58(character, Value1 notes, data, character, damage
+ * from Value2 (0xb565a8 level scale + 0xb4b660 percent), Value2, 10, ...). hyper_axe_card answers that one call site
+ * (hook_bl) with the card of the hypercharged brawler that holds it, NULL otherwise. */
+static void *hyper_axe_card(uint8_t *ch, int type) {
+    if (!ch || type != CT_AXE_JUGGLER || !my_is_oc(ch)) return NULL;
+    for (int i = 0; i < NBE_MAXP; i++)
+        if (g_card_ch[i] == ch && I32(ch, 8) == g_card_id[i] && g_card[i] && I32(g_card[i], 0x100) == type) {
+            static int nlog; if (nlog++ < 10) LOG("[hyper] card object: player %d type %d (%d notes, %d)\n", i, type, card_value(g_card[i], 1), card_value(g_card[i], 2));
+            return g_card[i];
+        }
+    return NULL;
+}
 
 void hyper_install(void) {
     hook_enter(g_libg, 0xb709e4, on_travel);   /* homing projectiles (above) */
@@ -700,6 +718,9 @@ void hyper_install(void) {
     if (*(uint32_t *)B(0xb4b978) == 0xf9402f29) {   /* ldr x9, [x25, #88] */
         g_hyper_proj_next = (uint64_t)B(0xb4b97c); hook_replace(g_libg, 0xb4b978, (void *)hyper_proj_site);
     } else LOG("[hyper] 0xb4b978: unexpected bytes, AttackPattern 11 keeps the normal projectiles\n");
+    uint32_t *ax = (uint32_t *)B(0xb7c388);   /* bl 0xb39704 (Melodie's card, above) */
+    if ((*ax & 0xfc000000) == 0x94000000 && (uint8_t *)ax + (((int32_t)(*ax << 6)) >> 4) == B(0xb39704)) hook_bl(g_libg, 0xb7c388, (void *)hyper_axe_card);
+    else LOG("[hyper] 0xb7c388: unexpected bytes, Melodie's hypercharge notes off\n");
     static const uint32_t sbl[] = {0xb7eac0, 0xb7eadc, 0xb7eaf0, 0xb7eb04, 0xb7eb1c, 0xb7ec54, 0xb7eda8, 0xb7eef4};
     for (unsigned k = 0; k < sizeof sbl / sizeof *sbl; k++) {
         uint32_t *c = (uint32_t *)B(sbl[k]);   /* mov x0, x21 ; mov w1, wzr ; bl 0xb0ddf8 */
