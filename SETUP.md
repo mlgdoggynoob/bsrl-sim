@@ -194,6 +194,15 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   `env_repel_zone`). Darryl's spin, Fang's popcorn, Bea's bees and Amber's flames run the same code but stay in
   `g_masked`: their shots fly but do not work (Darryl's stop ~1280 u out and hit only there, Fang's kernels never pop,
   Bea's bees and Amber's flames spawn at the map origin instead of circling the brawler). `python -m desc_audit`, `python -m super_audit --gadget`.
+- `split_extras.patch` (issue #6, a diff on top of `hyper_desc_match.patch`): the rest of R-T's split. `env.c` `split_link`: when his
+  legs reach 0 HP in any damage path, his head dies too, hit by the same attacker through the damage root without the
+  damage modifiers (one kill credit, counted on the head's hit and never on the legs; the attacker's super charge is put
+  back; a storm death of the legs is the head's storm elimination); a knocked-out head (duo / trio) takes his legs with
+  him; `split_gas`: the storm hits the legs, 20 % of their max HP a second [?]. `superfix_moves.c`: the split head walks
+  over water (canWalkOverWater 0xb51200; `env.c` raycasts his joystick target past water). A rejoin onto a blocked spot, a
+  head left on water after his legs are gone, and a teammate respawning on a split head's water spot are moved to the
+  nearest walkable spot (100 u rings up to 900 u [?], then the nearest walkable tile of the map). `python -m charge_check`
+  scene 6 and its storm battle.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

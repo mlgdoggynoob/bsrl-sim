@@ -1,5 +1,6 @@
 """Live check of the supers' extras (issues #5 / #6) that super_audit cannot see: wall breaking, Damian's arena edge,
-Berry's paint, Meg's eject and R-T's split. One boot, one battle on super_audit.MAP (storm off, every native AI off), six scenes in a row:
+Berry's paint, Meg's eject and R-T's split. One boot, one battle on super_audit.MAP (storm off, every native AI off), six scenes in a row,
+then a second battle (storm on) for R-T's legs in the storm:
   1. Bull charges along a lane whose fourth tile is a destructible wall: the wall tile opens (live map, F_MAP) and Bull
      ends past it;
   2. El Primo lands on an open tile next to a destructible wall: that wall tile opens;
@@ -12,7 +13,19 @@ Berry's paint, Meg's eject and R-T's split. One boot, one battle on super_audit.
      HP with an empty super, not out, and her own super then builds the mech again;
   6. R-T splits: his head walks faster than whole, one attack hits an enemy next to the head and one next to the legs
      (Eat Static from both), and his second super, after a Shelly super hurt him, puts him where his legs stood, removes
-     them and heals him by the legs' card Value3 (1000).
+     them and heals him by the legs' card Value3 (1000). At the map's water band (find_water; none is a failure) whole R-T
+     stops at the shore and his split head walks onto the water; a super rejoins (no legs left). Back on his spot he splits again, walks away, and three Shelly supers
+     break the legs: his head dies with them (the host logs the linked death), his player is out (solo), one kill is
+     credited for both, and the killer's super charge rose no more than the legs' damage charges (the head's hit gave none;
+     weak: with env.c's charge restore taken out the rise is 0 too, the root charges nothing for a hit without a projectile);
+     then (second battle) he splits on the spot nearest the map edge, his head is put deep inside and a forced storm ring
+     covers only the legs: they lose the same 10-25 % of their split HP every storm second, then his head dies with them,
+     he is out by the storm (elim_gas) and nobody gets a kill.
+Not checked live: the blocked rejoin (superfix_moves.c split_land: the legs' spot is not walkable for him), because R-T split
+on water puts his legs on the nearest open spot (libg's summon placement; whole R-T placed on water stays there, his legs
+do not), and the legs cannot walk onto water; a head that survives his legs (a full block) on water is put on land
+(head_land); a teammate respawning on a split head's water spot goes to land (env.c respawn_tick): those need a duo or a
+timed spawn protection.
 Wall lanes come from the map reference (tiles.csv BlocksMovement / IsDestructible; spawn digits count as blocked).
 python -m charge_check            python -m charge_check --check   (no host: the lane finder and the judging rules)"""
 import argparse, sys, time
@@ -30,6 +43,12 @@ REMECH_TRIES = 10                          # Meg: super fills and fires at most,
 SPLIT_FAST = 1.08                          # R-T: split walk / whole walk at least this (+100 of 720 speed = 1.14)
 SPLIT_HEAL_MIN = 900                       # ... and the rejoin heals at least this (SplitterLegs_ulti Value3 1000)
 SPLIT_AT = 100                             # ... and puts him within this of where his legs stood
+WATER_RUN = 3                              # R-T: water tiles in a row east of the shore tile (20 ticks split ~ 870 u = 2.9 tiles)
+WATER_IN = 300                             # ... the split head ends at least this far past the shore line,
+WATER_WHOLE_MAX = 50                       # ... whole R-T at most this (his half width can overlap the shore line, his centre not)
+STORM_SECS = 15                            # R-T's legs in the storm: seconds watched (7800 HP at ~1100 a second ~ 8 s)
+STORM_PCT = (10, 25)                       # ... a storm second takes this % of the legs' HP at the split (20 % of their max HP)
+SPLIT_AWAY_STEPS = 20                      # R-T: steps (2 ticks) the head walks away before the Shellys break his legs
 NAMES = ["BullDude", "Luchador", "Gladiator", "Painter", "Crow", "MechaDude", "Splitter"]   # shooters 0-6; Crow hurts Berry
 TARGET = SA.FILLER
 
@@ -131,6 +150,57 @@ def judge_split(split, d_whole, d_split, hits, rejoin):
     return bad
 
 
+def find_water(rows):
+    """R-T: (x, y) of an open shore tile (raw map rows: '.' open, 'W' water) with an open tile west of it and WATER_RUN
+    water tiles east of it; None when the map has none"""
+    for y, r in enumerate(rows):
+        for x in range(1, len(r) - WATER_RUN):
+            if r[x - 1] == "." and r[x] == "." and r[x + 1:x + 1 + WATER_RUN] == "W" * WATER_RUN: return x, y
+    return None
+
+
+def judge_water(water):
+    """water: None (no water band found: a failure, SA.MAP has one) or (whole R-T's end, the split head's end, units past the
+    shore line (negative: on land), legs left after the rejoin) -> [problems]"""
+    if water is None: return ["no water band on the map: water walk not checked"]
+    bad = []
+    if water[0] > WATER_WHOLE_MAX: bad.append("whole R-T walked %.0f u onto the water" % water[0])
+    if water[1] < WATER_IN: bad.append("the split head got %.0f u past the shore (want >= %d)" % (water[1], WATER_IN))
+    if water[2]: bad.append("the rejoin after the water walk left the legs")
+    return bad
+
+
+def judge_linked(linked):
+    """linked: (the legs broke and no shell hit the head, R-T alive, eliminated, kills credited to anyone minus the other
+    players who died meanwhile, linked deaths in the host log, the killer's super charge rise on that step, the rise the
+    legs' damage allows) after three Shelly supers on his legs -> [problems]"""
+    broke, alive, out, kills, logged, rise, allowed = linked
+    if not broke: return ["the Shelly supers did not break the legs alone"]
+    bad = [] if logged == 1 else [f"{logged} linked deaths in the host log (want 1)"]
+    if alive or not out: return bad + ["R-T is not out after his legs broke"]
+    if kills != 1: bad.append(f"{kills} kills credited for one R-T (legs + head)")
+    if rise > allowed: bad.append(f"the killer's super charge rose {rise} (the legs' damage allows {allowed}): the head's hit charged it")
+    return bad
+
+
+def judge_storm(storm):
+    """storm: (the legs' HP at the split, their HP at each storm second until gone, R-T alive, eliminated, by the storm,
+    kills credited) -> [problems]"""
+    hp0, hps, alive, out, egas, kills = storm
+    drops = [a - b for a, b in zip(hps, hps[1:]) if b > 0 and a - b > 0][1:]   # whole storm seconds the legs lived through (the
+                                                                             # first can start mid-second)
+    bad = []
+    if len(drops) < 2: bad.append("the storm took the legs' HP in %d seconds only" % len(drops))
+    elif max(drops) > min(drops) * 1.05: bad.append("the legs' storm seconds differ: %s" % drops)
+    elif not STORM_PCT[0] <= 100 * min(drops) / hp0 <= STORM_PCT[1]:
+        bad.append("a storm second took %.0f %% of the legs' HP (want %d-%d)" % ((100 * min(drops) / hp0,) + STORM_PCT))
+    if hps and hps[-1] > 0: bad.append("the legs lived through the storm")
+    if alive or not out: bad.append("R-T is not out after his legs died in the storm")
+    elif not egas: bad.append("R-T's elimination is not the storm's")
+    if kills: bad.append(f"{kills} kills credited for R-T's storm death")
+    return bad
+
+
 def judge_paint(target_loss, heal, pre_damaged):
     bad = []
     if target_loss <= 0: bad.append("the target lost no HP standing in the paint after the charge")
@@ -144,10 +214,11 @@ class Run:
         from nbpc import proto as P
         self.inst, self.P = inst, P
         self.idle = {i: (-1, 0, 0.0, 0.0) for i in range(10)}
+        self.storm = None   # forced storm ring (R-T's storm part)
 
     def step(self, acts=None, ticks=2, map_=False):
         P = self.P; a = dict(self.idle); a.update(acts or {})
-        return self.inst.step(actions=a, ticks=ticks, flags=P.F_STATE | (P.F_MAP if map_ else 0), native_mask=0)
+        return self.inst.step(actions=a, ticks=ticks, flags=P.F_STATE | (P.F_MAP if map_ else 0), native_mask=0, storm=self.storm)
 
     def place(self, pos):
         self.inst.setup(positions={i: (int(x), int(y)) for i, (x, y) in pos.items()}, ai_off=list(range(10)), unprotect=list(range(10)))
@@ -175,6 +246,12 @@ def _parts(inst, i):
     """{data name: (x, y, hp)} of player i's living characters (R-T's head and legs)"""
     st = SA.parse_state(inst.state_bytes())
     return {SA.data_name(int(x[1])): (int(x[3]), int(x[4]), int(x[6])) for x in st["ch"] if int(x[2]) == i and int(x[6]) > 0}
+
+
+def _linked_logs(inst):
+    """R-T's linked deaths so far: the host log's "rt legs down" lines (env.c split_link, the first 100 a run)"""
+    try: return sum("rt legs down" in l for l in open(inst.log_path, errors="replace"))
+    except (OSError, AttributeError, TypeError): return -1
 
 
 def main():
@@ -294,7 +371,88 @@ def main():
         else: rejoin = (1e9, True, 0, True)
         print("charge_check: R-T walk %.0f whole, %.0f split; Eat Static head %d legs %d; rejoin %.0f u from the legs, legs left %d, "
               "heal %d" % (d_whole, d_split, hits[0], hits[1], rejoin[0], rejoin[1], rejoin[2]), flush=True)
-        fails["R-T split"] = judge_split(legs0 is not None, d_whole, d_split, hits, rejoin)
+        # water: whole and split walks east from a shore tile, then a super rejoins
+        water, wat = None, find_water(D.map_reference(SA.MAP)[1])
+        if legs0 and wat:
+            wx, wy = centre(*wat); shore = (wat[0] + 1) * TILE
+            def east():
+                for _ in range(10): R.step({rt: (0, 0, 0.0, 0.0)})
+                return _parts(inst, rt)["Splitter"][0] - shore
+            R.place({rt: (wx, wy)}); e_whole = east()
+            R.place({rt: (wx, wy)}); R.fire(rt, 180.0, 0.5, watch=10)
+            e_split = east() if "SplitterLegs" in _parts(inst, rt) else -1e9
+            if "SplitterLegs" in _parts(inst, rt): R.fire(rt, 0.0, 0.5, watch=6)   # rejoin: back on the shore
+            water = (float(e_whole), float(e_split), "SplitterLegs" in _parts(inst, rt))
+            print("charge_check: R-T at the water (tile %s): whole %.0f u past the shore, split head %.0f u; after the rejoin legs %s"
+                  % ((wat,) + water), flush=True)
+        elif not wat: print("charge_check: no water band on %s" % SA.MAP, flush=True)
+        # linked death: split on his spot, walk away, three Shellys beside the legs super them
+        linked = (False, True, False, 0, 0, 0, 0)
+        if legs0:
+            ex, ey = -dy, dx   # the Shellys stand beside the legs, square to the head's way: their shells pass away from him
+            R.place({rt: (sx, sy)}); R.fire(rt, (aim + 180) % 360, 0.5, watch=10)
+            L = _parts(inst, rt).get("SplitterLegs")
+            if L:
+                for _ in range(SPLIT_AWAY_STEPS): r = R.step({rt: (fwd, 0, 0.0, 0.0)})
+                hp_head = r.pl[rt].hp   # the head's HP from here on: a drop while the legs stand is a shell on him
+                # 350 u off the legs, 400 u apart (150 u apart their supers hit each other), each aiming at the legs
+                pos = {q: (L[0] + ex * 350 + (k - 1) * dx * 400, L[1] + ey * 350 + (k - 1) * dy * 400) for k, q in enumerate((7, 8, 9))}
+                r = R.place(pos); at = {q: float(np.degrees(np.arctan2(L[1] - y, L[0] - x))) for q, (x, y) in pos.items()}
+                up0 = [q for q in range(10) if q != rt and r.pl[q].hp > 0]   # by HP: a target out earlier stands again after R.place
+                kills = 0; kl = lambda r: sum(int(p.kills) for p in r.pl)   # NbePlayer.kills: per step
+                head_hit = False; legs_up = lambda: "SplitterLegs" in _parts(inst, rt)
+                logs0 = _linked_logs(inst)
+                rate = [0, 0]   # the Shellys' super charge rise and damage dealt on steps without a kill (charge per damage)
+                rise = allowed = 0; hp_prev = r.pl[rt].hp
+                def watch(r0, r):
+                    nonlocal kills, rise, allowed, hp_prev
+                    k = [q for q in (7, 8, 9) if r.pl[q].kills]; kills += kl(r)
+                    for q in (7, 8, 9):
+                        dc, dd = int(r.pl[q].super_charge) - int(r0.pl[q].super_charge), int(r.pl[q].damage_dealt)
+                        if q in k:   # the kill step: the head's HP (his linked hit) is in dealt, not in what may charge
+                            rise = dc; allowed = int(np.ceil(max(dd - hp_prev, 0) * rate[0] / max(rate[1], 1) * 1.25)) + 2
+                        elif dc >= 0 and dd > 0: rate[0] += dc; rate[1] += dd
+                    hp_prev = r.pl[rt].hp
+                for _ in range(EJECT_ROUNDS):
+                    inst.setup(super_fill=[7, 8, 9]); r0 = R.step(ticks=1); kills += kl(r0)
+                    r = R.step({q: (-1, 2, at[q], 0.15) for q in (7, 8, 9)}, 1); kills += kl(r)
+                    for _ in range(6):
+                        r0, r = r, R.step(); watch(r0, r); up = legs_up()
+                        head_hit |= up and r.pl[rt].hp < hp_head   # a shell on the head itself: not a linked death
+                        if not up or not r.pl[rt].alive: break
+                    if not up or not r.pl[rt].alive: break
+                for _ in range(8): r0, r = r, R.step(); watch(r0, r)   # shells in flight land, a death shows a step late
+                died = sum(r.pl[q].hp <= 0 for q in up0)
+                linked = (not legs_up() and not head_hit, bool(r.pl[rt].alive), bool(r.pl[rt].eliminated), kills - died,
+                          _linked_logs(inst) - logs0, rise, allowed)
+                print("charge_check: R-T legs broken by Shelly supers: broke %d (head hit directly %d), alive %d, out %d, kills credited %d"
+                      " (all %d, other deaths %d; Shellys 7-9 hp %s); linked deaths logged %d; killer's super charge +%d (allowed %d)"
+                      % ((linked[0], head_hit) + linked[1:4] + (kills, died, [int(r.pl[q].hp) for q in (7, 8, 9)]) + linked[4:]), flush=True)
+            else: print("charge_check: R-T split again: no legs", flush=True)
+        fails["R-T split"] = judge_split(legs0 is not None, d_whole, d_split, hits, rejoin) + judge_water(water) + judge_linked(linked)
+
+        # 6b. R-T's legs in the storm (second battle, storm on): split on the spot nearest the map edge, the head deep inside,
+        # a forced storm ring over the legs only
+        inst.reset(93600000 + a.seed, gas=1, flags=0, native_mask=0, obs_mask=0, div=D.make_div(location=SA.MAP, chr=names))
+        R.step(ticks=10); H, W = g.shape
+        marg = lambda x, y: min(int(x // TILE), int(y // TILE), W - 1 - int(x // TILE), H - 1 - int(y // TILE))
+        order = sorted(range(10), key=lambda k: marg(*spots[k][:2])); edge, deep = spots[order[0]][:2], spots[order[-1]][:2]
+        pos = {q: (deep[0] + (k % 4 - 1.5) * 200, deep[1] + (k // 4) * 200 + 600) for k, q in enumerate(q for q in range(10) if q != rt)}
+        pos[rt] = edge; R.place(pos); R.fire(rt, 0.0, 0.5, watch=10)
+        L = _parts(inst, rt).get("SplitterLegs"); storm = None; kl = lambda r: sum(int(p.kills) for p in r.pl)
+        if L:
+            R.place({rt: deep}); R.storm = marg(L[0], L[1]) + 1   # the ring covers tiles with a margin below it
+            hps, kills = [_parts(inst, rt).get("SplitterLegs", (0, 0, 0))[2]], 0
+            for _ in range(STORM_SECS):
+                for _ in range(10): r = R.step(); kills += kl(r)
+                hps.append(_parts(inst, rt).get("SplitterLegs", (0, 0, 0))[2])
+                if not hps[-1]: break
+            for _ in range(4): r = R.step(); kills += kl(r)   # the head's elimination shows a step late
+            storm = (L[2], hps, bool(r.pl[rt].alive), bool(r.pl[rt].eliminated), bool(r.pl[rt].elim_gas), kills)
+            print("charge_check: R-T legs in the storm (ring %d, legs margin %d, head margin %d): legs hp %s; alive %d out %d by gas %d, kills %d"
+                  % (R.storm, marg(L[0], L[1]), marg(r.pl[rt].x, r.pl[rt].y), hps, storm[2], storm[3], storm[4], kills), flush=True)
+            R.storm = None
+        fails["R-T legs in the storm"] = judge_storm(storm) if storm else ["no SplitterLegs after the super"]
     finally:
         inst.close()
     bad = 0
@@ -327,7 +485,25 @@ def _check():
     assert judge_split(*good) == [] and judge_split(False, 0, 0, (0, 0), good[4]) == ["no SplitterLegs after the super"]
     assert len(judge_split(True, 756, 756, (2480, 0), (500.0, True, 0, True))) == 5
     assert judge_split(True, 756, 867, (1, 1), (0.0, False, 0, False)) == []   # not hurt: the heal is not judged
-    print("charge_check ok: lane finder, landing finder, judging (walls, edge, paint, eject, split)")
+    rows = ["..........", "x...WWWW..", "..WW......"]
+    assert find_water(rows) == (3, 1) and find_water(["..WW......"]) is None and find_water(["WWW...."]) is None and find_water(["...WWW"]) == (2, 0)
+    assert len(judge_water(None)) == 1 and judge_water((-120.0, 700.0, False)) == []
+    assert len(judge_water((300.0, 700.0, False))) == 1 and len(judge_water((-120.0, -120.0, False))) == 1
+    assert len(judge_water((-120.0, 700.0, True))) == 1
+    ok = (True, False, True, 1, 1, 30, 40)
+    assert judge_linked(ok) == [] and len(judge_linked((False, True, False, 0, 0, 0, 0))) == 1
+    assert len(judge_linked((True, True, False, 1, 1, 0, 0))) == 1 and len(judge_linked((True, False, True, 2, 1, 0, 0))) == 1
+    assert len(judge_linked((True, False, True, 0, 1, 0, 0))) == 1 and len(judge_linked((True, False, True, 1, 0, 0, 0))) == 1
+    assert len(judge_linked((True, False, True, 1, 1, 900, 40))) == 1
+    good = (7800, [7800, 7000, 5908, 4816, 3724, 2632, 1540, 448, 0], False, True, True, 0)
+    assert judge_storm(good) == []
+    assert len(judge_storm((7800, [7800, 7800], False, True, True, 0))) == 2   # no storm seconds, the legs lived
+    assert len(judge_storm((7800, [7800, 6708, 5000, 2000, 0], False, True, True, 0))) == 1   # a ramp
+    assert len(judge_storm((7800, [7800, 7700, 7600, 7500, 0], False, True, True, 0))) == 1   # too little
+    assert len(judge_storm(good[:2] + (True, False, False, 0))) == 1 and len(judge_storm(good[:4] + (False, 0))) == 1
+    assert len(judge_storm(good[:5] + (1,))) == 1
+    print("charge_check ok: lane finder, landing finder, water finder, judging (walls, edge, paint, eject, split, water,"
+          " linked death, storm)")
 
 
 if __name__ == "__main__":
