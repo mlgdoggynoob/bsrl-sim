@@ -7,7 +7,9 @@
  * server's part; here it is re-implemented with libg's own spawn function.
  *
  * BulletExplosion (area data +0x118 == 5): N = CustomValue (+0x13c) copies of BulletExplosionBullet (+0x78) leave the area's
- * position evenly spread over 360 degrees, starting at the angle of the parent's flight (area +0x140), each flying
+ * position evenly spread over 360 degrees, starting at the angle of the parent's flight (area +0x140; a chained area, which has
+ * no projectile, the angle of the area it chains from) plus BulletAngleOffset (+0x188, degrees: Grom's hypercharged second
+ * burst 45 = the diagonals; NB_SPAWNFIX_ANGLE=0 leaves it out), each flying
  * BulletExplosionBulletDistance (+0x144) * 100 world units. BulletExplosionBulletOffset (+0x148, units, 31 rows: Bonnie's
  * hypercharged teeth 500, Byron's 600, Chester's 300, 8-Bit's bonus shot 600, bosses) is the start distance from the centre
  * on each bullet's own line, so the bullets leave a ring instead of all hitting whoever stands at the centre (issue #6:
@@ -249,6 +251,26 @@ static void on_explode(uint64_t *c) {
     }
 }
 void hyper_area_mark(uint8_t *a) __attribute__((weak));   /* hyper.c: an overcharged area's +0x2e4 (Ruffs' hypercharge) */
+/* The start angle of a BulletExplosion's ring: the parent projectile's flight (as above), remembered per owner and spot, so
+ * that a ChainAreaEffect spawned there later (superfix_items.c, at the area's end: no projectile then) starts from the same
+ * angle; else 0. BulletAngleOffset (AreaEffectData +0x188, loader 0xa96340; degrees) turns the whole ring: Grom's hypercharged
+ * second burst OverchargedCrossBomberUltiClusterExplosion2 (45: the X after the +), Moe's DiggerShrapnelArea (45), the
+ * cluster bombs (15). NB_SPAWNFIX_ANGLE=0: no offset (the earlier host). */
+int g_spawn_angle = 1;
+static struct { void *owner; int x, y, base, tick; } g_beb[8]; static int g_nbeb;
+static int be_base(uint8_t *pr, void *owner, int x, int y) {
+    int t = g_sim ? I32(g_sim, 0x10) : -1;
+    if (pr) {
+        int b = angle_of(I32(pr, 0x38) - I32(pr, 0xfc), I32(pr, 0x3c) - I32(pr, 0x100)), k = g_nbeb++ & 7;
+        g_beb[k].owner = owner; g_beb[k].x = x; g_beb[k].y = y; g_beb[k].base = b; g_beb[k].tick = t;
+        return b;
+    }
+    for (int k = 0; k < 8; k++)   /* a chain: same owner, same spot, within 10 s (an area lives TimeMs, 700 for Grom's) */
+        if (g_beb[k].owner == owner && owner && abs(g_beb[k].x - x) <= 50 && abs(g_beb[k].y - y) <= 50 && t >= g_beb[k].tick && t - g_beb[k].tick <= 200)
+            return g_beb[k].base;
+    return 0;
+}
+static int be_offset(uint8_t *d) { int o = g_spawn_angle ? I32(d, 0x188) : 0; return o > -360 && o < 360 ? o : 0; }
 static void on_area(uint64_t *c) {
     if (hyper_area_mark && c[0]) hyper_area_mark((uint8_t *)c[0]);
     if (!g_spawn_fix || !mode() || rec) return;
@@ -281,7 +303,7 @@ static void on_area(uint64_t *c) {
         uint8_t *pr = (g_cur_proj && g_cur_tick == (g_sim ? I32(g_sim, 0x10) : -1)) ? (uint8_t *)g_cur_proj : NULL;
         void *idata = PTR(d, 0x80);
         int x = I32(a, 0x38), y = I32(a, 0x3c);
-        int base0 = pr ? angle_of(I32(pr, 0x38) - I32(pr, 0xfc), I32(pr, 0x3c) - I32(pr, 0x100)) : 0;
+        int base0 = be_base(pr, owner, x, y) + be_offset(d);
         for (int i = 0; i < n; i++) {
             int ang = base0 + (360 * i) / n;
             int vx = ((i1_t)B(0xd005e0))(ang + 0x5a), vy = ((i1_t)B(0xd005e0))(ang);
@@ -292,10 +314,9 @@ static void on_area(uint64_t *c) {
     if (!bullet || !owner || n < 1 || n > 32) return;
     void *sim = ((void *(*)(void *))B(0xb6a378))(owner);
     int x = I32(a, 0x38), y = I32(a, 0x3c), kind = I32(a, 0xf8);
-    int base = 0, dmg = I32(a, 0xe8), off = g_spawn_offset && I32(d, 0x148) > 0 && I32(d, 0x148) <= 3000 ? I32(d, 0x148) : 0;
-    if (g_cur_proj && g_cur_tick == (g_sim ? I32(g_sim, 0x10) : -1)) {
-        uint8_t *pr = (uint8_t *)g_cur_proj; base = angle_of(I32(pr, 0x38) - I32(pr, 0xfc), I32(pr, 0x3c) - I32(pr, 0x100));
-    }
+    int dmg = I32(a, 0xe8), off = g_spawn_offset && I32(d, 0x148) > 0 && I32(d, 0x148) <= 3000 ? I32(d, 0x148) : 0;
+    int base = be_base(g_cur_proj && g_cur_tick == (g_sim ? I32(g_sim, 0x10) : -1) ? (uint8_t *)g_cur_proj : NULL, owner, x, y)
+               + be_offset(d);
     for (int i = 0; i < n; i++) {
         int ang = base + (360 * i) / n;
         int vx = ((i1_t)B(0xd005e0))(ang + 0x5a), vy = ((i1_t)B(0xd005e0))(ang);
@@ -314,6 +335,7 @@ void spawnfix_install(void) {
     if ((e = getenv("NB_SPAWNFIX_OFFSET"))) g_spawn_offset = atoi(e);
     if ((e = getenv("NB_SPAWNFIX_CHAIN"))) g_spawn_chain = atoi(e);
     if ((e = getenv("NB_SPAWNFIX_WALLS"))) g_spawn_walls = atoi(e);
+    if ((e = getenv("NB_SPAWNFIX_ANGLE"))) g_spawn_angle = atoi(e);
     if (!g_spawn_fix) { LOG("[spawnfix] disabled\n"); return; }
     hook_enter(g_libg, 0xb75998, on_explode);
     hook_enter(g_libg, 0x53e614, on_mapview);

@@ -1179,7 +1179,7 @@ def live_claim(claim, mh, mn, name):
     """one claim vs the live audits: mh = the hypercharged run's measurements (super_audit_hyper.json best attempt), mn = the
     normal run's (super_audit.json) or None -> (live_ok / live_wrong / live_unchecked, why). Without a normal run, a count
     compares with the hypercharged table count, and a damage / push / heal the normal super's tables do not expect compares
-    with 0"""
+    with 0. An equal damage with the target dead in both runs is unchecked (its HP caps the measure)"""
     fld = HDESC_LIVE.get(claim["feature"])
     if not fld: return "live_unchecked", "no recorded field"
     if not mh: return "live_unchecked", "no hypercharged run"
@@ -1196,6 +1196,8 @@ def live_claim(claim, mh, mn, name):
     if mn is not None and mn.get("consumed"):
         vn = get(mn); why = "%s %g -> %g (normal run -> hypercharged run)" % (fld, vn, vh)
         if fld == "heal" and vh == vn: return "live_unchecked", why + ": equal, capped by the pre-damage"
+        if fld == "damage" and vh == vn and mh.get("target_dead") and mn.get("target_dead"):
+            return "live_unchecked", why + ": equal, the target died in both runs (capped by its HP)"
         if vh == vn == 0: return "live_unchecked", why + ": none in either run (the setup does not reach it)"
         return ("live_ok" if vh > vn else "live_wrong"), why
     ex = expected(name)["expect"]
@@ -1326,6 +1328,8 @@ def _check():
     assert live_claim({"feature": "pull"}, hm, m(push=780), "x")[0] == "live_wrong" and live_claim({"feature": "radius"}, hm, None, "x")[0] == "live_unchecked"
     assert live_claim({"feature": "pull"}, m(hyper_cast=True, push=300, pull=300), m(push=780), "x")[0] == "live_ok"
     assert live_claim({"feature": "push"}, hm, m(), "x")[0] == "live_unchecked"           # nothing in either run: the setup does not reach it
+    assert live_claim({"feature": "damage"}, m(hyper_cast=True, damage=7400, target_dead=True), m(damage=7400, target_dead=True), "x")[0] == "live_unchecked"   # Grom: both kill the filler
+    assert live_claim({"feature": "damage"}, m(hyper_cast=True, damage=7400), m(damage=7400), "x")[0] == "live_wrong"
     assert live_claim({"feature": "count"}, m(items=["B"]), m(), "x") == ("live_unchecked", "super not cast hypercharged")
     assert live_claim({"feature": "split"}, m(hyper_cast=True, projectiles=["P"], items=["M"] * 6), m(projectiles=["P"]), "x")[0] == "live_ok"   # Tick's minimines
     # best attempt, descriptions, checklist

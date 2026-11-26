@@ -332,7 +332,8 @@ static void oc_heal_areas(uint8_t *ch) {
 #define CT_DIGGER 307        /* overcharge_digger (Moe 10 / 300 / 100 / 5, "Driller has longer range and lasts for longer"):
                               * the dive's ChargeSpeed + Value3 % (skill fire 0xb7bc14: 2500 -> 5000), its range bonus + Value
                               * tiles (0xc6e754), and the Driller's (UniqueProperty 32) attack Value4 more tiles (0xc6e998:
-                              * DiggerDrillWeapon 5 -> 10). Value2 (the longer Driller form) has no reader in this build. */
+                              * DiggerDrillWeapon 5 -> 10). Value2 (the longer Driller form) has no reader in this build: env.c dig_change
+                              * reads it (the drill timer x Value2 %). */
 /* The other types whose call sites apply the value themselves (the Type enum from the card loader's string table; Value<n>
  * from cards.csv; the "Attack handler" is the super's attack setup 0xb7d108..0xb7f2ec, where the overrides chain 192 -> 201
  * -> 194 -> 200 -> 202 for the super, w27 == 2): */
