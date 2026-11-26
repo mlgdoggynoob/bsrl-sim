@@ -161,6 +161,7 @@ static void on_area_tick(uint64_t *ctx) {   /* enter hook on 0xb28c0c, ctx[0] = 
     if (!g_superfix || !mode() || !a) return;
     extern void superfix_status_area(uint8_t *) __attribute__((weak)); if (superfix_status_area) superfix_status_area(a);   /* type 36 */
     extern void superfix_moves_area(uint8_t *) __attribute__((weak)); if (superfix_moves_area) superfix_moves_area(a);     /* type 38 */
+    extern void hyper_area_tick(uint8_t *) __attribute__((weak)); if (hyper_area_tick) hyper_area_tick(a);   /* hypercharged Dot */
     uint8_t *d = ((getp_t)B(0xb6a384))(a), *sim = ((getp_t)B(0xb6a378))(a);
     if (sim && g_nsa) summon_area_end(a, sim);
     if (d && sim && I32(d, 0x118) == 20) { slippery_tick(a, d, sim); return; }

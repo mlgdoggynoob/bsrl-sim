@@ -186,8 +186,10 @@ void spawnfix_proj_hit(void *src, void *victim) {
     if (!src || !victim || !g_sim || (int)((uint8_t *)PTR(src, 0) - g_libg->base) != 0x1209318) return;   /* VT_PROJ */
     g_hit_proj = src; g_hit_ch = victim; g_hit_tick = I32(g_sim, 0x10);
 }
+void hyper_proj_end(uint8_t *pr, int reason) __attribute__((weak));   /* hyper.c: Gus's hypercharged spirits */
 static void on_explode(uint64_t *c) {
     uint8_t *pr = (uint8_t *)c[0]; int reason = (int)c[1];
+    if (hyper_proj_end && mode()) hyper_proj_end(pr, reason);
     int hit3 = reason == 3 && pr && pr == g_hit_proj && g_sim && g_hit_tick == I32(g_sim, 0x10);
     g_cur_proj = pr; g_cur_tick = g_sim ? I32(g_sim, 0x10) : -1;
     if (g_spawn_dbg && pr && PTR(PTR(pr, 0x10), 0x180)) LOG("[spawnfix] explode call reason %d%s end90 %d tick %d at %d,%d\n", reason, hit3 ? " (at a hit)" : "", I32(pr, 0x90), g_cur_tick, I32(pr, 0x38), I32(pr, 0x3c));
@@ -244,7 +246,9 @@ static void on_explode(uint64_t *c) {
         if (g_spawn_dbg && i < 2) LOG("[spawnfix] chain %d/%d reason %d%s base %d spread %d dist %d -> %d,%d proj %p\n", i, nspawn, reason, toen ? " enemy" : (n < 1 ? " return" : ""), base, spread, dist, tx[i], ty[i], p);
     }
 }
+void hyper_area_mark(uint8_t *a) __attribute__((weak));   /* hyper.c: an overcharged area's +0x2e4 (Ruffs' hypercharge) */
 static void on_area(uint64_t *c) {
+    if (hyper_area_mark && c[0]) hyper_area_mark((uint8_t *)c[0]);
     if (!g_spawn_fix || !mode() || rec) return;
     uint8_t *a = (uint8_t *)c[0]; uint8_t *d = PTR(a, 0x10);
     if (a && d && (I32(d, 0x118) == 15 || I32(d, 0x118) == 42 || I32(d, 0x118) == 55) && g_spawn_walls && I32(d, 0x13c) >= 0) {
