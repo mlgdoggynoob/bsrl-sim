@@ -43,7 +43,8 @@ A third battle (issue #19 final; NAMES3, every player has its hypercharge card, 
 A fourth battle (gadgets):
  18. Fang's Roundhouse Kick (KickerDudeSweepStun: Stun 10 ticks, RequireLineOfSight) next to a wall: an enemy 600 units
      away in the open is stunned (moves < STUN_MOVE), one 600 units away behind the wall is not;
- 19. Meeple's RageQuit (MeepleRageQuitArea, HpBasedStun) after she took damage: an enemy 600 units away is stunned;
+ 19. Meeple's RageQuit (MeepleRageQuitArea, HpBasedStun) after she took damage: an enemy 600 units away is stunned (moves
+     < STUN_MOVE beyond the knockback, rage_knock);
  20. Damian's wall gadget (GladiatorGadgetSkillWallArea, GladiatorWallSpawn 26): tiles around its landing become
      GladiatorWallDefault (live map).
 python -m status_check            python -m status_check --check   (no host: the judging rules)
@@ -171,10 +172,18 @@ def judge_turret(gains, pam_max):
     return [] if gaps == [TURRET_EVERY] else ["Pam's turret: heals of %d at ticks %s, want %d apart" % (want, ts, TURRET_EVERY)]
 
 
-def judge_los(open_moved, wall_moved):
-    """also Meeple's RageQuit: the stunned enemy, then the same enemy once the stun is over"""
+def rage_knock(hp, max_hp):
+    """Meeple's RageQuit knockback (units) at her hp: superfix_cc.c scales PushbackStrength 120 by the stun's share of
+    CustomValue 30 (stun 5 + 25 x the missing HP fraction ticks); the game's knockback moves 6 u per strength"""
+    ticks = 5 + int(25 * (max_hp - min(hp, max_hp)) / max_hp) if max_hp > 0 else 5
+    return 6 * int(120 * ticks / 30)
+
+
+def judge_los(open_moved, wall_moved, knock=0):
+    """also Meeple's RageQuit: the stunned enemy, then the same enemy once the stun is over; knock: the knockback the
+    stunned enemy may move on top of STUN_MOVE"""
     bad = []
-    if open_moved > STUN_MOVE: bad.append("the enemy in the open moved %.0f u after Fang's kick" % open_moved)
+    if open_moved > STUN_MOVE + knock: bad.append("the enemy in the open moved %.0f u after Fang's kick" % open_moved)
     if wall_moved < 2 * STUN_MOVE: bad.append("the enemy behind the wall moved only %.0f u (stunned through the wall?)" % wall_moved)
     return bad
 
@@ -564,7 +573,7 @@ def battles(inst, a, spots, info, fails, B):
         for _ in range(20): R.step()
         _, mv2, _ = R.walk(7, (d + 8) % 16, steps=3)
         print("status_check: Meeple's RageQuit at hp %d / %d: the enemy moved %.0f u, later %.0f u" % (hp, r.pl[1].max_hp, mv, mv2), flush=True)
-        fails["Meeple RageQuit stun"] = judge_los(mv, mv2)
+        fails["Meeple RageQuit stun"] = judge_los(mv, mv2, rage_knock(hp, r.pl[1].max_hp))   # issue #55: it knocks back too
 
         # 20. Damian (spot 2): his wall gadget thrown 900 u along the corridor
         p, (dx, dy), d = at(2, 2); aim = float(np.degrees(np.arctan2(dy, dx))); R.place({2: p})
@@ -596,6 +605,7 @@ def _check():
     assert not judge_ratio(150, 100, 1.3, "x") and judge_ratio(110, 100, 1.3, "x") and judge_ratio(100, 0, 1.3, "x")
     assert not judge_kinds({"a"}, {"b"}, "x") and judge_kinds({"a"}, {"a"}, "x") and judge_kinds(set(), {"b"}, "x")
     assert not judge_los(20, 400) and judge_los(300, 400) and judge_los(20, 50)
+    assert rage_knock(4800, 6600) == 264 and rage_knock(6600, 6600) == 120 and not judge_los(230, 400, 264) and judge_los(400, 400, 264)
     assert not judge_turret([(238, 1400), (258, 1400), (271, 1014), (278, 200)], 10000)
     assert judge_turret([(238, 304), (258, 304)], 10000) and judge_turret([(238, 1400), (268, 1400)], 10000)
     assert judge_turret([(238, 1400)], 10000)

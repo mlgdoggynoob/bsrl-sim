@@ -15,7 +15,9 @@
  *     column is empty in the tables and the client reads it only for the UI; the duration is CustomValue +0x13c (ticks).
  *     At the area's first tick (superfix_status_area), every enemy character that libg's own target test reaches gets it
  *     (superfix_area_reach: circle, InnerRadius ring, RequireLineOfSight: Fang's sweep); HpBasedStun (43, Meeple's
- *     RageQuit) too, for longer the less HP its owner has;
+ *     RageQuit) too, for longer the less HP its owner has; an area of another type with StunTicks (+0x160, stored by the table loader at 0xa959dc; only
+ *     LeaperOverchargedUltiAreaExplosion, Damage, 30: Mico's hypercharged landing; libg reads it only at the table load)
+ *     stuns the same way for StunTicks ticks, without the path stop below (its own knockback is that path);
  *   - a new stun or loss of control stops the character's current path (stop 0xb4103c), because the mover only refuses new
  *     moves (superfix_cc_tick from the character update hook);
  *   - CcImmunity statuses (superfix_status.c aggregate +0x982) keep stuns and silences off.
@@ -129,18 +131,35 @@ long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) {
     }
     return dx * dx + dy * dy;
 }
-/* Stun (16), Silence (24) and HpBasedStun (43) areas, from superfix_status_area at every tick of an area: once per area, at
+/* Stun (16), Silence (24) and HpBasedStun (43) areas, and other areas with StunTicks (+0x160, ticks; a stun), from
+ * superfix_status_area at every tick of an area: once per area, at
  * its first tick, every enemy character libg's target test above reaches. HpBasedStun (Meeple's RageQuit gadget: "the less
  * hitpoints Meeple has, the stun and knockback effects increase"): CustomValue2 + (CustomValue - CustomValue2) x the
  * owner's missing HP fraction ticks (5 .. 30) [?] the formula is server code, the two values read as the stun's bounds;
- * its knockback (PushbackStrength 120) is not applied. */
+ * its knockback (PushbackStrength +0x154, 120) away from the area's centre at the same share of its full strength as the stun
+ * has of CustomValue (issue #55; the scaling is ours, the server's is not in this build); the stun starts with it, and
+ * superfix_cc_tick lets the knockback run out rather than stopping it. */
+static void blk_mark(uint8_t *ch);   /* below: a stun whose path is not stopped */
+void env_sd_knockback(uint8_t *v, int sx, int sy, int strength) __attribute__((weak));
+/* knocked back by an HpBasedStun area: superfix_cc_tick lets the knockback's path run (10 ticks) instead of stopping it at the
+ * stun, as it does for a charge or dash */
+typedef struct { uint8_t *ch; int id, until; } Kb;
+#define KB_MAX 32
+static Kb g_kb[KB_MAX]; static int g_nkb;
+static void kb_mark(uint8_t *ch) { if (g_nkb >= KB_MAX) g_nkb = 0; g_kb[g_nkb++] = (Kb){ch, I32(ch, 8), now_tick(ch) + 10}; }
+static int kb_on(uint8_t *ch) {
+    int t = now_tick(ch);
+    for (int i = 0; i < g_nkb; i++) if (g_kb[i].ch == ch && g_kb[i].id == I32(ch, 8) && t <= g_kb[i].until) return 1;
+    return 0;
+}
 typedef struct { void *a; int start; } CcArea;
 #define CA_MAX 64
 static CcArea g_ca[CA_MAX]; static int g_nca;
 void superfix_cc_area(uint8_t *a, uint8_t *d) {
     if (!on() || !a || !d) return;
-    int type = I32(d, 0x118), ticks = I32(d, 0x13c); uint8_t *owner = PTR(a, 0x108);
-    if ((type != 16 && type != 24 && type != 43) || ticks <= 0 || !owner) return;
+    int type = I32(d, 0x118), cc = type == 16 || type == 24 || type == 43, ticks = cc ? I32(d, 0x13c) : I32(d, 0x160);   /* StunTicks */
+    int full = ticks, push = 0; uint8_t *owner = PTR(a, 0x108);
+    if (ticks <= 0 || !owner) return;
     for (int i = 0; i < g_nca; i++) if (g_ca[i].a == a && g_ca[i].start == I32(a, 0xd0)) return;
     if (g_nca >= CA_MAX) g_nca = 0;
     g_ca[g_nca++] = (CcArea){a, I32(a, 0xd0)};
@@ -148,7 +167,8 @@ void superfix_cc_area(uint8_t *a, uint8_t *d) {
         int lo = I32(d, 0x140), mx = I32(owner, 0x3c8), hp = I32(owner, 0x3c4);
         if (lo > ticks) lo = ticks;
         ticks = mx > 0 ? lo + (int)((long)(ticks - lo) * (mx - (hp < mx ? hp : mx)) / mx) : lo;
-        if (g_superfix_dbg) LOG("[superfix] cc: hp stun area, owner hp %d / %d -> %d ticks\n", hp, mx, ticks);
+        push = (int)((long)I32(d, 0x154) * ticks / full);
+        if (g_superfix_dbg) LOG("[superfix] cc: hp stun area, owner hp %d / %d -> %d ticks, knockback %d\n", hp, mx, ticks, push);
     }
     uint8_t *mgr = PTR(owner, 0x20); if (!mgr) return;
     int n = I32(mgr, 0x34); void **v = PTR(mgr, 0x28); if (!v || n < 0 || n > 4096) return;
@@ -157,7 +177,10 @@ void superfix_cc_area(uint8_t *a, uint8_t *d) {
         uint8_t *o = v[i];
         if (!is_char(o) || I32(o, 0x3c4) <= 0 || ((int (*)(void *))B(0xb6a820))(o) == team) continue;
         if (superfix_area_reach(a, d, o) < 0) continue;
+        if (push > 0 && env_sd_knockback) { env_sd_knockback(o, I32(a, 0x38), I32(a, 0x3c), push); kb_mark(o); }
         if (type == 24) { silence(o, ticks, "area"); g_nsil_area++; } else { stun(o, ticks, type == 43 ? "hp area" : "area"); g_nstun_area++; }
+        if (!cc) blk_mark(o);   /* StunTicks of a Damage area: the area's own knockback (its apply runs after this hook) is the path
+                                 * the victim is on; stopping it (superfix_cc_tick) would cancel the push the landing also deals */
     }
 }
 
@@ -239,6 +262,10 @@ void superfix_cc_switch(uint8_t *ch, int inside) {
 typedef struct { uint8_t *ch; int id; } Blk;
 #define BLK_MAX 64
 static Blk g_blk[BLK_MAX]; static int g_nblk;
+static void blk_mark(uint8_t *ch) {
+    for (int k = 0; k < g_nblk; k++) if (g_blk[k].ch == ch && g_blk[k].id == I32(ch, 8)) return;
+    if (g_nblk < BLK_MAX) g_blk[g_nblk++] = (Blk){ch, I32(ch, 8)};
+}
 void superfix_cc_tick(uint8_t *ch) {
     if (!on() || !is_char(ch)) return;
     for (int i = 0; i < g_nsw; i++) if (g_sw[i].ch == ch && g_sw[i].want) do_swap(ch, &g_sw[i]);
@@ -246,7 +273,7 @@ void superfix_cc_tick(uint8_t *ch) {
     for (k = 0; k < g_nblk && !(g_blk[k].ch == ch && g_blk[k].id == I32(ch, 8)); k++) {}
     if (blocked && k == g_nblk) {   /* a new stun: stop the path the character is on (the mover only refuses new moves) */
         if (g_nblk < BLK_MAX) g_blk[g_nblk++] = (Blk){ch, I32(ch, 8)};
-        if (!U8(ch, 0x490)) { ((void (*)(void *))B(0xb4103c))(ch); g_nstop++; }   /* not in a charge / dash (+0x490) */
+        if (!U8(ch, 0x490) && !kb_on(ch)) { ((void (*)(void *))B(0xb4103c))(ch); g_nstop++; }   /* not in a charge / dash (+0x490) or knockback */
     } else if (!blocked && k < g_nblk) g_blk[k] = g_blk[--g_nblk];
 }
 

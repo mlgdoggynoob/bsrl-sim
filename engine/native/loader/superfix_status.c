@@ -32,8 +32,10 @@
  *   (my_lifesteal_pct), Taunt +0x132 / Fear +0x133 for env.c (superfix_status_taunt), and the area types the area apply
  *   drops (area_extra: SmokeScreen, DamageBoost, Heal, HealRegen, Cleanse, super charge areas; issue #19 final: ChargeSuper,
  *   GiveUlti, EnragerOverchargeSuper, SwitchSkill, BulletSpin, HotAndOverheals).
- * Not modelled: DamageBoostTargetCurrentHealthPercent +0x114, boolean attributes other than Fear (Kaze's HasStormVision),
- *   CancelOn* conditions. Those statuses are stored (so their duration and target are right) but change nothing.
+ * DamageBoostTargetCurrentHealthPercent +0x114 (Alli's super): env.c's damage root (superfix_status_hp_boost), CancelOnChargeEnd
+ *   +0xa6 at the charge end (my_charge_end).
+ * Not modelled: boolean attributes other than Fear (Kaze's HasStormVision),
+ *   the other CancelOn* conditions. Those statuses are stored (so their duration and target are right) but change nothing.
  *   0xba3274 (called at stop / charge end / respawn) and the other manager stubs are left alone.
  *
  * StatusEffect areas (AreaEffectData +0x118 == 36: Max, Jae-Yong, Najia's jars, Kaze's storm, slows ...): the area apply
@@ -69,6 +71,8 @@ enum { SE_DUR = 0x98, SE_RATE = 0xa0, SE_SRCDEATH = 0xa8, SE_FIRST = 0xab, SE_ST
        SE_RECV_BP = 0x11c, SE_RECV_BA = 0x120,
        /* issue #19 leftovers (stores at 0xba4198 / 0xba41c4 / 0xba42a0 / 0xba4478; Fear is a BooleanAttributes word, 0xba4bc8) */
        SE_LIFESTEAL = 0x10c, SE_SRC_LIFESTEAL = 0x110, SE_RELOAD = 0x124,
+       /* DamageBoostTargetCurrentHealthPercent (store 0xba41f0), CancelOnChargeEnd (byte, store 0xba3ac0) */
+       SE_HPBOOST = 0x114, SE_CANCEL_CHARGE_END = 0xa6,
        /* bytes */
        SE_CCIMM = 0x12a, SE_LOSECTL = 0x131, SE_TAUNT = 0x132, SE_FEAR = 0x133, SE_STASIS = 0x137, SE_SILENCE = 0x138,
        SE_FULLSTUN = 0x139 };
@@ -89,6 +93,7 @@ typedef struct {
 } St;
 #define ST_MAX 512            /* 10 brawlers + summons x a few effects; Draco re-adds a 2-tick status every tick */
 static St g_st[ST_MAX]; static int g_nst;
+static long g_ntrail, g_nmech;
 static long g_nstun, g_nmount, g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_ndmg, g_nheal, g_narea_hits, g_narea_apply;
 
 static int now_tick(void *obj) { uint8_t *sim = ((getp_t)B(0xb6a378))(obj); return sim ? I32(sim, 0x10) : -1; }
@@ -109,11 +114,12 @@ static uint8_t *by_id(uint8_t *any, int id) {
 /* issue #19 leftovers: what a character standing in an area gets while it stands there (SmokeScreen: invisibility level,
  * DamageBoost: damage percent; issue #19 final: Edgar's reload and super charge percents, Angelo's weapon switch), marked by superfix_status_area at the area's tick and read at the character's next update /
  * damage: a mark lasts until the tick after it was made */
-enum { ZN_SMOKE = 1, ZN_DMG = 2, ZN_RELOAD = 3, ZN_CHARGE = 4, ZN_SWITCH = 5 };   /* 3-5: issue #19 final (area_extra) */
+enum { ZN_SMOKE = 1, ZN_DMG = 2, ZN_RELOAD = 3, ZN_CHARGE = 4, ZN_SWITCH = 5,   /* 3-5: issue #19 final (area_extra) */
+       ZN_SHIELD = 6 };   /* issue #55: a gadget's own ShieldPercent for ShieldTicks (superfix_status_shield) */
 typedef struct { uint8_t *ch; int ch_id, kind, val, until; } Zone;
 #define ZN_MAX 64
 static Zone g_zn[ZN_MAX]; static int g_nzn; static long g_nzone;
-static void zone_mark(uint8_t *ch, int kind, int val, int t) {
+static void zone_hold(uint8_t *ch, int kind, int val, int t, int until) {   /* val from t to until (inclusive) */
     int k, id = I32(ch, 8);
     for (k = 0; k < g_nzn && !(g_zn[k].ch == ch && g_zn[k].ch_id == id && g_zn[k].kind == kind); k++) {}
     if (k == g_nzn) {
@@ -123,7 +129,15 @@ static void zone_mark(uint8_t *ch, int kind, int val, int t) {
     }
     if (g_zn[k].until < t) g_zn[k].val = 0;
     if (val > g_zn[k].val) g_zn[k].val = val;
-    g_zn[k].until = t + 1; g_nzone++;
+    if (until > g_zn[k].until) g_zn[k].until = until;
+    g_nzone++;
+}
+static void zone_mark(uint8_t *ch, int kind, int val, int t) { zone_hold(ch, kind, val, t, t + 1); }
+/* issue #55: a damage shield of pct percent for `ticks` ticks from now (gadget.c: an accessory's ShieldPercent /
+ * ShieldTicks, Tick's ClusterBombDude_Explosion), folded into char +0x954 with the status effects' shields */
+void superfix_status_shield(uint8_t *ch, int pct, int ticks) {
+    int t = ch ? now_tick(ch) : -1;
+    if (g_superfix && t >= 0 && pct > 0 && ticks > 0) zone_hold(ch, ZN_SHIELD, pct > 100 ? 100 : pct, t, t + ticks - 1);
 }
 static int zone_get(uint8_t *ch, int kind, int t) {
     int id = I32(ch, 8), v = 0;
@@ -132,16 +146,19 @@ static int zone_get(uint8_t *ch, int kind, int t) {
     return v;
 }
 
+static void pierce_mark(uint8_t *src, uint8_t *target, void *data);   /* Pierce's marked shots (below) */
 /* 0xba3230 */
+void env_status_added(uint8_t *ch, void *data, int until) __attribute__((weak));   /* env.c */
 static void *my_status_add(void *cont, uint8_t *ch, void *data, int src_player, int team, void *src_obj, uint8_t *src_ch) {
     (void)cont; (void)team;
     if (!g_superfix || !mode() || !ch || !data) return NULL;
     int dur = I32(data, SE_DUR), t = now_tick(ch);
     if (dur <= 0 || t < 0) return NULL;
+    if (env_status_added) env_status_added(ch, data, t + dur);   /* env.c: hypercharged Bolt's wall pass (RockUltiDamageReduction) */
     if (!U8(data, SE_STACK))
         for (int i = 0; i < g_nst; i++) if (g_st[i].ch == ch && g_st[i].ch_id == I32(ch, 8) && g_st[i].data == data) {
             if (U8(data, SE_REFRESH) || g_st[i].until < t + dur) g_st[i].until = t + dur;   /* refresh: a new full duration */
-            g_nrefresh++; return NULL;
+            g_nrefresh++; pierce_mark(src_ch, ch, data); return NULL;
         }
     if (g_nst >= ST_MAX) { g_nfull++; return NULL; }
     int rate = I32(data, SE_RATE);
@@ -152,7 +169,56 @@ static void *my_status_add(void *cont, uint8_t *ch, void *data, int src_player, 
     if (g_superfix_dbg) LOG("[superfix] st: add %d to ch %d (hp %d) from ch %d player %d: %d ticks, tick %d, shield %d dmg %d heal %d invis %d, live %d\n",
                             data_id(data), I32(ch, 8), I32(ch, 0x3c4), s->src_id, src_player, dur, t, I32(data, SE_SHIELD),
                             I32(data, SE_DMG), I32(data, SE_HEAL), I32(data, SE_INVIS), g_nst);
+    pierce_mark(src_ch, ch, data);
     return NULL;
+}
+/* Pierce (Bulletstorm): his super's marked shots. The Brawler_Bulletstorm component (type 11, built by 0xb8e95c: vtable
+ * 0x1209910) registers a listener on its owner's status manager event (char +0x8b0, functor 0x12099b0 -> 0xb8f864) that the
+ * server's status add fires; with the add compiled out (above) it never runs, so his mark area marked enemies and nothing
+ * shot them (a host run: 0 damage to an enemy 700 u inside the r900 mark). The handler is in the client: 0xb8f864(component,
+ * event) with event +8 the marked character, +24 the StatusEffectData, +32 == 2. It fires the component's Projectiles[2]
+ * (BulletstormUltiMarkedProjectile; Projectiles[3] BulletstormUltiOverchargedMarkedProjectile, PiercesCharacters, when the
+ * status is StatusEffects[1] BulletstormUltiOverchargedMark) at that character through 0xb8f69c (spawn 0xb78190, homing on
+ * the target: projectile +0xe8) with Values[4] = 1400 damage; for the hypercharged mark it also queues {target, tick} at
+ * component +0x88 (count +0x94). The queue is drained by 0xb8f190 (the tail of the component tick 0xb8ef78, which libg never
+ * calls): Values[7] = 12 ticks later it fires Projectiles[3] again with Values[4] x Values[8] / 100 = 1400 x 50 % = 700, the
+ * second wave (the card text's "2nd wave deals <VALUE1>% less damage": the data says 50 %). Here: after a mark is stored,
+ * the source's type-11 component gets the event (only for its own two mark statuses, component data +0xb8 [0] / [1]), and
+ * once per character update its queue is drained through 0xb8f190 alone (the rest of the tick swaps his weapon and ammo,
+ * which the attack code already does), after dropping entries whose target left the object list (the queue keeps a raw
+ * pointer). The shells his hits drop (the other listener, char +0x280) are not done here. */
+static uint8_t *pierce_comp(uint8_t *ch) {
+    int nc = I32(ch, 0xa6c); void **c = PTR(ch, 0xa60);
+    for (int i = 0; c && i < nc && i < 64; i++)
+        if (c[i] && I32(c[i], 0x10) == 11 && PTR(c[i], 8) == ch && PTR(c[i], 0x30) &&
+            (*(void ***)c[i])[0x40 / 8] == (void *)B(0xb8ef78)) return c[i];
+    return NULL;
+}
+static long g_npierce_mark, g_npierce_wave2, g_npierce_drop;
+static void pierce_mark(uint8_t *src, uint8_t *target, void *data) {
+    if (!is_char(src) || I32(src, 0x3c4) <= 0 || !is_char(target)) return;
+    uint8_t *comp = pierce_comp(src); if (!comp) return;
+    void **marks = PTR(PTR(comp, 0x30), 0xb8);   /* component data StatusEffects: BulletstormUltiMark, ...OverchargedMark */
+    if (!marks || (data != marks[0] && data != marks[1])) return;
+    uint8_t ev[48] = {0};
+    *(void **)(ev + 8) = target; *(void **)(ev + 24) = data; *(int32_t *)(ev + 32) = 2;
+    ((void (*)(void *, void *))B(0xb8f864))(comp, ev);
+    g_npierce_mark++;
+    if (g_superfix_dbg) LOG("[superfix] pierce: mark %d on ch %d -> marked shot (queue %d)\n", data_id(data), I32(target, 8), I32(comp, 0x94));
+}
+static void pierce_tick(uint8_t *ch) {
+    uint8_t *comp = I32(ch, 0x3c4) > 0 ? pierce_comp(ch) : NULL;
+    if (!comp || I32(comp, 0x94) <= 0) return;
+    int n, k = 0, q = I32(comp, 0x94); void **v = objects(ch, &n), **e = PTR(comp, 0x88);
+    for (int i = 0; e && i < q; i++) {   /* entries {target, tick}, new'd by 0xb8f864, deleted by 0xb8f190 with 0x11a4d60 */
+        void *t = *(void **)e[i]; int ok = 0;
+        for (int j = 0; v && j < n && !ok; j++) ok = v[j] == t && is_char(t) && I32(t, 0x3c4) > 0;
+        if (ok) e[k++] = e[i]; else { ((void (*)(void *))B(0x11a4d60))(e[i]); g_npierce_drop++; }
+    }
+    I32(comp, 0x94) = k;
+    int before = k;
+    if (k > 0) ((void (*)(void *))B(0xb8f190))(comp);
+    g_npierce_wave2 += before - I32(comp, 0x94);
 }
 /* 0xba3264(cont, data, source) / 0xba3260(cont, data, -2 = any source) */
 static void my_status_remove(void *cont, void *data, void *src) {
@@ -211,6 +277,29 @@ static void on_char_update(uint64_t *ctx) {
             if (c[i] && I32(c[i], 0x10) == 21 && I32(c[i], 0x38) > 0 && PTR(c[i], 8) == ch &&
                 (*(void ***)c[i])[0x40 / 8] == (void *)B(0xba0048)) { ((void (*)(void *))B(0xba0048))(c[i]); g_nmount++; }
     }
+    pierce_tick(ch);   /* Pierce's second wave (above) */
+    {   /* Two more component ticks libg never calls (hypercharge wave, issue #56):
+         * - AreaEffectTrail (component type 19, ctor 0xb85514, tick 0xb855ac = vtable 0x1209568 +0x40; only
+         *   OverchargedRedirecterSnakePet has one in its CharacterData: "the snakes from those jars leave a poison trail",
+         *   TID_REDIRECTER_OVERCHARGE_DESC): every Values[0] (10) ticks it spawns its AreaEffects[0]
+         *   (RedirecterOverchargedSnakePetPoisonTrailArea, a StatusEffect area: above) where the character stood (0xb2adcc +
+         *   start 0xb29494). Run each tick.
+         * - Brawler_MechaDude (type 28, ctor 0xb94f94, tick 0xb95154): the ctor sets +76 for a mech built after tick 20 (Meg's
+         *   super); the tick's mech branch 0xb95214 then spawns, once, AreaEffects[0] (MechaDudeUltiSpawnExplosion) or, for
+         *   a hypercharged mech (isOvercharged), [1] and [2] (MechaDudeUltiSpawnExplosionHyperCharged and the ...StatusArea
+         *   slow: "enemies hit when Meg deploys the Mecha are slowed", TID_MECHA_DUDE_OVERCHARGE_DESC). Only that branch is
+         *   run (the tick's other branch, small Meg's charge over time, stays off as before). */
+        int nc = I32(ch, 0xa6c); void **c = PTR(ch, 0xa60);
+        for (int i = 0; c && i < nc && i < 64 && I32(ch, 0x3c4) > 0; i++) {
+            if (!c[i] || PTR(c[i], 8) != ch) continue;
+            void *tk = (*(void ***)c[i])[0x40 / 8];
+            if (I32(c[i], 0x10) == 19 && tk == (void *)B(0xb855ac)) { ((void (*)(void *))B(0xb855ac))(c[i]); g_ntrail++; }
+            else if (I32(c[i], 0x10) == 28 && tk == (void *)B(0xb95154) && U8(c[i], 76)) {
+                ((void (*)(void *))B(0xb95214))(c[i]); g_nmech++;
+                if (g_superfix_dbg) LOG("[superfix] mech deploy areas: ch %d tick %d\n", I32(ch, 8), t);
+            }
+        }
+    }
     int shield = 0, invis = 0, any = 0, cc = 0, lose = 0, stasis = 0, silence = 0, full = 0, taunt = 0, fear = 0;
     for (int i = 0; i < g_nst; i++) {
         St *s = &g_st[i];
@@ -238,6 +327,7 @@ static void on_char_update(uint64_t *ctx) {
     }
     (void)any;
     {   int z = zone_get(ch, ZN_SMOKE, t); if (z > invis) invis = z; }   /* SmokeScreen areas (superfix_status_area) */
+    {   int z = zone_get(ch, ZN_SHIELD, t); if (z > shield) shield = z; }   /* a gadget's shield (superfix_status_shield) */
     I32(ch, CH_SHIELD) = shield;   /* nothing in this libg writes these: ours */
     I32(ch, CH_INVIS) = invis;
     {   /* issue #19: crowd control. A CcImmunity status keeps LosePlayerControl / FullStun / Silence off and clears the stun
@@ -288,6 +378,24 @@ void superfix_status_cancel(uint8_t *ch, int within) {
         if (s->ch == ch && s->ch_id == id && s->src_ch == ch && t < s->until && t - s->start <= within) s->until = t; }
 }
 typedef struct { int spd_bp, spd_ba, spd_rp, spd_ra, dmg_bp, dmg_rp, recv_bp, recv_ba; } StMods;
+/* Alli's super (StalkerUltiDamageTargetCurrentHpBoost: DamageBoostTargetCurrentHealthPercent 25, CancelOnChargeEnd): the
+ * character's largest live DamageBoostTargetCurrentHealthPercent, for env.c's damage root (the client's own use of it, the
+ * area apply at 0xb2a314, reads an aggregate +0x96c that only the network decode writes; env.c applies it to every hit
+ * instead, so +0x96c stays 0). CancelOnChargeEnd: the charge tick 0xb3ae74 calls the manager's 0xba3274(char +0x890), a bare
+ * `ret`, where a charge ends (0xb3e16c, after it clears the active charge +0x6d8); my_charge_end ends those statuses after that tick
+ * ("the next main attack", her dash). The other 0xba3274 calls (0xb41060, 0xb41148, 0xb4a168) are left alone. */
+static int st_field(uint8_t *ch, int off, uint8_t *src);
+int superfix_status_hp_boost(uint8_t *ch) { return st_field(ch, SE_HPBOOST, NULL); }
+static long g_ncharge_end;
+static void my_charge_end(void *cont) {
+    if (!g_superfix || !cont || (uint64_t)__builtin_return_address(0) != (uint64_t)B(0xb3e170)) return;
+    uint8_t *ch = (uint8_t *)cont - 0x890; int t = now_tick(ch), id = I32(ch, 8);
+    for (int i = 0; i < g_nst; i++) { St *s = &g_st[i];
+        if (s->ch == ch && s->ch_id == id && t < s->until && U8(s->data, SE_CANCEL_CHARGE_END)) {
+            s->until = t + 1; g_ncharge_end++;   /* through this tick: the charge's last hit comes after this call */
+            if (g_superfix_dbg) LOG("[superfix] st: %d on ch %d ends with the charge, tick %d\n", data_id(s->data), id, t);
+        } }
+}
 int superfix_status_mods(uint8_t *ch, StMods *m) {
     memset(m, 0, sizeof *m);
     if (!g_superfix || !mode() || !ch || (!g_nst && !g_nzn)) return 0;
@@ -415,7 +523,7 @@ int superfix_status_charge_pct(uint8_t *ch) {
 }
 
 /* StatusEffect (type 36) areas, from superfix.c's area tick hook (0xb28c0c) */
-typedef struct { void *a, *d; int start, end, next; } AreaRec;
+typedef struct { void *a, *d; int start, end, next, n; } AreaRec;
 #define AR_MAX 128
 static AreaRec g_ar[AR_MAX]; static int g_nar;
 typedef void (*apply_t)(void *, void *, int, int, void *, void *, int, int, int, int, int);   /* 0xb35dd0 */
@@ -426,9 +534,26 @@ static AreaRec *area_rec(uint8_t *a, uint8_t *d, int t, int first) {   /* this a
         for (int i = g_nar - 1; i >= 0; i--) if (g_ar[i].end < t) g_ar[i] = g_ar[--g_nar];
         if (g_nar >= AR_MAX) { g_nar = 0; LOG("[superfix] status: area records full, reset\n"); }
         k = g_nar++;
-        g_ar[k] = (AreaRec){a, d, I32(a, 0xd0), I32(a, 0xd8), first};
+        g_ar[k] = (AreaRec){a, d, I32(a, 0xd0), I32(a, 0xd8), first, 0};
     }
     return &g_ar[k];
+}
+/* SameAreaEffectCanNotDamageMs (area data +0x164, the loader's column read at 0xa95a04): a character an area of this data
+ * touched is left alone by every area of the same data for that long. Max's drinks (SpeedyOverchargedArea2, 1000 ms):
+ * two drinks landing next to each other (two teammates side by side, or a teammate beside Max) give 25 %, not 50 %. */
+typedef struct { void *d; int id, from, until; } Imm;
+#define IMM_MAX 64
+static Imm g_imm[IMM_MAX]; static int g_nimm; static long g_nimm_skip;
+static int same_area_immune(uint8_t *d, uint8_t *o, int t) {   /* 1 = skip o; else o is marked now */
+    int ms = I32(d, 0x164), id = I32(o, 8);
+    if (ms <= 0) return 0;
+    for (int i = 0; i < g_nimm; i++)
+        if (g_imm[i].d == d && g_imm[i].id == id && t >= g_imm[i].from && t < g_imm[i].until) { g_nimm_skip++; return 1; }
+    int k = -1;
+    for (int i = 0; i < g_nimm && k < 0; i++) if (g_imm[i].until <= t || g_imm[i].from > t) k = i;   /* a lapsed slot */
+    if (k < 0) k = g_nimm < IMM_MAX ? g_nimm++ : 0;
+    g_imm[k] = (Imm){d, id, t, t + (ms + 49) / 50};   /* 50 ms ticks */
+    return 0;
 }
 /* issue #19 leftovers: area types the area apply 0xb29494 drops at its type gate (mask 0x10400440000015 at 0xb29600 after
  * env.c's Dot / Hot patch, plus the list at 0xb296b4) and nothing else in libg reads. Type ints from the loader 0xa96604.
@@ -447,7 +572,8 @@ static AreaRec *area_rec(uint8_t *a, uint8_t *d, int t, int first) {   /* this a
  *     AllyChargeSuper 29 (personal passive areas; Buster for 29): the owner, while an enemy / a teammate brawler is inside.
  * Issue #19 final (libg reads none of these types; Max's drink projectiles: superfix.c my_spawn_area):
  *   ChargeSuper 18 (Max's hypercharged drink, SpeedyOverchargedArea2: "granting them 25% Super charge"): once, every brawler
- *     of the owner's team inside gets CustomValue (1000 = 25 % of the 4000 maximum) through 0xb4f7f8.
+ *     of the owner's team inside (Max too: the area has no owner rule) gets CustomValue (1000 = 25 % of the 4000 maximum)
+ *     through 0xb4f7f8, once per SameAreaEffectCanNotDamageMs (same_area_immune) however many drinks land on it. [?] Max.
  *   GiveUlti 57 (Max's hypercharged main attack hit, SpeedyOverchargedBuddyWeaponArea at Max): once, every teammate brawler
  *     inside (not Max) gets Damage (300 = 7.5 %; the card text shows Damage "ultiChargeAsPercent") through 0xb4f7f8. [?]
  *     that the owner is left out.
@@ -541,6 +667,7 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
         } else if (((type == 31 || type == 18) && same && hero) || (type == 57 && same && hero && o != owner)) {
             int amount = type == 57 ? I32(d, 0x134) : I32(d, 0x13c);
             if ((type == 18 || type == 57) && superfix_area_reach && superfix_area_reach(a, d, o) < 0) continue;
+            if (same_area_immune(d, o, t)) continue;
             ((void (*)(void *, int, int, int))B(0xb4f7f8))(o, amount, 5, ((geti_t)B(0xb6a884))(a)); g_ncharge++;
             if (g_superfix_dbg && type != 31) LOG("[superfix] st: charge area %d type %d: ch %d +%d tick %d\n", data_id(d), type, I32(o, 8), amount, t);
         }
@@ -555,7 +682,8 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
 void superfix_status_area(uint8_t *a) {
     if (!g_superfix || !mode() || !a) return;
     uint8_t *d = ((getp_t)B(0xb6a384))(a);
-    if (d && (I32(d, 0x118) == 16 || I32(d, 0x118) == 24 || I32(d, 0x118) == 43)) {   /* issue #19: Stun / Silence / HpBasedStun areas (superfix_cc.c) */
+    if (d && (I32(d, 0x118) == 16 || I32(d, 0x118) == 24 || I32(d, 0x118) == 43 || I32(d, 0x160) > 0)) {   /* issue #19: Stun / Silence / HpBasedStun areas
+        * and any area with StunTicks (+0x160: Mico's hypercharged landing; libg reads it only when it loads the table) (superfix_cc.c) */
         extern void superfix_cc_area(uint8_t *, uint8_t *) __attribute__((weak)); if (superfix_cc_area) superfix_cc_area(a, d);
         return;
     }
@@ -569,7 +697,12 @@ void superfix_status_area(uint8_t *a) {
     int t = now_tick(a), interval = I32(d, 0xa0);
     AreaRec *ar = area_rec(a, d, t, U8(d, 0x17c) && interval > 0 ? t + interval : t);
     if (t < ar->next) return;
-    ar->next = interval > 0 ? t + interval : 0x7fffffff;
+    /* an area without TickInterval applies once; one that only a hypercharged super makes (hyper.c) gives its Self / Ally
+     * statuses every tick while it lives: Sandy's SandStormOverchargedUltiAreaSpeedBuff (9 s) carries a Refreshable 10-tick
+     * SpeedBoostAbsolute 200, "increased movement speed while inside of Sandstorm" */
+    extern int hyper_area_oc_only(uint8_t *) __attribute__((weak));
+    int rep = interval <= 0 && hyper_area_oc_only && hyper_area_oc_only(a), again = ar->n++ > 0;
+    ar->next = interval > 0 ? t + interval : rep ? t + 1 : 0x7fffffff;
     int n; void **v = objects(owner, &n); if (!v) return;
     int team = ((geti_t)B(0xb6a820))(a), player = ((geti_t)B(0xb6a754))(a), ax = I32(a, 0x38), ay = I32(a, 0x3c);
     int heroes = U8(d, 0x1b4), hits = 0;
@@ -581,7 +714,7 @@ void superfix_status_area(uint8_t *a) {
         long dx = I32(o, 0x38) - ax, dy = I32(o, 0x3c) - ay, r = ((int (*)(void *, void *))B(0xb2b298))(d, o);
         if (dx * dx + dy * dy > r * r) continue;
         void *st = o == owner ? self : ((geti_t)B(0xb6a820))(o) == team ? ally : enemy;
-        if (!st) continue;
+        if (!st || (rep && again && st == enemy)) continue;
         if (g_superfix_dbg) LOG("[superfix] st: area %d (owner ch %d) tick %d: %s %d -> ch %d at %ld u\n", data_id(d), I32(owner, 8), t,
                                 st == enemy ? "enemy" : o == owner ? "self" : "ally", data_id(st), I32(o, 8), (long)__builtin_sqrt((double)(dx * dx + dy * dy)));
         ((apply_t)B(0xb35dd0))(o, st, player, team, a, owner, I32(a, 0xf8), 0, -1, -1, 0);
@@ -607,6 +740,9 @@ void superfix_status_install(void) {
     hook_replace(g_libg, 0xba3260, (void *)my_status_remove);
     hook_replace(g_libg, 0xba3264, (void *)my_status_remove);
     hook_enter(g_libg, 0xb3941c, on_char_update);
+    if (*(uint32_t *)B(0xba3274) == 0xd65f03c0 && *(uint32_t *)B(0xb3e16c) == 0x94019442)   /* ret; bl 0xba3274 */
+        hook_replace(g_libg, 0xba3274, (void *)my_charge_end);
+    else LOG("[superfix] status: charge-end notify 0xba3274 bytes differ, CancelOnChargeEnd left out\n");
     /* issue #19 leftovers: the reload and lifesteal queries (both `mov w0, wzr; ret`) */
     if (*(uint32_t *)B(0xb38e04) == 0x2a1f03e0 && *(uint32_t *)B(0xb38e08) == 0xd65f03c0) hook_replace(g_libg, 0xb38e04, (void *)my_reload_pct);
     else LOG("[superfix] status: reload query 0xb38e04 bytes differ, reload statuses left out\n");
@@ -618,8 +754,10 @@ void superfix_status_install(void) {
 void superfix_status_status(void) {
     LOG("[superfix] status: added %ld, refreshed %ld, full %ld, ended %ld, removed %ld, live %d; damage %ld, heal %ld; "
         "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
-        "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld, "
-        "spin bullets %ld\n",
+        "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld "
+        "(same-area skips %ld), spin bullets %ld, charge-end cancels %ld; Pierce marked shots %ld, second-wave shots %ld (dropped %ld); "
+        "trail ticks %ld, mech deploys %ld\n",
         g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal, g_narea_apply, g_narea_hits, g_nmount, g_nstun,
-        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nspin);
+        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nimm_skip, g_nspin, g_ncharge_end,
+        g_npierce_mark, g_npierce_wave2, g_npierce_drop, g_ntrail, g_nmech);
 }
