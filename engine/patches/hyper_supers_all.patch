@@ -1,0 +1,920 @@
+# Hypercharged supers that ignored their Overcharged* data or card values (bsrl-sim issue #56), a diff on top of
+# hyper_piper_bombs.patch.
+# hyper.c: my_card_value answers libg's card-value stub (0xb5281c, -1 in this build) from the hypercharge card for the card
+#   types whose libg call sites apply it (Frank/Glowy 202, Ash 274, Shelly 166, Rosa 178, Brock 192, Max 193, Gene 194,
+#   Lily 197, Gale 200, Barley 201, Angelo 203, Piper 209, Draco 304, Moe 307); the host applies the ones libg never reads:
+#   pets (177 Charlie's spiders, 179 Jessie/Juju/Penny pet buffs and the overcharged-pet byte, Penny's Value4 volley, Tick's
+#   ownerless head chain), Griff's extra note (295), Lumi's side blasts (303), Colette's spirit hit (180), Berry's extra
+#   scoops (273). A Pet form (Kaze's transformed form) takes its brawler's card.
+# env.c: El Primo's negative ChargePushback pulls the hit enemies to the landing point; the charge contact applies the
+#   skill's OnChargeHitStatusEffect (Trunk); pet tracking and Berry's scoops are called from the tick.
+# spawnfix.c: a reason-3 end chains on a recorded hit or ExecuteChainSpecialCase 2 (Bea, Bibi), the hit enemy goes into the
+#   children's hit list; Griff's notes return (is_return_parent matches the data's own id; ret_codes.h skin ids).
+# superfix_status.c / superfix_cc.c: SameAreaEffectCanNotDamageMs for ChargeSuper (Max); StunTicks areas stun (Mico).
+# superfix.c: max_drinks removed (libg throws the drinks through card 193). superfix_items.c: an ownerless expiring pet area
+#   takes its dead pet's summoner (Tick).
+diff --git native/loader/env.c native/loader/env.c
+index 0961827..d560b08 100644
+--- native/loader/env.c
++++ native/loader/env.c
+@@ -183,6 +183,8 @@ static int brawler_owner(void *sim, uint8_t *c) {   /* player index whose curren
+ void hyper_clear(void); void hyper_reset_player(int i, void *p); int hyper_active(void *p); int hyper_use(int i, void *p, uint8_t *ch);
+ int hyper_tick_player(int i, void *p, uint8_t *ch, int alive); int hyper_damage(void *pa, int ai, void *pv, int vi, int d);
+ int hyper_speed(int i, void *p, uint8_t *ch); void hyper_publish(NbeResp *r, void **ps, int np);
++int hyper_pet_damage(void *attacker, int d); int hyper_pet_speed(uint8_t *ch);   /* hyper.c: pets of a hypercharged super */
++void hyper_pets_tick(void *sim); int hyper_spirit_damage(uint8_t *ch, int d);   /* hyper.c: Colette's spirit (overcharge_pet_charge) */
+ /* gear round (bsrl-sim issue #51): gear.c */
+ extern int32_t g_div_gear[NBE_MAXP][2]; void gear_clear(void); void gear_reset_player(int i, void *cfg); void gear_install(void);
+ int gear_damage(uint8_t *ach, int ai, uint8_t *vch, int vi, int d, int storm); int gear_speed(int i, uint8_t *ch, int base, int bush);
+@@ -206,6 +208,7 @@ static int taunt_target(uint8_t *ch, int *tx, int *ty) {
+     return 2;
+ }
+ void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) __attribute__((weak));   /* superfix_cc.c: projectile stuns */
++void spawnfix_proj_hit(void *src, void *victim) __attribute__((weak));   /* spawnfix.c: chain of a reason-3 hit */
+ void hyper_install(void); void *hyper_super_data(int i, uint8_t *ch, void *sd); void hyper_unswap(int i, uint8_t *ch);
+ void hyper_char_changed(uint8_t *old, uint8_t *nc);
+ static void *owner_player(void *sim, void *c, int *idx) {   /* the player whose current brawler c is (NULL: none) */
+@@ -415,6 +418,7 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
+     int mode3 = I32(g_libg->base, 0x12eefb4) == 3;
+     E.root_calls++;
+     if (superfix_cc_hit) superfix_cc_hit(victim, attacker, src, (uint64_t)__builtin_return_address(0));
++    if (spawnfix_proj_hit && dmg > 0) spawnfix_proj_hit(src, victim);
+     int saved_level = E.charge_level; E.charge_level = 0;
+     if (mode3 && !E.in_own_call && attacker) {   /* agent: entryScale (attackerArg 5) + dmgModelApply */
+         int raw = dmg, d = raw, aid = I32(attacker, 8), cubes = cubes_of(aid), lvl = 0;
+@@ -437,6 +441,8 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
+             int nd = hyper_damage(pa, ai, pv, vi, dmg);
+             if (nd != dmg) { if (a3 == dmg) a3 = nd; dmg = nd; E.hyper_dmg++; }
+         }
++        int pd = hyper_pet_damage(attacker, dmg);   /* a pet of a hypercharged super (overcharge_pet_buff_stats) */
++        if (pd != dmg) { if (a3 == dmg) a3 = pd; dmg = pd; E.hyper_dmg++; }
+     }
+     if (dmg > 0 && superfix_status_mods && E.sim && victim) {   /* issue #19: damage boost / reduce of the attacker's statuses,
+                                                                * damage received boost of the victim's (superfix_status_mods) */
+@@ -605,7 +611,8 @@ int g_native_charge = 1; static long g_native_charges;
+ /* env charge contact (RE-IMPLEMENTED, not the game's code): the native start state for the charge's own hit processing is not
+  * known, so env applies the charge skill's Damage once to every living enemy character (brawlers, summons, boxes) the charger
+  * passes within CHARGE_HIT_R, through the damage root like the leap bombs (x2 power level, +10 % per cube), then the skill's
+- * ChargePushback with the game's knockback; Berry (type 21) heals a teammate he passes by the same amount instead. The
++ * ChargePushback with the game's knockback (a negative one pulls the hit enemies to the landing point, charge_end) and its
++ * OnChargeHitStatusEffect (hypercharged Trunk's ants, DomainOverchargedUltiDamage); Berry (type 21) heals a teammate he passes by the same amount instead. The
+  * charge's areas and Bull's wall breaking are env's too (charge_end, below).
+  * --native-charge 2 = movement only (no env contact damage, pushback, areas or wall breaking). */
+ #define CHARGE_HIT_R 250
+@@ -614,7 +621,7 @@ int g_native_charge = 1; static long g_native_charges;
+ #define CHARGE_LAND_WALL_R 300   /* El Primo: tiles around the landing point ([?] radius unknown: LuchadorUlti has no area, the
+                                   * wiki only says "in a radius around him"; one tile ring) */
+ #define CHARGE_LAND_R 200        /* Bonnie (type 16): her landing hit, CannonGirlExplosion's Radius ([?] the server's rule is compiled out) */
+-typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; } ChargeJob;
++typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; void *hit_st; int dx, dy; } ChargeJob;
+ static ChargeJob g_cj[NBE_MAXP]; static int g_ncj; static long g_charge_hits, g_charge_pushes, g_charge_areas, g_charge_walls, g_charge_heals;
+ /* knockback 0xb49834(victim, srcX, srcY, strength, a4..a7, 10 stack slots, the last = pusher's owner index): pushes the victim
+  * 6 * strength u away from (srcX, srcY) over 10 ticks (half for CollisionRadius >= 150), the call the game's own charge sweep
+@@ -754,12 +761,18 @@ static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type
+     { uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464);
+       for (int k = 1; k >= 0; k--) if (sk && k < n && sk[k]) { uint8_t *d = ((uint8_t *(*)(void *, int))B(0xb7adfc))(sk[k], 0);
+           if (d && I32(d, 0x1a8) == 2) { I32(ch, 0x6d8) = k + 1; break; } } }
++    /* OnChargeHitStatusEffect (SkillData +0x1f0, the resolved StatusEffectData: loader 0xb0b410; no libg reader in this build):
++     * the active skill's data as the skill code sees it (+49 = overcharged: Trunk's DomainOverchargedUlti, DomainOverchargedUltiDamage) */
++    void *hit_st = NULL;
++    { uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464), k = I32(ch, 0x6d8) - 1;
++      if (sk && k >= 0 && k < n && sk[k]) { uint8_t *d = ((uint8_t *(*)(void *, int))B(0xb7adfc))(sk[k], U8(sk[k], 49) & 1);
++          if (d) hit_st = PTR(d, 0x1f0); } }
+     if (full && g_ncj < NBE_MAXP) {
+         int id = I32(ch, 8), k; for (k = 0; k < g_ncj && g_cj[k].id != id; k++) {}
+         if (k == g_ncj) g_ncj++; else if (g_cj[k].type) PTR(ch, 0x550) = g_cj[k].old550;   /* a charge restarted mid-charge */
+         /* Bonnie's launch (type 16) changes her into CannonGirlSmall before the start (0xb7bb58): no Charge skill, +0x6d8 stays 0 */
+         g_cj[k] = (ChargeJob){id, I32(ch, 0x80), dmg, I32(sim, 0x10), 0, I32(ch, 0x6d8) == 2 || type == 16, type, push, -1000000, -1000000,
+-                              area1, area_end, PTR(ch, 0x550), area2, {0}};
++                              area1, area_end, PTR(ch, 0x550), area2, {0}, hit_st, tx - x0, ty - y0};
+         /* trail (Stu's fire, Berry's paint, Trunk's ants): while +0x490 is set and +0x550 holds area data, the character tick
+          * spawns it through 0xb47360 each time the charger is farther than the area's Radius (+0x12c) from the last spawn point
+          * (+0xc98/+0xc9c); the far point makes the first one land at the start. Only the client constructor writes +0x550. */
+@@ -808,9 +821,33 @@ static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge f
+     if (j->area1 && j->type == 2) charge_area(sim, ch, j->area1, x, y);
+     if (j->area_end) charge_area(sim, ch, j->area_end, x, y);   /* AreaEffect2AtEndOfCharge: Bull's slow, Nori, Ollie, Damian */
+     if (j->type == 16) charge_land(sim, j, ch, x, y);
++    /* a negative ChargePushback pulls (LuchadorUlti's OverchargedChargePushback -100, the hypercharged super the game passes
++     * as the start's x5): every enemy the charge hit is drawn to the landing point by the game's knockback, which for a
++     * negative strength moves the victim min(6 * |strength|, its distance) u toward the source (0xb49ba8..0xb49bc8, 0xb49cd0) */
++    if (j->push < 0 && g_native_charge == 1)
++        for (int h = 0; h < j->nhit; h++) { uint8_t *c = obj_by_id(sim, j->hit[h]);
++            if (!c || c == ch || VTOF(c) != VT_CHAR || I32(c, 0x3c4) <= 0 || I32(c, 0x84) == I32(ch, 0x84)) continue;
++            static int npl; if (npl++ < 10) LOG("[env] charge pull: %d at %d,%d, %d u from the landing point %d,%d\n", I32(c, 8),
++                I32(c, 0x38), I32(c, 0x3c), (int)hypot(I32(c, 0x38) - x, I32(c, 0x3c) - y), x, y);
++            KNOCKBACK(c, x, y, j->push, j->owner); g_charge_pushes++; }
+     static int nlog; if (nlog++ < 20) LOG("[env] charge end type %d at %d,%d: hits %ld, ally heals %ld, pushes %ld, areas %ld, wall calls %ld, zones %d (zone hits %ld, heals %ld, pushes %ld) (totals)\n",
+         j->type, x, y, g_charge_hits, g_charge_heals, g_charge_pushes, g_charge_areas, g_charge_walls, g_nzone, g_zone_hits, g_zone_heals, g_zone_pushes);
+ }
++/* Berry's hypercharge (overcharge_painter, Painter_overcharge 1 / 90 / 400: "Sweet Swirl drops double the scoops of ice
++ * cream"; RE-IMPLEMENTED: no libg call site reads this card type): with each trail scoop the game drops, Value more of the
++ * same area, the e-th Value3 u from it at e x Value2 degrees from the dash direction (one more scoop 400 u to the dash's left).
++ * [?] the server's placement: compiled out; Value2 read as an angle, Value3 as a distance. */
++int hyper_card_live(void *ch, int type, int idx);   /* hyper.c: Value<idx> of ch's hypercharge card of that type, -1 if none */
++#define CT_PAINTER 273   /* overcharge_painter (the card Type enum) */
++static void painter_scoops(void *sim, ChargeJob *j, uint8_t *ch) {
++    int n = hyper_card_live(ch, CT_PAINTER, 1), deg = hyper_card_live(ch, CT_PAINTER, 2), off = hyper_card_live(ch, CT_PAINTER, 3);
++    double L = hypot(j->dx, j->dy);
++    if (n <= 0 || n > 4 || off <= 0 || L < 1) return;
++    for (int e = 1; e <= n; e++) {
++        double a = e * deg * M_PI / 180.0, ux = j->dx / L, uy = j->dy / L;
++        charge_area(sim, ch, j->area1, jround(j->tx + off * (ux * cos(a) - uy * sin(a))), jround(j->ty + off * (ux * sin(a) + uy * cos(a))));
++    }
++}
+ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
+     for (int k = 0; k < g_ncj; k++) {
+         ChargeJob *j = &g_cj[k]; uint8_t *ch = obj_by_id(sim, j->id);
+@@ -819,7 +856,8 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
+         int x = I32(ch, 0x38), y = I32(ch, 0x3c), n; void **v = objvec(sim, &n);
+         if (j->type == 1) charge_break(sim, ch, x, y, CHARGE_WALL_R);   /* Bull breaks the walls and bushes of his lane */
+         if (j->area1 && PTR(ch, 0x550) == j->area1 && (I32(ch, 0xc98) != j->tx || I32(ch, 0xc9c) != j->ty) && I32(ch, 0xc98) > -1000000) {
+-            j->tx = I32(ch, 0xc98); j->ty = I32(ch, 0xc9c); zone_add(sim, ch, j->area1, j->tx, j->ty); }   /* the game spawned a trail area */
++            j->tx = I32(ch, 0xc98); j->ty = I32(ch, 0xc9c); zone_add(sim, ch, j->area1, j->tx, j->ty);   /* the game spawned a trail area */
++            if (j->type == 21) painter_scoops(sim, j, ch); }
+         if (j->dmg <= 0 && j->push <= 0) continue;
+         if (j->type == 16) continue;   /* Bonnie is in the air: she hits where she lands (charge_end) */
+         if (j->type == 22) continue;   /* Moe is underground (0xb5033c: untouchable while +0x490 and type 22): he hits when he surfaces (dig_change) */
+@@ -844,11 +882,21 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
+             int np_; void **ps_ = players(sim, &np_); uint8_t *pl_ = j->owner >= 0 && j->owner < np_ ? ps_[j->owner] : NULL;
+             int charge0 = pl_ ? I32(pl_, 0x54) : 0;
+             if (j->dmg > 0) o_root(c, j->owner, d, d, 0, ch, NULL, 1, x, y, NULL, 0, 0, 0, 1, 0, 0, 0);
++            /* Colette's hypercharged dash: her spirit's hit follows on the same enemy (hyper.c hyper_spirit_damage) */
++            int sp = j->dmg > 0 && j->ulti && I32(c, 0x3c4) > 0 && I32(c, 0x84) != I32(ch, 0x84) ? hyper_spirit_damage(ch, d) : 0;
++            if (sp > 0) o_root(c, j->owner, sp, sp, 0, ch, NULL, 1, x, y, NULL, 0, 0, 0, 1, 0, 0, 0);
+             if (pl_ && j->ulti) I32(pl_, 0x54) = charge0;
+             int pc = mech_pop(sim, c, hp0);
++            /* the skill's OnChargeHitStatusEffect on the hit enemy, through the status store (superfix_status.c) with the
++             * arguments of the area enemy call 0xb2a71c (source player, team, source object, source character, kind 2 = super) */
++            if (j->hit_st && !pc && I32(c, 0x3c4) > 0 && I32(c, 0x84) != I32(ch, 0x84))
++                ((void (*)(void *, void *, int, int, void *, void *, int, int, int, int, int))B(0xb35dd0))(c, j->hit_st, j->owner,
++                    I32(ch, 0x84), ch, ch, 2, 0, -1, -1, 0);
+             /* ChargePushback (Bull / El Primo 130 -> 780 u, Darryl 70, Surge / Stu 100), away from the charger as at 0xb5afd4;
+              * not after a knock-out (the victim is parked or gone) */
+             if (j->push > 0 && I32(c, 0x3c4) > 0) { KNOCKBACK(c, x, y, j->push, j->owner); g_charge_pushes++; }
++            /* a negative ChargePushback (El Primo's hypercharged OverchargedChargePushback -100, "brings enemies to the
++             * Epicenter") pulls: charge_end draws the hit enemies to the landing point */
+             E.in_own_call = 0; record_event(c, ch, pc ? hp0 + 1 : hp0, pc ? 1 : I32(c, 0x3c4)); g_charge_hits++;
+             v = objvec(sim, &n);
+         }
+@@ -1048,7 +1096,7 @@ static void rec_move(uint64_t *ctx) {
+     rec_put(0, (uint8_t *)ctx[0], (int)ctx[1], (int)ctx[2], (int)ctx[6], 0);
+     if ((int)ctx[3] == 0 && E.sim) {
+         uint8_t *ch = (uint8_t *)ctx[0];
+-        int i; void *p = owner_player(E.sim, ch, &i); int sp = p ? hyper_speed(i, p, ch) : 0;
++        int i; void *p = owner_player(E.sim, ch, &i); int sp = p ? hyper_speed(i, p, ch) : hyper_pet_speed(ch);
+         if (sp > 0) { ctx[3] = 1; ctx[4] = (uint64_t)(uint32_t)sp; E.hyper_moves++; }
+         if (p && VTOF(ch) == VT_CHAR && gear_has(i, 0)) {   /* gear round: ForestSpeed (LogicType 0) on a bush tile */
+             int gs = gear_speed(i, ch, sp > 0 ? sp : base_speed(ch), bush_at(E.sim, I32(ch, 0x38), I32(ch, 0x3c)));
+@@ -1320,6 +1368,7 @@ static void pre_snapshot(void *sim) {   /* 0xb63b0c, once per tick: storm hits,
+     if (g_ncj) charge_contact_tick(sim);   /* diversity round: env charge contact (only after a native charge start) */
+     gadget_tick(sim, I32(sim, 0x10));      /* gadget round: heals over time */
+     if (g_nzone) zone_tick(sim);
++    hyper_pets_tick(sim);                  /* hypercharge round: last positions of pets with an overcharged death area */
+     int ntj = E.ntj; TickJob tj[64]; memcpy(tj, E.tj, ntj * sizeof *tj); E.ntj = 0;
+     for (int i = 0; i < ntj; i++) {
+         if (tj[i].kind == 1) sf_spawn_box(sim, tj[i].p, tj[i].a, tj[i].b, tj[i].c);
+diff --git native/loader/hyper.c native/loader/hyper.c
+index 8e878cb..7ce7e93 100644
+--- native/loader/hyper.c
++++ native/loader/hyper.c
+@@ -24,12 +24,17 @@
+  * OverchargedProjectiles, OverchargedChainProjectile, OverchargedSummonedCharacters, OverchargedAreaEffectObject/2,
+  * OverchargedSpawnedItem and the Overcharged*Effect visuals; two reads of a normal list that ignore it (AttackPattern 11's
+  * per-attack projectile, the Attack handler's summon) take the overcharged list here (hyper_proj_site, hyper_summon_bl),
+- * and a hypercharged brawler's Heal area heals here (oc_heal_areas). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
++ * a hypercharged brawler's Heal area heals here (oc_heal_areas), and the card-value stub 0xb5281c answers the hypercharge
++ * card's values for the types in CARD_TYPES (Frank's and Glowy's full circle, Gene's 3 hands, Gale's 2 wider waves, Barley's
++ * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value). Three hypercharges whose card Type
++ * no libg call site asks for (code compiled out) are re-implemented: Lumi's side blasts (my_spawn), Griff's extra notes
++ * (hyper_chain_extra, from spawnfix.c) and Colette's spirit (hyper_spirit_damage, from env.c's charge contact); Tick's dead
++ * head gets its summoner for its mine chain (hyper_dead_pet_owner, from superfix_items.c). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
+  * MechaDudeBig) have a separate super instead (characters.csv OverchargedUltimateSkill): the game builds it as the brawler's
+  * third skill instance (char+0x458[2], 0xb34560) but what picks it for a super cast is compiled out; here instances 1
+  * (the super) and 2 are swapped while hypercharged, so the game's own super code casts it, and swapped back once the
+  * hypercharge ended and that super is idle (hyper_unswap). Meg's mech (MechaDudeBig, what MechaDude's super turns into)
+- * takes Meg's card. A character change hands a running hypercharge to the new form (hyper_char_changed). NbeResp hyp_supers / hyp_super_id count the supers cast while hypercharged and name the SkillData of
++ * takes Meg's card, Kaze's other form (GeishaTransformed, Geisha's Pet) Kaze's. A character change hands a running hypercharge to the new form (hyper_char_changed). NbeResp hyp_supers / hyp_super_id count the supers cast while hypercharged and name the SkillData of
+  * the last one (hyper_super_data, from env.c fire_input_now).
+  * The visual effects (client side) are whatever the client draws from +0xa0 and the overcharged skill data.
+  * Also here: the steering of homing projectiles (on_travel), which Belle's and Hank's hypercharged supers need; it applies
+@@ -88,6 +93,16 @@ void *hyper_card_for(void *chardata) {
+         void **sc = u ? PTR(u, 0x80) : NULL; int nsc = u ? I32(u, 0x8c) : 0;
+         for (int k = 0; sc && k < nsc && k < 8; k++) if (sc[k] == chardata) { found = card; break; }
+     }
++    /* a form the brawler switches to (Kaze, GeishaTransformed: Geisha's Pet, reached by her change_character trait gadget;
++     * Geisha_overcharge's text covers both forms' supers): the card of the brawler whose Pet (CharacterData +0x250, getter
++     * 0xab3da4) it is. Only player brawlers ask (offline.c), so the other Pets (Tick's head, ...) never get here. */
++    for (int idx = 0, miss = 0; !found && idx < 20000 && miss < 64; idx++) {
++        uint8_t *card = div_data(23000000 + idx);
++        if (!card) { miss++; continue; }
++        miss = 0;
++        uint8_t *t = I32(card, 0x108) == 6 ? *(uint8_t **)(card + 0xd8) : NULL;
++        if (t && PTR(t, 0x250) == chardata) found = card;
++    }
+     if (n < 128) { cache[n].d = chardata; cache[n].card = found; n++; }
+     return found;
+ }
+@@ -99,14 +114,16 @@ static uint8_t *g_sw[NBE_MAXP];   /* player i's brawler whose skill instances 1
+ 
+ static int g_heal_seen[32], g_nheal_seen; static long g_oc_heals;   /* oc_heal_areas: area ids already applied */
+ static void hyper_heal_clear(void) { memset(g_heal_seen, 0xff, sizeof g_heal_seen); g_nheal_seen = 0; }
+-void hyper_clear(void) { memset(g_hyp, 0, sizeof g_hyp); memset(g_oc, 0, sizeof g_oc); memset(g_sw, 0, sizeof g_sw); hyper_heal_clear(); }
++static void hyper_pets_clear(void);
++void hyper_clear(void) { memset(g_hyp, 0, sizeof g_hyp); memset(g_oc, 0, sizeof g_oc); memset(g_sw, 0, sizeof g_sw); hyper_heal_clear(); hyper_pets_clear(); }
+ 
+ /* Character::isOvercharged 0xb35bf0 (a bare `mov w0, wzr; ret` in this build): true for a brawler whose hypercharge is on.
+  * Only the brawlers hyper_use activated answer true (not a read of char+0x68: some call sites may pass other objects). */
++static int pet_slot(void *ch);   /* below: a pet a hypercharged super spawned (hyper_proj_spawn), -1 if none */
+ static int is_oc_char(void *ch) {
+     if (!ch) return 0;
+     for (int i = 0; i < NBE_MAXP; i++) if (g_oc[i] == ch && U8(ch, 0x68)) return 1;
+-    return 0;
++    return pet_slot(ch) >= 0;
+ }
+ static int my_is_oc(void *ch) {
+     int r = is_oc_char(ch);
+@@ -241,13 +258,325 @@ static void oc_heal_areas(uint8_t *ch) {
+     }
+ }
+ 
++/* The hypercharge card's own values (cards.csv MetaType 6: Type, Value..Value6). The skill code asks the character's card
++ * through 0xb5281c(character, card type enum, value index 1..6) -> Value<index>, or -1 without such a card; in this build that
++ * function is a bare `mov w0, #-1; ret` (~55 call sites, ~20 card types). The Attack handler's summon reads it for
++ * overcharge_more_pets (Ash, 0xb7eeac..0xb7eee8, only for a skill instance whose +0x31 latch is set): NumSpawns + Value,
++ * MaxSpawns + Value2 (Knight_overcharge 5 / 10: "Little Helper spawns 5 more rats"). my_card_value answers it from the card of
++ * the brawler that holds it (Type enum card +0x100, Value<i> 0xaa9568), for the types in CARD_TYPES only, also after its
++ * hypercharge ended: every call site of these types checks isOvercharged (or the skill's +0x31 / +0x49 latch) itself, except
++ * Rosa's, which ends her hypercharged area when her super ends, also when that is after the hypercharge (as the game's card
++ * holder would answer). The other types' call sites are not checked here and keep the -1 they had.
++ * overcharge_attack_pattern_override (202): the super's Attack handler (0xb7e1a8..0xb7f2ec) takes the AttackPattern from Value
++ * and NumBulletsInOneAttack from Value2 in place of the skill's. HammerDude_overcharge 19 / 10 (Frank: "hits an entire circle
++ * around him"; pattern 19 is the full circle of MegaBossFrankAttackHyper) and Mender_overcharge 19 / 14 (Glowy).
++ * Checked and left at -1 (types above 210): overcharge_ruffs 263 (+Value % damage, read by the projectile hit 0xb29bd0 that
++ * Ruffs' supply drop never reaches: its explosion area deals the damage), _door_man 272 (portal count, Value 2 = the default
++ * 2; the shield Value2 has no reader), _mecha_dude 281 (Value 0 / 0, which the reader 0xb7d030 skips), _geisha 296 (Value2 %
++ * on the skill's ChargeSpeed, 0 for GeishaUlti), _stalker 319 (read at 0xb2a340 only while the character's stalk bonus
++ * +0x96c is set, which nothing in this build writes). */
++#define CT_PROJ_SPAWN 177    /* overcharge_projectile_spawn (the `mov w8, #N` per Type string in the card loader 0xaa3000..) */
++#define CT_PET_BUFF 179      /* overcharge_pet_buff_stats */
++#define CT_PATTERN_OVERRIDE 202   /* overcharge_attack_pattern_override (the parse at 0xaa66e4) */
++#define CT_MORE_PETS 274     /* overcharge_more_pets */
++#define CT_DRAGON_RIDER 304  /* overcharge_dragon_rider (Draco 10 / 4, "breathes more flames in a wider area and with longer
++                              * range"): while hypercharged and mounted (CharacterData UniqueProperty 28), the dragon's attack
++                              * fires NumBulletsInOneAttack + Value2 flames (Attack handler 0xb7e3dc: 4 -> 8 at Spread 90) and
++                              * reaches Value more tiles (the range bonus 0xc6e4d4 -> 0xc6e958) */
++#define CT_DIGGER 307        /* overcharge_digger (Moe 10 / 300 / 100 / 5, "Driller has longer range and lasts for longer"):
++                              * the dive's ChargeSpeed + Value3 % (skill fire 0xb7bc14: 2500 -> 5000), its range bonus + Value
++                              * tiles (0xc6e754), and the Driller's (UniqueProperty 32) attack Value4 more tiles (0xc6e998:
++                              * DiggerDrillWeapon 5 -> 10). Value2 (the longer Driller form) has no reader in this build. */
++/* The other types whose call sites apply the value themselves (the Type enum from the card loader's string table; Value<n>
++ * from cards.csv; the "Attack handler" is the super's attack setup 0xb7d108..0xb7f2ec, where the overrides chain 192 -> 201
++ * -> 194 -> 200 -> 202 for the super, w27 == 2): */
++static const int CARD_TYPES[] = {
++    CT_PATTERN_OVERRIDE, CT_MORE_PETS,
++    166,   /* overcharge_weapon_spread, Shelly (ShotgunGirl_overcharge 33): Spread + Value (100 -> 133, 0xb7deec): "Super
++            * Shell is 33% larger" */
++    178,   /* overcharge_slowing_area, Rosa (3): when Rosa's super ends (0xb7cc78, Value >= 0 only), the RosaOverchargedUltiArea
++            * (TimeMs 600000) ends with it: "slows down all nearby enemies while her Super is active" */
++    192,   /* overcharge_brock, Brock (750 / 18 / 7 / 400 / 500 / 420): MsBetweenAttacks Value (ActiveTime 1850 / 750 = 2
++            * volleys), Spread 0, AttackPattern Value2, NumBulletsInOneAttack Value3, damage Value4 (0xb7d8fc, 0xb7e1c4..);
++            * Value5 / Value6 only with Brock's star power type 48 (0xb7dd78..): "Rockets fired during the Super are cluster bombs" */
++    193,   /* overcharge_speedy, Max (6, only >= 0 asked): Max's AreaBuff super (+0x31 latch) throws SpeedyOverchargedProjectile
++            * at each teammate, homing on it (0xb7d590): "throws an energy drink to each team member" */
++    194,   /* overcharge_hookdude, Gene (150 / 3): Spread Value, NumBulletsInOneAttack Value2 (0xb7d944, 0xb7ecc8): "splits into
++            * 3 different hands ... the other 2 go diagonally" */
++    197,   /* overcharge_transport_shadowrealm, Lily (100): her hypercharged super's hit sends the target and Lily to the Shadow
++            * Realm for Value (0xb7472c, 0xb58214's duration): "transports the enemy and Lily to the Shadow Realm" */
++    200,   /* overcharge_blower, Gale (7 / 400 / 200): NumBulletsInOneAttack Value (4 -> 7), ActiveTime Value2 (also the skill
++            * instance's +8 at its start, 0xb81f3c), MsBetweenAttacks Value3: 400 / 200 = 2 waves (0xb7d9cc.., 0xb7f29c):
++            * "slightly wider and fires twice" */
++    201,   /* overcharge_barkeep, Barley (450 / 21 / 100): MsBetweenAttacks Value (ActiveTime 1050), AttackPattern Value2,
++            * Spread Value3 (0xb7d9a8, 0xb7ec2c): "hurls 3 big brews" */
++    203,   /* overcharge_insectMan, Angelo (1, only >= 1 asked): the super's area follows Angelo (0xb29350 at 0xb7f078 /
++            * 0xb7fefc): "the Super will follow Angelo" */
++    209,   /* overcharge_sniper, Piper (1 / 2500): ChargeSpeed Value2 (1500 -> 2500, 0xb7bbfc): "departs at an increased speed";
++            * Value is not asked (no call site): the terrain breaking is not here */
++    CT_DRAGON_RIDER, CT_DIGGER,
++};
++static void *g_card[NBE_MAXP];   /* player i's hypercharge card (cfg +0x28), set at hyper_use */
++static uint8_t *g_card_ch[NBE_MAXP]; static int g_card_id[NBE_MAXP];   /* the brawler holding it (object, id), kept after the end */
++static int card_value(void *card, int idx) { return ((int (*)(void *, int))B(0xaa9568))(card, idx); }
++static int my_card_value(uint8_t *ch, int type, int idx) {
++    unsigned k = 0; while (k < sizeof CARD_TYPES / sizeof *CARD_TYPES && CARD_TYPES[k] != type) k++;
++    if (!ch || k == sizeof CARD_TYPES / sizeof *CARD_TYPES) return -1;
++    for (int i = 0; i < NBE_MAXP; i++)
++        if (g_card_ch[i] == ch && I32(ch, 8) == g_card_id[i] && g_card[i] && I32(g_card[i], 0x100) == type) {
++            int v = card_value(g_card[i], idx);
++            static int nlog; if (nlog++ < 20) LOG("[hyper] card value: player %d type %d value%d = %d\n", i, type, idx, v);
++            return v;
++        }
++    return -1;
++}
++
++/* Pets of a hypercharged super. The projectile end 0xb75b24 calls 0xb77344(projectile), which spawns the projectile's
++ * character (+0x1c0: its SpawnCharacter or the skill's summon, Charlie's cocoon, Jessie's turret, Juju's Gris-Gris, Ash's
++ * rats) +0x3e8 times around it. Two hypercharge card types act on these summons in server code this build lacks (no reader
++ * of either type is left): overcharge_projectile_spawn (Charlie, Cocooner_overcharge 3: "Cocoon spawns 3 spiders that seek
++ * and attack the nearest enemies") and overcharge_pet_buff_stats (Jessie 50 / 20, Juju 20 / 20 / 250, Nita 20 / 0 / 150:
++ * "+Value% health, +Value2% damage, +Value3% speed", TID_*_OVERCHARGE_DESC). hyper_proj_spawn takes that call: for a
++ * projectile of the owner's ulti OverchargedProjectiles (the hypercharged super's) whose player holds such a card,
++ * - overcharge_projectile_spawn: after the normal spawn, the same spawn again with the owner's Pet (CharacterData +0x250,
++ *   CocoonerPet) x Value;
++ * - overcharge_pet_buff_stats: each character the spawn added gets max HP and HP x (100 + Value) / 100, and is kept here
++ *   (pet_slot): its damage dealt x (100 + Value2) / 100 (hyper_pet_damage, env.c my_root), its move speed x (100 + Value3)
++ *   / 100 (hyper_pet_speed, env.c rec_move), isOvercharged answers true for it (char +0x68 = 1), and its overcharged-pet
++ *   byte +0xaac (what the spawn 0xb56e00 stores from a stack argument at 0xb5771c) is set, so the game's own code takes its
++ *   OverchargedAutoAttackProjectile (CharacterData +0x68, read at 0xb3e848 / 0xb3f4ac only when +0xaac is set: Juju's
++ *   "bigger needles", Jessie's and Penny's turrets) and its DeathOverchargedAreaEffect (Tick's head). A pet with a
++ *   DeathOverchargedAreaEffect (CharacterData +0xd0, count +0xdc) takes no damage buff: Tick's Value2 5 is the minimines
++ *   his text names ("leaving behind 5 of his minimines"), not a damage percent. Value4 (Penny 5, "a bigger cannon that shoots
++ *   <VALUE1> cannonballs at a time instead of 1"): each OverchargedAutoAttackProjectile the pet fires comes Value4 times
++ *   (my_spawn). */
++#define PET_MAX 32
++static struct { uint8_t *ch; int id, dmg_pct, speed_pct, death_oc, owner_id, x, y, shots; } g_pet[PET_MAX];
++void *env_obj_by_id(void *sim, int id);   /* env.c */
++/* A dead hypercharged pet's DeathOverchargedAreaEffect (Tick's ClusterBombPetOverchargedExplosion) has no owner (+0x108 NULL
++ * when it expires), so superfix_items.c's ChainAreaEffect (ClusterBombOverchargedExplosion, 6 ClusterOverchargedMine) had
++ * none to spawn with. hyper_pets_tick keeps each such pet's last position; hyper_dead_pet_owner gives the area expiring at
++ * (x, y) the summoner of the dead pet that stood nearest (within DEAD_PET_R), once per pet, and *wdmg = the summoner's main
++ * attack Damage (CharacterData +0x260, getter 0xb0dc14), the damage of "his minimines" (power 1: my_root scales it). */
++#define DEAD_PET_R 700   /* the pet can move a little in its last tick; the area spawns where it died */
++void hyper_pets_tick(void *sim) {
++    for (int k = 0; k < PET_MAX; k++) if (g_pet[k].death_oc) {
++        uint8_t *c = env_obj_by_id(sim, g_pet[k].id);
++        if (c && I32(c, 0x3c4) > 0) { g_pet[k].x = I32(c, 0x38); g_pet[k].y = I32(c, 0x3c); }
++    }
++}
++void *hyper_dead_pet_owner(void *sim, int x, int y, int *wdmg) {
++    int best = -1; long bd = (long)DEAD_PET_R * DEAD_PET_R;
++    for (int k = 0; k < PET_MAX; k++) if (g_pet[k].death_oc && g_pet[k].owner_id) {
++        uint8_t *c = env_obj_by_id(sim, g_pet[k].id); if (c && I32(c, 0x3c4) > 0) continue;   /* still alive */
++        long dx = g_pet[k].x - x, dy = g_pet[k].y - y; if (dx * dx + dy * dy <= bd) { bd = dx * dx + dy * dy; best = k; }
++    }
++    if (best < 0) return NULL;
++    g_pet[best].death_oc = 0;
++    uint8_t *o = env_obj_by_id(sim, g_pet[best].owner_id); if (!o) return NULL;
++    void *cd = ((void *(*)(void *))B(0xb6a384))(o), *wd = cd ? PTR(cd, 0x260) : NULL;
++    *wdmg = wd ? ((int (*)(void *))B(0xb0dc14))(wd) : 0;
++    return o;
++}
++static long g_npet_buff, g_npet_spawn;
++static int pet_slot(void *ch) {
++    for (int k = 0; ch && k < PET_MAX; k++) if (g_pet[k].ch == ch && I32(ch, 8) == g_pet[k].id) return k;
++    return -1;
++}
++int hyper_pet_damage(void *attacker, int d) {
++    int k = d > 0 ? pet_slot(attacker) : -1;
++    return k >= 0 && g_pet[k].dmg_pct ? d * (100 + g_pet[k].dmg_pct) / 100 : d;
++}
++int hyper_pet_speed(uint8_t *ch) {   /* 0 = unchanged */
++    int k = pet_slot(ch); if (k < 0 || !g_pet[k].speed_pct) return 0;
++    void *cd = ((void *(*)(void *))B(0xb6a384))(ch); int base = cd ? ((int (*)(void *))B(0xab31e0))(cd) : 0;
++    return base > 0 ? base * (100 + g_pet[k].speed_pct) / 100 : 0;
++}
++/* overcharge_pet_charge (Colette, Percenter_overcharge 66: "Colette's spirit follows her during her dash, damaging enemies on
++ * the way"): no card-value reader in this build asks for type 180 (no 0xb5281c / 0xc427d8 call with w1 #0xb4), the
++ * spirit is server code. Here each enemy her dash hits while hypercharged (env.c charge_contact_tick: a charge of the super
++ * instance, char +0x6d8 2) takes the spirit's hit of Value % of the dash's hit d right after it. [?] that Value is that
++ * percent; the spirit (PercenterPet, Minion_Percenter) is not drawn and hits in the same tick as Colette. */
++#define CT_PET_CHARGE 180
++int hyper_spirit_damage(uint8_t *ch, int d) {
++    if (!ch || d <= 0 || I32(ch, 0x6d8) != 2 || !U8(ch, 0x68)) return 0;   /* +0x68: hypercharged now */
++    for (int i = 0; i < NBE_MAXP; i++)
++        if (g_card_ch[i] == ch && I32(ch, 8) == g_card_id[i] && g_card[i] && I32(g_card[i], 0x100) == CT_PET_CHARGE) {
++            int v = card_value(g_card[i], 1), sp = v > 0 ? d * v / 100 : 0;
++            static int nlog; if (sp > 0 && nlog++ < 20) LOG("[hyper] spirit hit: player %d, dash hit %d -> spirit %d (%d%%)\n", i, d, sp, v);
++            return sp;
++        }
++    return 0;
++}
++static void hyper_pets_clear(void) { memset(g_pet, 0, sizeof g_pet); memset(g_card, 0, sizeof g_card); memset(g_card_ch, 0, sizeof g_card_ch); }
++#define SNAP_MAX 1024
++static int snap_chars(uint8_t *pr, void **out) {   /* the sim's character objects now */
++    void *sim = ((void *(*)(void *))B(0xb6a378))(pr), *h = sim ? PTR(sim, 0) : NULL;
++    int n = h ? I32(h, 0xc) : 0, m = 0; void **v = h ? PTR(h, 0) : NULL;
++    for (int i = 0; v && i < n && i < 4096 && m < SNAP_MAX; i++) if (v[i] && PTR(v[i], 0) == B(0x1209020)) out[m++] = v[i];
++    return m;
++}
++static void hyper_proj_spawn(uint8_t *pr) {
++    void (*spawn)(void *) = (void (*)(void *))B(0xb77344);
++    void *p = ((void *(*)(void *))B(0xb6a718))(pr), *cfg = p ? player_cfg(p) : NULL, *card = cfg ? PTR(cfg, 0x28) : NULL;
++    uint8_t *cd = p ? player_chardata(p) : NULL, *u = cd ? PTR(cd, 0x268) : NULL, *d = PTR(pr, 0x10);
++    int type = card ? I32(card, 0x100) : 0, oc = 0;
++    void **ol = u ? PTR(u, 0x68) : NULL; int nol = u ? I32(u, 0x74) : 0;
++    for (int k = 0; d && ol && k < nol && k < 8; k++) oc |= ol[k] == d;
++    if (!oc || (type != CT_PROJ_SPAWN && type != CT_PET_BUFF)) { spawn(pr); return; }
++    static void *before[SNAP_MAX], *after[SNAP_MAX];
++    int nb = snap_chars(pr, before);
++    spawn(pr);
++    uint8_t *pet = type == CT_PROJ_SPAWN ? PTR(cd, 0x250) : NULL; int npet = type == CT_PROJ_SPAWN ? card_value(card, 1) : 0;
++    if (pet && npet > 0 && npet <= 10) {
++        void *s0 = PTR(pr, 0x1c0); int s1 = I32(pr, 0x3e8);
++        PTR(pr, 0x1c0) = pet; I32(pr, 0x3e8) = npet; spawn(pr); PTR(pr, 0x1c0) = s0; I32(pr, 0x3e8) = s1;
++        g_npet_spawn += npet;
++    }
++    int na = snap_chars(pr, after), nnew = 0;
++    for (int j = 0; j < na; j++) {
++        int k = 0; while (k < nb && before[k] != after[j]) k++;
++        if (k < nb) continue;
++        uint8_t *c = after[j]; nnew++;
++        if (type != CT_PET_BUFF) continue;
++        int hp = card_value(card, 1), dm = card_value(card, 2), sp = card_value(card, 3);
++        if (hp > 0) { I32(c, 0x3c8) = I32(c, 0x3c8) * (100 + hp) / 100; I32(c, 0x3c4) = I32(c, 0x3c4) * (100 + hp) / 100; }
++        int s = (int)(g_npet_buff % PET_MAX);   /* round robin: a battle has far fewer living hypercharged pets than PET_MAX */
++        uint8_t *pd = ((void *(*)(void *))B(0xb6a384))(c);
++        int death_oc = pd && I32(pd, 0xdc) > 0;   /* DeathOverchargedAreaEffect (Tick's head): Value2 is its minimines, no damage */
++        g_pet[s].ch = c; g_pet[s].id = I32(c, 8); g_pet[s].dmg_pct = dm > 0 && !death_oc ? dm : 0; g_pet[s].speed_pct = sp > 0 ? sp : 0;
++        { int pi = I32(c, 0x80); g_pet[s].death_oc = death_oc; g_pet[s].x = I32(c, 0x38); g_pet[s].y = I32(c, 0x3c);   /* summoner: the hypercharged brawler of its player */
++          g_pet[s].owner_id = pi >= 0 && pi < NBE_MAXP && g_card_ch[pi] ? g_card_id[pi] : 0; }
++        int shots = card_value(card, 4); g_pet[s].shots = shots > 1 && shots <= 8 ? shots : 0;   /* Value4: Penny's cannonballs (my_spawn) */
++        U8(c, 0x68) = 1; U8(c, 0xaac) = 1; g_npet_buff++;
++        static int nlog2; if (nlog2++ < 20) LOG("[hyper] pet %d (data %d): hp %d/%d, damage +%d%%, speed +%d%%%s\n", I32(c, 8), I32(pd, 0x20),
++                                                I32(c, 0x3c4), I32(c, 0x3c8), g_pet[s].dmg_pct, g_pet[s].speed_pct, death_oc ? ", overcharged death area" : "");
++    }
++    static int nlog; if (nlog++ < 20) LOG("[hyper] hypercharged spawn: projectile data %d, card type %d: %d new characters%s\n",
++                                          I32(d, 0x20), type, nnew, type == CT_PET_BUFF ? " (pet buff)" : " (+ owner's pet)");
++}
++
++/* The hypercharge card's own code. Some hypercharges are a card Type with code of its own (cards.csv MetaType 6 Type, e.g.
++ * overcharge_hookdude, and the card's Value..Value6) rather than Overcharged* columns. Neither card-value reader of this
++ * build (0xc427d8(player, type, idx), 0xb5281c(character, type, idx)) is asked for overcharge_morningstar (303) or
++ * overcharge_griff (295) (no bl / b to them with that w1): their code is compiled out with the server. Re-implemented here at the projectile spawn 0xb78190 (hook_replace; the attack code spawns
++ * every projectile of a super through it): when a hypercharged brawler's super spawns its OverchargedProjectiles entry,
++ * the extra projectiles of its card are spawned with the same arguments (damage, owner, kind), only the target moved:
++ * - overcharge_morningstar (Lumi, "The final explosion ... has an extra blast on both sides"): with the OverchargedProjectiles
++ *   entry number Value1 (3, the final blast) two more land beside its target, perpendicular to the throw, Value2 % (100) of
++ *   the blast's radius (the projectile's SpawnAreaEffectObject Radius, area data +0x12c) away. [?] the side and the unit. */
++#define CT_MORNINGSTAR 303    /* overcharge_morningstar (the card Type enum, the string table 0xaa3000..0xaa8860) */
++typedef uint64_t (*spawn16_t)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
++                              uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
++static spawn16_t o_spawn;
++static int g_spawn_rec; static long g_oc_extra;
++static int card_val(uint8_t *card, int k) { return ((int (*)(void *, int))B(0xaa9568))(card, k); }
++static uint8_t *oc_card(uint8_t *ch) {   /* the card of the hypercharged brawler ch, NULL if ch is not hypercharged */
++    for (int i = 0; ch && i < NBE_MAXP; i++) if (g_oc[i] == ch && U8(ch, 0x68) && g_hyp[i].card) return div_data(g_hyp[i].card);
++    return NULL;
++}
++/* The value Value<idx> of the hypercharge card of type `type` while ch is hypercharged, else -1: for the card types whose
++ * code no libg call site has and env.c re-implements (overcharge_painter 273: Berry's double scoops, charge_contact_tick) */
++int hyper_card_live(void *ch, int type, int idx) {
++    uint8_t *card = oc_card(ch);
++    return card && ((int (*)(void *))B(0xaa9500))(card) == type ? card_val(card, idx) : -1;
++}
++static int oc_proj_index(uint8_t *ch, void *d) {   /* d's place in the brawler's super's OverchargedProjectiles, -1 if none */
++    uint8_t *cd = ((void *(*)(void *))B(0xb6a384))(ch), *sd = cd ? PTR(cd, 0x268) : NULL;   /* UltimateSkill */
++    void **l = sd ? PTR(sd, 0x68) : NULL; int n = sd ? I32(sd, 0x74) : 0;
++    for (int k = 0; l && k < n && k < 8; k++) if (l[k] == d) return k;
++    return -1;
++}
++static int proj_area_radius(uint8_t *d) {   /* the Radius of the projectile data's area (a word of d that is an area row) */
++    static uint8_t *last_d; static int last_r;
++    if (d == last_d) return last_r;
++    int r = 0;
++    for (int idx = 0, miss = 0; !r && idx < 4000 && miss < 64; idx++) {   /* table 17 = area effects */
++        uint8_t *a = div_data(17000000 + idx);
++        if (!a) { miss++; continue; }
++        miss = 0;
++        for (int o = 0x28; o < 0x400; o += 8) if (PTR(d, o) == a) { r = I32(a, 0x12c); break; }
++    }
++    last_d = d; last_r = r; return r;
++}
++/* A pet's volley (overcharge_pet_buff_stats Value4, Penny's turret): its OverchargedAutoAttackProjectile (CharacterData +0x68)
++ * spawned shots - 1 more times, aimed on a ring around the target at the shot's explosion radius (SpawnAreaEffectObject,
++ * 450 u for ArtilleryDudeOverchargedTurretExplosion) so the cannonballs land side by side. [?] the real spread. */
++static int pet_volley(uint64_t *a, uint8_t *ch) {
++    int k = pet_slot(ch); uint8_t *pd = k >= 0 && g_pet[k].shots > 1 ? ((void *(*)(void *))B(0xb6a384))(ch) : NULL;
++    if (!pd || !PTR(pd, 0x68) || (void *)a[4] != PTR(pd, 0x68)) return 0;
++    int tx = (int)a[5], ty = (int)a[6], r = proj_area_radius((uint8_t *)a[4]), n = 0;
++    if (r <= 0) r = 300;   /* one tile */
++    g_spawn_rec = 1;
++    for (int j = 1; j < g_pet[k].shots; j++) {
++        int deg = 360 * j / (g_pet[k].shots - 1), ox = tx + r * sin1024((deg + 90) % 360) / 1024, oy = ty + r * sin1024(deg) / 1024;
++        n += o_spawn(a[0], a[1], a[2], a[3], a[4], (uint64_t)(uint32_t)ox, (uint64_t)(uint32_t)oy, a[7], a[8], a[9], a[10], a[11], a[12],
++                     a[13], a[14], a[15]) != 0;
++    }
++    g_spawn_rec = 0; g_oc_extra += n;
++    static int nlog; if (nlog++ < 10) LOG("[hyper] pet %d volley: %d more of projectile %d around %d,%d (r %d)\n", I32(ch, 8), n,
++                                          I32((uint8_t *)a[4], 0x20), tx, ty, r);
++    return n;
++}
++static uint64_t my_spawn(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
++                         uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14, uint64_t a15) {
++    uint64_t p = o_spawn(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15);
++    uint8_t *ch = (uint8_t *)a2, *card;
++    if (!g_spawn_rec && p) { uint64_t a[16] = {a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15}; if (pet_volley(a, ch)) return p; }
++    if (g_spawn_rec || !p || !(card = oc_card(ch))) return p;
++    int type = ((int (*)(void *))B(0xaa9500))(card);
++    if (type != CT_MORNINGSTAR) return p;
++    int k = oc_proj_index(ch, (void *)a4); if (k < 0) return p;
++    int x = (int)a0, y = (int)a1, tx = (int)a5, ty = (int)a6, n = 0, ox[4], oy[4];
++    if (x == -1 && y == -1) { x = I32(ch, 0x38); y = I32(ch, 0x3c); }   /* the attack code's "from the owner" (+0x330 = -1) */
++    int dx = tx - x, dy = ty - y;
++    if (k == card_val(card, 1) - 1) {
++        int len = (int)__builtin_sqrt((double)dx * dx + (double)dy * dy), off = proj_area_radius((uint8_t *)a4) * card_val(card, 2) / 100;
++        if (len > 0 && off > 0)
++            for (int sd = -1; sd <= 1; sd += 2, n++) { ox[n] = tx - sd * dy * off / len; oy[n] = ty + sd * dx * off / len; }
++    }
++    g_spawn_rec = 1;
++    for (int j = 0; j < n; j++)
++        if (o_spawn(a0, a1, a2, a3, a4, (uint64_t)(uint32_t)ox[j], (uint64_t)(uint32_t)oy[j], a7, a8, a9, a10, a11, a12, a13, a14, a15)) g_oc_extra++;
++    g_spawn_rec = 0;
++    static int nlog; if (n && nlog++ < 20) LOG("[hyper] card type %d: %d more of projectile %d (aim %d,%d -> %d,%d)\n", type, n,
++                                               I32((uint8_t *)a4, 0x20), dx, dy, n ? ox[0] - x : 0, n ? oy[0] - y : 0);
++    return p;
++}
++
++/* overcharge_griff (Griff, "banknotes multiply at max range before returning, with the newly created banknotes returning
++ * after a delay"): when spawnfix.c sends a hypercharged Griff's note back at max range (reason 1; its ChainBullet
++ * AssaultShotgunOverchargedUltiProjectile2, TravelType 11, TravelTypeVariable 20), Value1 (1) more go back with it of the
++ * row after that child (AssaultShotgunOverchargedUltiProjectile3: the same with TravelTypeVariable 30; no column names it)
++ * -> that data and *n, NULL if none */
++#define CT_GRIFF 295          /* overcharge_griff */
++void *hyper_chain_extra(void *owner, uint8_t *child, int reason, int *n) {
++    uint8_t *card = oc_card(owner), *nx;
++    *n = 0;
++    if (!card || reason != 1 || !child || ((int (*)(void *))B(0xaa9500))(card) != CT_GRIFF) return NULL;
++    uint8_t *lc = PTR(child, 0x58), *ln;   /* +0x58: the skin row's logic row (projectiles_logic, table 125) */
++    if (!(nx = div_data(I32(child, 0x20) + 1)) || !lc || !(ln = PTR(nx, 0x58)) || I32(ln, 0x20) != I32(lc, 0x20) + 1 || PTR(nx, 0x180))
++        return NULL;   /* the next skin row on the next logic row, with no ChainBullet of its own */
++    *n = card_val(card, 1); g_oc_extra += *n;
++    static int nlog; if (nlog++ < 10) LOG("[hyper] card type %d: %d more of projectile %d at max range\n", CT_GRIFF, *n, I32(nx, 0x20));
++    return nx;
++}
++
+ void hyper_install(void) {
+     hook_enter(g_libg, 0xb709e4, on_travel);   /* homing projectiles (above) */
++    if (*(uint32_t *)B(0xb78190) == 0xa9ba7bfd) o_spawn = (spawn16_t)hook_replace(g_libg, 0xb78190, (void *)my_spawn);   /* stp x29, x30, [sp, #-96]! */
++    else LOG("[hyper] 0xb78190: unexpected bytes, the hypercharge cards' extra projectiles are off\n");
+     uint32_t *f = (uint32_t *)B(0xb35bf0);
+     if (f[0] != 0x2a1f03e0 || f[1] != 0xd65f03c0) {   /* mov w0, wzr ; ret */
+         LOG("[hyper] isOvercharged 0xb35bf0: unexpected bytes %08x %08x, hypercharged skills off\n", f[0], f[1]); return;
+     }
+     hook_replace(g_libg, 0xb35bf0, (void *)my_is_oc);
++    uint32_t *cv = (uint32_t *)B(0xb5281c);
++    if (cv[0] == 0x12800000 && cv[1] == 0xd65f03c0) hook_replace(g_libg, 0xb5281c, (void *)my_card_value);   /* mov w0, #-1 ; ret */
++    else LOG("[hyper] 0xb5281c: unexpected bytes %08x %08x, hypercharge card values off\n", cv[0], cv[1]);
++    uint32_t *ps = (uint32_t *)B(0xb75b24);   /* bl 0xb77344 */
++    if ((*ps & 0xfc000000) == 0x94000000 && (uint8_t *)ps + (((int32_t)(*ps << 6)) >> 4) == B(0xb77344)) hook_bl(g_libg, 0xb75b24, (void *)hyper_proj_spawn);
++    else LOG("[hyper] 0xb75b24: unexpected bytes, hypercharged pets off\n");
+     if (*(uint32_t *)B(0xb4b978) == 0xf9402f29) {   /* ldr x9, [x25, #88] */
+         g_hyper_proj_next = (uint64_t)B(0xb4b97c); hook_replace(g_libg, 0xb4b978, (void *)hyper_proj_site);
+     } else LOG("[hyper] 0xb4b978: unexpected bytes, AttackPattern 11 keeps the normal projectiles\n");
+@@ -277,6 +606,7 @@ static int has_oc_ulti(uint8_t *ch) {
+ void hyper_char_changed(uint8_t *old, uint8_t *nc) {
+     for (int i = 0; i < NBE_MAXP; i++) {
+         if (g_sw[i] == old) g_sw[i] = NULL;
++        if (old && g_card_ch[i] == old) { g_card_ch[i] = nc; g_card_id[i] = nc ? I32(nc, 8) : 0; }
+         if (!old || g_oc[i] != old) continue;
+         g_oc[i] = nc; U8(nc, 0x68) = U8(old, 0x68);
+         if (has_oc_ulti(nc)) { swap_ulti(nc); g_sw[i] = nc; }
+@@ -318,7 +648,7 @@ int hyper_use(int i, void *p, uint8_t *ch) {
+     if (i < 0 || i >= NBE_MAXP || !p || !ch || !g_hyp[i].card || U8(p, 0xa0) || I32(p, 0x98) < I32(p, 0x9c)) return 0;
+     ((void (*)(void *, void *))B(0xc42584))(p, ch);
+     if (!U8(p, 0xa0)) return 0;   /* refused by the game's own checks (e.g. a state that forbids it) */
+-    g_hyp[i].used++; g_oc[i] = ch;
++    g_hyp[i].used++; g_oc[i] = ch; { void *cfg = player_cfg(p); g_card[i] = cfg ? PTR(cfg, 0x28) : NULL; g_card_ch[i] = ch; g_card_id[i] = I32(ch, 8); }
+     if (has_oc_ulti(ch) && g_sw[i] != ch) { swap_ulti(ch); g_sw[i] = ch; }
+     static int nlog; if (nlog++ < 40) LOG("[hyper] player %d activated (charge %d, drain %d/tick)\n", i, I32(p, 0x98), I32(p, 0xa4));
+     return 1;
+diff --git native/loader/ret_codes.h native/loader/ret_codes.h
+index 989d639..e72dd58 100644
+--- native/loader/ret_codes.h
++++ native/loader/ret_codes.h
+@@ -16,3 +16,14 @@
+     6001677, /* FuryOverchargedUltiProjectile -> FuryOverchargedUltiProjectileReturn */
+     6001928, /* MegaBossBlackholeSpreadProjectile -> MegaBossBlackholeSpreadProjectileReturn */
+     6000603, /* WhirlwindProjectile -> WhirlwindProjectile2 */
++    /* Griff's super notes (BoomerangType 1): the ChainBullet *2 (TravelType 11, waits TravelTypeVariable ticks) flies back;
++     * the hypercharged one's extra notes at max range: hyper.c hyper_chain_extra */
++    6001007, /* AssaultShotgunUltiProjectile -> AssaultShotgunUltiProjectile2 */
++    6001012, /* AssaultShotgunOverchargedUltiProjectile -> AssaultShotgunOverchargedUltiProjectile2 */
++    6001017, /* Griff002UltiProjectile -> Griff002UltiProjectile2 */
++    6001021, /* Griff003UltiProjectile -> Griff003UltiProjectile2 */
++    6001025, /* Griff004UltiProjectile -> Griff004UltiProjectile2 */
++    6001029, /* Griff005UltiProjectile -> Griff005UltiProjectile2 */
++    6001033, /* Griff006UltiProjectile -> Griff006UltiProjectile2 */
++    6001828, /* MegaBossAssaultShotgunUltiProjectile -> MegaBossAssaultShotgunUltiProjectile2 */
++    6001830, /* MegaBossAssaultShotgunOverchargedUltiProjectile -> MegaBossAssaultShotgunOverchargedUltiProjectile2 */
+diff --git native/loader/spawnfix.c native/loader/spawnfix.c
+index 030b086..744bb94 100644
+--- native/loader/spawnfix.c
++++ native/loader/spawnfix.c
+@@ -140,19 +140,23 @@ static void make_item(uint8_t *a, uint8_t *pr, void *idata, int x, int y) {
+     }
+ }
+ static int angle_of(int dx, int dy) { return (dx | dy) ? ((i2_t)B(0xd00960))(dx, dy) : 0; }
+-/* Projectile::end(proj, reason) 0xb75998: reason 1 = range/time end, 2 / 4 = hit a character, 3 = hit a wall, 5 = removed.
++/* Projectile::end(proj, reason) 0xb75998: reason 1 = range/time end, 3 = stopped by a wall or a character it does not
++ * pierce (see spawnfix_proj_hit below), 2 / 4 = other stops (Bibi's split balls at a PayloadTrack tile), 5 = removed.
+  * The shipped code ends with `if (reason != 3 && hasChainBullet) getChainBullet();` (0xb76114..0xb76118: the result is dropped,
+  * the server's spawn call is compiled out). Re-implemented for the plain cases (ChainsToEnemies = 0, ExecuteChainSpecialCase 0..2). */
+ static const int g_ret_parents[] = {
+ #include "ret_codes.h"
+     0};
++/* the list holds skin row ids (6000xxx): the data's own id +0x20; d+0x58 is its logic row in this build (125000xxx, which
++ * the list never matched: Griff's notes were not sent back), kept for a build where it is the skin row */
+ static int is_return_parent(uint8_t *d) {
+-    if (!d || !PTR(d, 0x58)) return 0;
+-    int id = ((int (*)(void *))B(0xac3a80))(PTR(d, 0x58));
+-    for (int i = 0; g_ret_parents[i]; i++) if (g_ret_parents[i] == id) return 1;
++    if (!d) return 0;
++    int id = I32(d, 0x20), id2 = PTR(d, 0x58) ? ((int (*)(void *))B(0xac3a80))(PTR(d, 0x58)) : 0;
++    for (int i = 0; g_ret_parents[i]; i++) if (g_ret_parents[i] == id || g_ret_parents[i] == id2) return 1;
+     return 0;
+ }
+ static long g_nchain_enemy, g_nchain_ret;
++void *hyper_chain_extra(void *owner, uint8_t *child, int reason, int *n);   /* hyper.c */
+ typedef int (*i1p_t)(void *);
+ /* nearest living enemy hero of projectile `pr` within `range` of (x,y), farther than `minr` (the one just hit) */
+ static void *nearest_enemy(uint8_t *pr, int x, int y, int range, int minr) {
+@@ -171,12 +175,28 @@ static void *nearest_enemy(uint8_t *pr, int x, int y, int range, int minr) {
+     }
+     return best;
+ }
++/* env.c's damage root hook: the last object a projectile damaged and when. A non-piercing projectile that stops on an
++ * enemy ends with reason 3 (live traces: Bibi's hypercharged ball BaseballOverchargedUltiProjectile, one end call at the
++ * hit tick, 370 u from the target = ball Radius 250 + the character's; Bea's 7 hypercharged bees), the reason the shipped
++ * end skips for the chain. Their descriptions split them on a hit (TID_BASEBALL_OVERCHARGE_DESC "splits when hitting an
++ * enemy", TID_BEE_SNIPER_OVERCHARGE_DESC "and on hit"), so a reason-3 end in the tick of a recorded hit by that
++ * projectile spawns the chain, and the enemy hit goes in the children's hit list (below). */
++static void *g_hit_proj, *g_hit_ch; static int g_hit_tick = -1; static long g_nchain_hit3;
++void spawnfix_proj_hit(void *src, void *victim) {
++    if (!src || !victim || !g_sim || (int)((uint8_t *)PTR(src, 0) - g_libg->base) != 0x1209318) return;   /* VT_PROJ */
++    g_hit_proj = src; g_hit_ch = victim; g_hit_tick = I32(g_sim, 0x10);
++}
+ static void on_explode(uint64_t *c) {
+     uint8_t *pr = (uint8_t *)c[0]; int reason = (int)c[1];
++    int hit3 = reason == 3 && pr && pr == g_hit_proj && g_sim && g_hit_tick == I32(g_sim, 0x10);
+     g_cur_proj = pr; g_cur_tick = g_sim ? I32(g_sim, 0x10) : -1;
+-    if (g_spawn_dbg && pr && PTR(PTR(pr, 0x10), 0x180)) LOG("[spawnfix] explode call reason %d end90 %d\n", reason, I32(pr, 0x90));
+-    if (!g_spawn_fix || !g_spawn_chain || !mode() || !pr || rec || I32(pr, 0x90) != 0 || reason == 3 || reason == 5 || reason == 0) return;
++    if (g_spawn_dbg && pr && PTR(PTR(pr, 0x10), 0x180)) LOG("[spawnfix] explode call reason %d%s end90 %d tick %d at %d,%d\n", reason, hit3 ? " (at a hit)" : "", I32(pr, 0x90), g_cur_tick, I32(pr, 0x38), I32(pr, 0x3c));
++    if (!g_spawn_fix || !g_spawn_chain || !mode() || !pr || rec || I32(pr, 0x90) != 0 || reason == 5 || reason == 0) return;
+     uint8_t *d = PTR(pr, 0x10); if (!d) return;
++    /* reason 3 (the shipped code's `reason != 3`): a chain only at a recorded hit (hit3, above: Bibi's split, Bea's) or for
++     * ExecuteChainSpecialCase 2, the rows that chain on every contact (Bea's hypercharged split "at max distance (and on
++     * hit)"; Mr. P's suitcase hopping over what it hits) */
++    if (reason == 3 && !hit3 && I32(d, 0x1b4) != 2) return;
+     uint8_t *child = PTR(d, 0x180); if (!child) return;
+     if (g_spawn_dbg) LOG("[spawnfix] explode with chain child: reason %d n %d spec %d toen %d tick %d\n", reason, I32(d, 0x1a4), I32(d, 0x1b4), d[0x1a0] & 1, g_cur_tick);
+     int n = I32(d, 0x1a4), spec = I32(d, 0x1b4), spread = I32(d, 0x1ac), cd = I32(d, 0x1b0), toen = d[0x1a0] & 1;
+@@ -194,6 +214,12 @@ static void on_explode(uint64_t *c) {
+     } else if (n < 1) {   /* boomerang return to the owner */
+         if (!is_return_parent(d)) { g_nchain_skip[2]++; return; }
+         tx[0] = I32(owner, 0x38); ty[0] = I32(owner, 0x3c); nspawn = 1; g_nchain_ret++;
++        int more; uint8_t *mc = hyper_chain_extra(owner, child, reason, &more);   /* a hypercharge card's extra notes */
++        for (int k = 0; mc && k < more && k < 4; k++) {
++            rec = 1;
++            if (((spawn_t)B(0xb78190))(x, y, owner, owner, mc, tx[0], ty[0], dmg, dmg2, 0, 0, NULL, sim, 0, kind, NULL)) g_nchain_proj++;
++            rec = 0;
++        }
+     } else {
+         if (spec > 3) { g_nchain_skip[3]++; return; }
+         nspawn = n > 8 ? 8 : n;
+@@ -203,12 +229,18 @@ static void on_explode(uint64_t *c) {
+             tx[i] = x + ((vx * dist) >> 10); ty[i] = y + ((vy * dist) >> 10);
+         }
+     }
+-    g_nchain++;
++    g_nchain++; g_nchain_hit3 += hit3;
+     for (int i = 0; i < nspawn; i++) {
+         rec = 1;
+         void *p = (void *)((spawn_t)B(0xb78190))(x, y, owner, owner, child, tx[i], ty[i], dmg, dmg2, 0, 0, NULL, sim, 0, kind, NULL);
+         rec = 0;
+         if (p) g_nchain_proj++;
++        if (p && hit3) {   /* the split balls leave the enemy just hit: its id goes in their hit list as the hit code puts it
++                            * (0xb73094..0xb730b4: id vector proj +0x160, ticks-left vector +0x170, 99999 = never again) */
++            int id = ((int (*)(void *))B(0xb6a5d4))(g_hit_ch), never = 99999;
++            ((void (*)(void *, int *))B(0x90320c))((uint8_t *)p + 0x160, &id);
++            ((void (*)(void *, int *))B(0x770ecc))((uint8_t *)p + 0x170, &never);
++        }
+         if (g_spawn_dbg && i < 2) LOG("[spawnfix] chain %d/%d reason %d%s base %d spread %d dist %d -> %d,%d proj %p\n", i, nspawn, reason, toen ? " enemy" : (n < 1 ? " return" : ""), base, spread, dist, tx[i], ty[i], p);
+     }
+ }
+@@ -282,4 +314,4 @@ void spawnfix_install(void) {
+     hook_enter(g_libg, 0xb29494, on_area);
+     LOG("[spawnfix] installed (BulletExplosion children)\n");
+ }
+-void spawnfix_status(void) { spawnfix_walldiag("status"); LOG("[spawnfix] BulletExplosion areas %ld, child projectiles %ld; chains %ld (enemy %ld, return %ld, walls %ld areas/%ld tiles, items %ld), child projectiles %ld, skipped (no owner %ld, no enemy %ld, count 0 not a return %ld, special>3 %ld)\n", g_nbe, g_nbe_proj, g_nchain, g_nchain_enemy, g_nchain_ret, g_nwall_areas, g_nwall_tiles, g_nitem, g_nchain_proj, g_nchain_skip[0], g_nchain_skip[1], g_nchain_skip[2], g_nchain_skip[3]); }
++void spawnfix_status(void) { spawnfix_walldiag("status"); LOG("[spawnfix] BulletExplosion areas %ld, child projectiles %ld; chains %ld (enemy %ld, return %ld, at a reason-3 hit %ld, walls %ld areas/%ld tiles, items %ld), child projectiles %ld, skipped (no owner %ld, no enemy %ld, count 0 not a return %ld, special>3 %ld)\n", g_nbe, g_nbe_proj, g_nchain, g_nchain_enemy, g_nchain_ret, g_nchain_hit3, g_nwall_areas, g_nwall_tiles, g_nitem, g_nchain_proj, g_nchain_skip[0], g_nchain_skip[1], g_nchain_skip[2], g_nchain_skip[3]); }
+diff --git native/loader/superfix.c native/loader/superfix.c
+index c265a45..76d9aa1 100644
+--- native/loader/superfix.c
++++ native/loader/superfix.c
+@@ -24,7 +24,7 @@
+  * through 0xb41554 when it is >= 1) is never set. The `bl` is redirected: +0x10c = projectile damage (+0xd4, a power-1
+  * number: my_root scales the damage later) x percent / 100 x P11_SCALE (issue #22), and the owner is healed the same amount once per attack (DamageOnlyWithOneProj, getter 0xafaa08), only for the
+  * owner's super (attack slot [sp+256] == 2 at that point).
+- * Max's hypercharged super throws its drinks from here (max_drinks, issue #19 final), and a summon gets its own
++ * A summon gets its own
+  * CharacterData AreaEffect (superfix_summon_area: Pam's turrets' heal, 8-Bit's booster, ...).
+  * NB_SUPERFIX=0 turns every part off. */
+ #include "nbhost.h"
+@@ -43,30 +43,6 @@ static long g_narea, g_narea_skip;
+ 
+ typedef void *(*mkarea_t)(void *data, void *owner, int x, int y, int z, int kind, int extra);
+ typedef int (*geti_t)(void *);
+-/* issue #19 final: Max's hypercharged super ("Max throws an energy drink to each team member, increasing their movement
+- * speed and granting them 25% Super charge"). SpeedyUlti is the only skill with OverchargedProjectiles (SkillData +0x68,
+- * count +0x74; hyper.c) and no Projectiles (+0x58, count +0x64), an AreaBuff: its cast reaches libg's spawnAreaEffect (here)
+- * but nothing throws the projectiles. When a hypercharged brawler (Character::isOvercharged 0xb35bf0, hyper.c) spawns an
+- * area while its super is such a skill, its first overcharged projectile (SpeedyOverchargedProjectile, TravelType 9) goes
+- * from it to every other living brawler of its team, through the projectile spawn 0xb78190 (spawnfix.c's arguments, kind 2);
+- * where it lands libg spawns its areas (SpeedyOverchargedArea: speed; SpeedyOverchargedArea2: ChargeSuper, applied in
+- * superfix_status.c). One cast spawns one area, so each teammate gets one drink. */
+-static long g_ndrink;
+-static void max_drinks(uint8_t *ch) {
+-    uint8_t **sk = PTR(ch, 0x458); uint8_t *sd = sk && I32(ch, 0x464) >= 2 && sk[1] ? PTR(sk[1], 0) : NULL;
+-    if (!sd || I32(sd, 0x74) < 1 || I32(sd, 0x64) > 0 || !PTR(sd, 0x68) || !(((geti_t)B(0xb35bf0))(ch) & 1)) return;
+-    void *pd = ((void **)PTR(sd, 0x68))[0], *sim = ((void *(*)(void *))B(0xb6a378))(ch), *h = sim ? PTR(sim, 0) : NULL;
+-    int n = h ? I32(h, 0xc) : 0, team = ((geti_t)B(0xb6a820))(ch); void **v = h ? PTR(h, 0) : NULL;
+-    for (int i = 0; pd && v && i < n && i < 4096; i++) {
+-        uint8_t *o = v[i];
+-        if (!o || o == ch || (int)((uint8_t *)PTR(o, 0) - g_libg->base) != 0x1209020 || I32(o, 0x3c4) <= 0) continue;
+-        if (((geti_t)B(0xb6a820))(o) != team || !(((geti_t)B(0xb34de4))(o) & 1)) continue;   /* teammate brawlers */
+-        void *p = ((void *(*)(int, int, void *, void *, void *, int, int, int, int, int, int, void *, void *, int, int, void *))B(0xb78190))(
+-            I32(ch, 0x38), I32(ch, 0x3c), ch, ch, pd, I32(o, 0x38), I32(o, 0x3c), 0, 0, 0, 0, NULL, sim, 0, 2, NULL);
+-        if (p) g_ndrink++;
+-        if (g_superfix_dbg) LOG("[superfix] drink from ch %d to ch %d: %p\n", I32(ch, 8), I32(o, 8), p);
+-    }
+-}
+ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind, int w5, int w6, int follow,
+                            void *s0, void *s1, void *mods, long start) {
+     (void)w2; (void)w5; (void)w6; (void)s0; (void)s1;
+@@ -79,7 +55,6 @@ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind,
+     ((void (*)(void *, void *))B(0xb63198))(PTR(ch, 0x20), a);
+     if (start & 1) ((void (*)(void *))B(0xb29494))(a);
+     g_narea++;
+-    max_drinks(ch);
+     if (g_superfix_dbg) LOG("[superfix] spawnAreaEffect owner %p data %p type %d kind %d extra %d follow %d start %d -> %p\n",
+                             ch, data, I32(data, 0x118), kind, extra, follow & 1, (int)(start & 1), a);
+     return a;
+@@ -241,8 +216,8 @@ void superfix_install(void) {
+     extern void superfix_cc_install(void) __attribute__((weak)); if (superfix_cc_install) superfix_cc_install();   /* issue #19 */
+ }
+ void superfix_status(void) { LOG("[superfix] areas spawned %ld, skipped %ld; delayed damage %ld; slippery hits %ld; heal own %ld projectiles, %ld owners; "
+-                                 "Max's drinks %ld; summon areas %ld (ended %ld, Hot heals %ld)\n", g_narea, g_narea_skip, g_ndelayed, g_nslip, g_nheal,
+-                                 g_nheal_self, g_ndrink, g_nsum_area, g_nsum_end, g_nsum_hot);
++                                 "summon areas %ld (ended %ld, Hot heals %ld)\n", g_narea, g_narea_skip, g_ndelayed, g_nslip, g_nheal,
++                                 g_nheal_self, g_nsum_area, g_nsum_end, g_nsum_hot);
+     extern void superfix_items_status(void) __attribute__((weak)); if (superfix_items_status) superfix_items_status();
+     extern void superfix_moves_status(void) __attribute__((weak)); if (superfix_moves_status) superfix_moves_status();
+     extern void superfix_status_status(void) __attribute__((weak)); if (superfix_status_status) superfix_status_status();
+diff --git native/loader/superfix_cc.c native/loader/superfix_cc.c
+index e72f915..de07ad1 100644
+--- native/loader/superfix_cc.c
++++ native/loader/superfix_cc.c
+@@ -15,7 +15,9 @@
+  *     column is empty in the tables and the client reads it only for the UI; the duration is CustomValue +0x13c (ticks).
+  *     At the area's first tick (superfix_status_area), every enemy character that libg's own target test reaches gets it
+  *     (superfix_area_reach: circle, InnerRadius ring, RequireLineOfSight: Fang's sweep); HpBasedStun (43, Meeple's
+- *     RageQuit) too, for longer the less HP its owner has;
++ *     RageQuit) too, for longer the less HP its owner has; an area of another type with StunTicks (+0x160, stored by the table loader at 0xa959dc; only
++ *     LeaperOverchargedUltiAreaExplosion, Damage, 30: Mico's hypercharged landing; libg reads it only at the table load)
++ *     stuns the same way for StunTicks ticks, without the path stop below (its own knockback is that path);
+  *   - a new stun or loss of control stops the character's current path (stop 0xb4103c), because the mover only refuses new
+  *     moves (superfix_cc_tick from the character update hook);
+  *   - CcImmunity statuses (superfix_status.c aggregate +0x982) keep stuns and silences off.
+@@ -129,18 +131,21 @@ long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) {
+     }
+     return dx * dx + dy * dy;
+ }
+-/* Stun (16), Silence (24) and HpBasedStun (43) areas, from superfix_status_area at every tick of an area: once per area, at
++/* Stun (16), Silence (24) and HpBasedStun (43) areas, and other areas with StunTicks (+0x160, ticks; a stun), from
++ * superfix_status_area at every tick of an area: once per area, at
+  * its first tick, every enemy character libg's target test above reaches. HpBasedStun (Meeple's RageQuit gadget: "the less
+  * hitpoints Meeple has, the stun and knockback effects increase"): CustomValue2 + (CustomValue - CustomValue2) x the
+  * owner's missing HP fraction ticks (5 .. 30) [?] the formula is server code, the two values read as the stun's bounds;
+  * its knockback (PushbackStrength 120) is not applied. */
++static void blk_mark(uint8_t *ch);   /* below: a stun whose path is not stopped */
+ typedef struct { void *a; int start; } CcArea;
+ #define CA_MAX 64
+ static CcArea g_ca[CA_MAX]; static int g_nca;
+ void superfix_cc_area(uint8_t *a, uint8_t *d) {
+     if (!on() || !a || !d) return;
+-    int type = I32(d, 0x118), ticks = I32(d, 0x13c); uint8_t *owner = PTR(a, 0x108);
+-    if ((type != 16 && type != 24 && type != 43) || ticks <= 0 || !owner) return;
++    int type = I32(d, 0x118), cc = type == 16 || type == 24 || type == 43, ticks = cc ? I32(d, 0x13c) : I32(d, 0x160);   /* StunTicks */
++    uint8_t *owner = PTR(a, 0x108);
++    if (ticks <= 0 || !owner) return;
+     for (int i = 0; i < g_nca; i++) if (g_ca[i].a == a && g_ca[i].start == I32(a, 0xd0)) return;
+     if (g_nca >= CA_MAX) g_nca = 0;
+     g_ca[g_nca++] = (CcArea){a, I32(a, 0xd0)};
+@@ -158,6 +163,8 @@ void superfix_cc_area(uint8_t *a, uint8_t *d) {
+         if (!is_char(o) || I32(o, 0x3c4) <= 0 || ((int (*)(void *))B(0xb6a820))(o) == team) continue;
+         if (superfix_area_reach(a, d, o) < 0) continue;
+         if (type == 24) { silence(o, ticks, "area"); g_nsil_area++; } else { stun(o, ticks, type == 43 ? "hp area" : "area"); g_nstun_area++; }
++        if (!cc) blk_mark(o);   /* StunTicks of a Damage area: the area's own knockback (its apply runs after this hook) is the path
++                                 * the victim is on; stopping it (superfix_cc_tick) would cancel the push the landing also deals */
+     }
+ }
+ 
+@@ -239,6 +246,10 @@ void superfix_cc_switch(uint8_t *ch, int inside) {
+ typedef struct { uint8_t *ch; int id; } Blk;
+ #define BLK_MAX 64
+ static Blk g_blk[BLK_MAX]; static int g_nblk;
++static void blk_mark(uint8_t *ch) {
++    for (int k = 0; k < g_nblk; k++) if (g_blk[k].ch == ch && g_blk[k].id == I32(ch, 8)) return;
++    if (g_nblk < BLK_MAX) g_blk[g_nblk++] = (Blk){ch, I32(ch, 8)};
++}
+ void superfix_cc_tick(uint8_t *ch) {
+     if (!on() || !is_char(ch)) return;
+     for (int i = 0; i < g_nsw; i++) if (g_sw[i].ch == ch && g_sw[i].want) do_swap(ch, &g_sw[i]);
+diff --git native/loader/superfix_items.c native/loader/superfix_items.c
+index 2ed188e..f97d587 100644
+--- native/loader/superfix_items.c
++++ native/loader/superfix_items.c
+@@ -120,17 +120,22 @@ static void my_item_update(uint8_t *it, void *x1, void *x2, void *x3) {
+ 
+ /* ---- area ChainAreaEffect */
+ typedef long (*mkitem_t)(void *, int, int, int, int, int, int, int, int, int, void *, void *, void *, int);
++void *hyper_dead_pet_owner(void *sim, int x, int y, int *wdmg);   /* hyper.c */
+ static void on_area_expire(uint64_t *c) {
+     uint8_t *a = (uint8_t *)c[0]; uint8_t *d = a ? data_of(a) : NULL;
+     if (!g_superfix || !g_superfix_items || !d || busy || !mode() || U8(a, 0xf4)) return;   /* +0xf4: already expired */
+     uint8_t *chain = ((getp_t)B(0xa97c04))(d);
+     if (!chain) return;
+     if (now_of(a) < I32(a, 0xd8)) { g_nchain_early++; return; }   /* removed before its end tick (owner died, ...): no chain */
++    void *owner = PTR(a, 0x108); uint64_t dmg = U64(a, 0xe8); int wd = 0;
++    if (!owner) {   /* a dead hypercharged pet's death area (Tick's head): its summoner, his main attack's damage (hyper.c) */
++        owner = hyper_dead_pet_owner(((getp_t)B(0xb6a378))(a), I32(a, 0x38), I32(a, 0x3c), &wd);
++        if (owner && wd > 0) dmg = (uint32_t)wd | (uint64_t)(uint32_t)wd << 32;   /* the pair +0xe8 / +0xec */
++    }
+     busy = 1;
+-    uint8_t *a2 = spawn_area_at(a, chain, PTR(a, 0x108), I32(a, 0xf8), U8(a, 0x2d0), U64(a, 0xe8), a + 0x168);
++    uint8_t *a2 = spawn_area_at(a, chain, owner, I32(a, 0xf8), U8(a, 0x2d0), dmg, a + 0x168);
+     void *idata = PTR(chain, 0x110); long it = 0;
+-    if (a2 && idata && PTR(a, 0x108)) {   /* the chain's SpawnItem, as spawnfix.c make_item */
+-        void *owner = PTR(a, 0x108);
++    if (a2 && idata && owner) {   /* the chain's SpawnItem, as spawnfix.c make_item */
+         it = ((mkitem_t)B(0xb55684))(idata, I32(a2, 0x38), I32(a2, 0x3c), 1, 99, I32(a2, 0xe8), I32(a2, 0xec), I32(a2, 0x80), I32(a2, 0x84),
+                                      I32(a2, 0x88), owner, a2, ((getp_t)B(0xb6a378))(owner), I32(a2, 0xf8));
+         if (it) g_nchain_item++;
+diff --git native/loader/superfix_status.c native/loader/superfix_status.c
+index 6974881..c2446b1 100644
+--- native/loader/superfix_status.c
++++ native/loader/superfix_status.c
+@@ -430,6 +430,23 @@ static AreaRec *area_rec(uint8_t *a, uint8_t *d, int t, int first) {   /* this a
+     }
+     return &g_ar[k];
+ }
++/* SameAreaEffectCanNotDamageMs (area data +0x164, the loader's column read at 0xa95a04): a character an area of this data
++ * touched is left alone by every area of the same data for that long. Max's drinks (SpeedyOverchargedArea2, 1000 ms):
++ * two drinks landing next to each other (two teammates side by side, or a teammate beside Max) give 25 %, not 50 %. */
++typedef struct { void *d; int id, from, until; } Imm;
++#define IMM_MAX 64
++static Imm g_imm[IMM_MAX]; static int g_nimm; static long g_nimm_skip;
++static int same_area_immune(uint8_t *d, uint8_t *o, int t) {   /* 1 = skip o; else o is marked now */
++    int ms = I32(d, 0x164), id = I32(o, 8);
++    if (ms <= 0) return 0;
++    for (int i = 0; i < g_nimm; i++)
++        if (g_imm[i].d == d && g_imm[i].id == id && t >= g_imm[i].from && t < g_imm[i].until) { g_nimm_skip++; return 1; }
++    int k = -1;
++    for (int i = 0; i < g_nimm && k < 0; i++) if (g_imm[i].until <= t || g_imm[i].from > t) k = i;   /* a lapsed slot */
++    if (k < 0) k = g_nimm < IMM_MAX ? g_nimm++ : 0;
++    g_imm[k] = (Imm){d, id, t, t + (ms + 49) / 50};   /* 50 ms ticks */
++    return 0;
++}
+ /* issue #19 leftovers: area types the area apply 0xb29494 drops at its type gate (mask 0x10400440000015 at 0xb29600 after
+  * env.c's Dot / Hot patch, plus the list at 0xb296b4) and nothing else in libg reads. Type ints from the loader 0xa96604.
+  *   SmokeScreen 1 (Sandy's super, Leon's NinjaInvisibleArea, Daredevil's hide gadget): the owner's team inside is invisible
+@@ -447,7 +464,8 @@ static AreaRec *area_rec(uint8_t *a, uint8_t *d, int t, int first) {   /* this a
+  *     AllyChargeSuper 29 (personal passive areas; Buster for 29): the owner, while an enemy / a teammate brawler is inside.
+  * Issue #19 final (libg reads none of these types; Max's drink projectiles: superfix.c my_spawn_area):
+  *   ChargeSuper 18 (Max's hypercharged drink, SpeedyOverchargedArea2: "granting them 25% Super charge"): once, every brawler
+- *     of the owner's team inside gets CustomValue (1000 = 25 % of the 4000 maximum) through 0xb4f7f8.
++ *     of the owner's team inside (Max too: the area has no owner rule) gets CustomValue (1000 = 25 % of the 4000 maximum)
++ *     through 0xb4f7f8, once per SameAreaEffectCanNotDamageMs (same_area_immune) however many drinks land on it. [?] Max.
+  *   GiveUlti 57 (Max's hypercharged main attack hit, SpeedyOverchargedBuddyWeaponArea at Max): once, every teammate brawler
+  *     inside (not Max) gets Damage (300 = 7.5 %; the card text shows Damage "ultiChargeAsPercent") through 0xb4f7f8. [?]
+  *     that the owner is left out.
+@@ -541,6 +559,7 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
+         } else if (((type == 31 || type == 18) && same && hero) || (type == 57 && same && hero && o != owner)) {
+             int amount = type == 57 ? I32(d, 0x134) : I32(d, 0x13c);
+             if ((type == 18 || type == 57) && superfix_area_reach && superfix_area_reach(a, d, o) < 0) continue;
++            if (same_area_immune(d, o, t)) continue;
+             ((void (*)(void *, int, int, int))B(0xb4f7f8))(o, amount, 5, ((geti_t)B(0xb6a884))(a)); g_ncharge++;
+             if (g_superfix_dbg && type != 31) LOG("[superfix] st: charge area %d type %d: ch %d +%d tick %d\n", data_id(d), type, I32(o, 8), amount, t);
+         }
+@@ -555,7 +574,8 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
+ void superfix_status_area(uint8_t *a) {
+     if (!g_superfix || !mode() || !a) return;
+     uint8_t *d = ((getp_t)B(0xb6a384))(a);
+-    if (d && (I32(d, 0x118) == 16 || I32(d, 0x118) == 24 || I32(d, 0x118) == 43)) {   /* issue #19: Stun / Silence / HpBasedStun areas (superfix_cc.c) */
++    if (d && (I32(d, 0x118) == 16 || I32(d, 0x118) == 24 || I32(d, 0x118) == 43 || I32(d, 0x160) > 0)) {   /* issue #19: Stun / Silence / HpBasedStun areas
++        * and any area with StunTicks (+0x160: Mico's hypercharged landing; libg reads it only when it loads the table) (superfix_cc.c) */
+         extern void superfix_cc_area(uint8_t *, uint8_t *) __attribute__((weak)); if (superfix_cc_area) superfix_cc_area(a, d);
+         return;
+     }
+@@ -618,8 +638,8 @@ void superfix_status_install(void) {
+ void superfix_status_status(void) {
+     LOG("[superfix] status: added %ld, refreshed %ld, full %ld, ended %ld, removed %ld, live %d; damage %ld, heal %ld; "
+         "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
+-        "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld, "
+-        "spin bullets %ld\n",
++        "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld "
++        "(same-area skips %ld), spin bullets %ld\n",
+         g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal, g_narea_apply, g_narea_hits, g_nmount, g_nstun,
+-        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nspin);
++        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nimm_skip, g_nspin);
+ }

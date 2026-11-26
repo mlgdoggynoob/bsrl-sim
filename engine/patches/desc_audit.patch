@@ -1,12 +1,12 @@
-# desc_audit (bsrl-sim issue #55, a diff on top of the earlier patches): gadgets made to match the game's own description
+# desc_audit (bsrl-sim issue #55, a diff on top of the earlier patches, repeat_spin_off and hyper_supers_all included): gadgets made to match the game's own description
 # (texts.csv): AREA's ShieldPercent / ShieldTicks (superfix_status_shield), SHOT waves (g_waves), Barley's HealPotion masked,
 # Meeple's RageQuit knockback (superfix_cc.c).
 # Check: python -m desc_audit --check, python -m super_audit --gadget
 diff --git a/native/loader/gadget.c b/native/loader/gadget.c
-index d4efcc6..243afd0 100644
+index 3f90315..6d98a39 100644
 --- a/native/loader/gadget.c
 +++ b/native/loader/gadget.c
-@@ -24,20 +24,22 @@
+@@ -24,22 +24,24 @@
   *   AREA  empty Type (+0x24 == 0) with an AreaEffect (AccessoryData +0x70, resolved by createReferences at 0xa92568): the
   *         gadgets that only drop their area at the brawler (Barley's Slow, Poco's Regen and Cleanse, Tick's Explosion,
   *         Shade's Spooky, Trunk's Area). Left out: Rosa's GrowBush (a WallSpawn area: spawnfix.c's wall ring would put
@@ -25,15 +25,17 @@ index d4efcc6..243afd0 100644
   *         Shelly, Emz x2, ...; published PROJECTILE): NumBulletsInOneAttack of the skill's first projectile over Spread degrees
   *         centred on the aim, to CastingRange, with the skill's Damage scaled by the brawler's damage percent (0xb4b660, as the
   *         attack path scales it), spawned with the projectile spawn 0xb78190 (spawnfix.c) at kind 4. What the projectile
-- *         does on hit or at its end (areas, items, summons, pull / push) is libg's and the earlier rounds'. Not applied: the
-- *         skill's timing (ActiveTime, MsBetweenAttacks waves), TwoGuns, AttackPattern.
-+ *         does on hit or at its end (areas, items, summons, pull / push) is libg's and the earlier rounds'. The skill's timing
-+ *         (ActiveTime, MsBetweenAttacks waves) is not read: g_waves lists the cards whose description names more waves
-+ *         (Colt's Gunslinger_Reload: two shots, issue #55). Not applied: TwoGuns, AttackPattern.
+  *         does on hit or at its end (areas, items, summons, pull / push) is libg's and the earlier rounds'. A projectile
+  *         row with DamageOnlyWithOneProj (Emz's spray) damages each target with one projectile of the volley only, through
+- *         the attack path's sibling list (volley). Not applied: the skill's timing (ActiveTime, MsBetweenAttacks waves),
+- *         TwoGuns, AttackPattern.
++ *         the attack path's sibling list (volley). The skill's timing (ActiveTime, MsBetweenAttacks waves) is not read:
++ *         g_waves lists the cards whose description names more waves (Colt's Gunslinger_Reload: two shots, issue #55).
++ *         Not applied: TwoGuns, AttackPattern.
   *   SKILL AREA  the same, but the skill has no projectile, only an AreaEffectObject (published SPAWN): Bull's Stomp (Attack:
   *         at the brawler), 8-Bit's Extra Credits (AimableArea: at the aim point at CastingRange).
-  *   REPEAT  repeat_shot with a CustomObject projectile (6 rows, PROJECTILE): CustomValue1 projectiles over CustomValue2 degrees
-@@ -87,6 +89,9 @@ static int ad_get(void *ad, uint64_t getter) { return ((AdGet)B(getter))(ad); }
+  *   AUTO AIMER  Piper's Sniper_HandGun (repeat_shot; card 23000268 only; published PROJECTILE): one CustomObject projectile
+@@ -94,6 +96,9 @@ static int ad_get(void *ad, uint64_t getter) { return ((AdGet)B(getter))(ad); }
  #define AD_CV2 0xa933e0
  #define AD_ACT_DELAY 0xa932b8   /* ActivationDelay (column index at 0x123f000+1952, the getters' pattern) */
  #define AD_AREA 0x70            /* AccessoryData +0x70: AreaEffect -> AreaEffectData (0xa92568 stores it) */
@@ -43,7 +45,7 @@ index d4efcc6..243afd0 100644
  
  typedef struct Gad Gad;
  typedef struct {
-@@ -101,6 +106,8 @@ struct Gad {
+@@ -108,6 +113,8 @@ struct Gad {
      void *area_data; int area_x, area_y, area_here;        /* the area to spawn (NULL = the accessory's AreaEffect) and where
                                                              * (area_here 1 = at the brawler when it spawns, 0 = area_x / y) */
      int spin_id, spin_next, spin_end, spin_ang;            /* spin_shoot: char id, next volley tick, end tick, volley angle */
@@ -52,7 +54,7 @@ index d4efcc6..243afd0 100644
      int hp_prev, hp_lost[100];                        /* damage taken per tick (ring by tick % 100), for HEAL_TAKEN */
  };
  static Gad g_gad[NBE_MAXP];
-@@ -160,6 +167,9 @@ static int area_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+@@ -167,6 +174,9 @@ static int area_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
      if (I32(ch, 0x3c4) <= 0 || g->area_at) return 0;
      int delay = ad_get(g->ad, AD_ACT_DELAY);
      g->area_id = I32(ch, 8); g->area_at = tick + (delay > 0 ? delay : 0); g->area_data = NULL; g->area_here = 1;
@@ -62,7 +64,7 @@ index d4efcc6..243afd0 100644
      if (delay <= 0) area_spawn(sim, g);
      return 1;
  }
-@@ -230,12 +240,31 @@ static int shot_classify(void *ad, int type) {
+@@ -250,12 +260,31 @@ static int shot_classify(void *ad, int type) {
      void *sd = type == ACC_PLAIN ? PTR(ad, AD_SKILL) : NULL;
      return sd && !PTR(ad, AD_AREA) && I32(sd, SD_BEHAVIOR) == BT_ATTACK && skill_proj(sd);
  }
@@ -98,7 +100,7 @@ index d4efcc6..243afd0 100644
  }
  
  /* ---- SKILL AREA: the gadget's skill has no projectile, only an AreaEffectObject: an Attack skill's area at the brawler
-@@ -369,6 +398,8 @@ static const int g_masked[] = {
+@@ -430,6 +459,8 @@ static const int g_masked[] = {
      23000408,   /* Ninja_InvisibleArea: the invisibility area summon never spawns */
      23001247,   /* Gladiator_Amp: the healing item never spawns */
      23001255,   /* MagicalGirl_FlyArea: the area summon never spawns */
@@ -107,19 +109,19 @@ index d4efcc6..243afd0 100644
  };
  static int masked(int card) { for (unsigned k = 0; k < sizeof g_masked / sizeof *g_masked; k++) if (g_masked[k] == card) return 1; return 0; }
  
-@@ -412,6 +443,7 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
-         if (g_gad[i].hot_end) heal_tick(sim, &g_gad[i], tick);
-         if (g_gad[i].area_at && tick >= g_gad[i].area_at) area_spawn(sim, &g_gad[i]);
+@@ -475,6 +506,7 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
+ #if 0   /* issue #54: SPIN is off */
          if (g_gad[i].spin_end) spin_tick(sim, &g_gad[i], tick);
+ #endif
 +        if (g_gad[i].burst_left) burst_tick(sim, &g_gad[i], tick);
          if (g_gad[i].im && g_gad[i].type == ACC_HEAL_TAKEN) taken_tick(sim, &g_gad[i], tick);
      }
  }
 diff --git a/native/loader/superfix_cc.c b/native/loader/superfix_cc.c
-index e72f915..1bd3c1e 100644
+index de07ad1..b691782 100644
 --- a/native/loader/superfix_cc.c
 +++ b/native/loader/superfix_cc.c
-@@ -133,13 +133,27 @@ long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) {
+@@ -136,15 +136,29 @@ long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) {
   * its first tick, every enemy character libg's target test above reaches. HpBasedStun (Meeple's RageQuit gadget: "the less
   * hitpoints Meeple has, the stun and knockback effects increase"): CustomValue2 + (CustomValue - CustomValue2) x the
   * owner's missing HP fraction ticks (5 .. 30) [?] the formula is server code, the two values read as the stun's bounds;
@@ -127,6 +129,7 @@ index e72f915..1bd3c1e 100644
 + * its knockback (PushbackStrength +0x154, 120) away from the area's centre at the same share of its full strength as the stun
 + * has of CustomValue (issue #55; the scaling is ours, the server's is not in this build); the stun starts with it, and
 + * superfix_cc_tick lets the knockback run out rather than stopping it. */
+ static void blk_mark(uint8_t *ch);   /* below: a stun whose path is not stopped */
 +void env_sd_knockback(uint8_t *v, int sx, int sy, int strength) __attribute__((weak));
 +/* knocked back by an HpBasedStun area: superfix_cc_tick lets the knockback's path run (10 ticks) instead of stopping it at the
 + * stun, as it does for a charge or dash */
@@ -144,12 +147,13 @@ index e72f915..1bd3c1e 100644
  static CcArea g_ca[CA_MAX]; static int g_nca;
  void superfix_cc_area(uint8_t *a, uint8_t *d) {
      if (!on() || !a || !d) return;
--    int type = I32(d, 0x118), ticks = I32(d, 0x13c); uint8_t *owner = PTR(a, 0x108);
-+    int type = I32(d, 0x118), ticks = I32(d, 0x13c), full = ticks, push = 0; uint8_t *owner = PTR(a, 0x108);
-     if ((type != 16 && type != 24 && type != 43) || ticks <= 0 || !owner) return;
+     int type = I32(d, 0x118), cc = type == 16 || type == 24 || type == 43, ticks = cc ? I32(d, 0x13c) : I32(d, 0x160);   /* StunTicks */
+-    uint8_t *owner = PTR(a, 0x108);
++    int full = ticks, push = 0; uint8_t *owner = PTR(a, 0x108);
+     if (ticks <= 0 || !owner) return;
      for (int i = 0; i < g_nca; i++) if (g_ca[i].a == a && g_ca[i].start == I32(a, 0xd0)) return;
      if (g_nca >= CA_MAX) g_nca = 0;
-@@ -148,7 +162,8 @@ void superfix_cc_area(uint8_t *a, uint8_t *d) {
+@@ -153,7 +167,8 @@ void superfix_cc_area(uint8_t *a, uint8_t *d) {
          int lo = I32(d, 0x140), mx = I32(owner, 0x3c8), hp = I32(owner, 0x3c4);
          if (lo > ticks) lo = ticks;
          ticks = mx > 0 ? lo + (int)((long)(ticks - lo) * (mx - (hp < mx ? hp : mx)) / mx) : lo;
@@ -159,15 +163,15 @@ index e72f915..1bd3c1e 100644
      }
      uint8_t *mgr = PTR(owner, 0x20); if (!mgr) return;
      int n = I32(mgr, 0x34); void **v = PTR(mgr, 0x28); if (!v || n < 0 || n > 4096) return;
-@@ -157,6 +172,7 @@ void superfix_cc_area(uint8_t *a, uint8_t *d) {
+@@ -162,6 +177,7 @@ void superfix_cc_area(uint8_t *a, uint8_t *d) {
          uint8_t *o = v[i];
          if (!is_char(o) || I32(o, 0x3c4) <= 0 || ((int (*)(void *))B(0xb6a820))(o) == team) continue;
          if (superfix_area_reach(a, d, o) < 0) continue;
 +        if (push > 0 && env_sd_knockback) { env_sd_knockback(o, I32(a, 0x38), I32(a, 0x3c), push); kb_mark(o); }
          if (type == 24) { silence(o, ticks, "area"); g_nsil_area++; } else { stun(o, ticks, type == 43 ? "hp area" : "area"); g_nstun_area++; }
-     }
- }
-@@ -246,7 +262,7 @@ void superfix_cc_tick(uint8_t *ch) {
+         if (!cc) blk_mark(o);   /* StunTicks of a Damage area: the area's own knockback (its apply runs after this hook) is the path
+                                  * the victim is on; stopping it (superfix_cc_tick) would cancel the push the landing also deals */
+@@ -257,7 +273,7 @@ void superfix_cc_tick(uint8_t *ch) {
      for (k = 0; k < g_nblk && !(g_blk[k].ch == ch && g_blk[k].id == I32(ch, 8)); k++) {}
      if (blocked && k == g_nblk) {   /* a new stun: stop the path the character is on (the mover only refuses new moves) */
          if (g_nblk < BLK_MAX) g_blk[g_nblk++] = (Blk){ch, I32(ch, 8)};
@@ -177,7 +181,7 @@ index e72f915..1bd3c1e 100644
  }
  
 diff --git a/native/loader/superfix_status.c b/native/loader/superfix_status.c
-index 6974881..cd068b8 100644
+index c2446b1..0109d5f 100644
 --- a/native/loader/superfix_status.c
 +++ b/native/loader/superfix_status.c
 @@ -109,11 +109,12 @@ static uint8_t *by_id(uint8_t *any, int id) {

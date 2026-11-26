@@ -10,8 +10,8 @@
  * destroy 0xb6e0b0 uses for DestroyAreaEffect (b6e0f8..b6e1e0): create 0xb29360(data, skin 0xc70e4c(item, 0, 0xb6a718(item)))
  * -> position 0xba7dc8 / 0xb6a61c -> +0x80/+0x84/+0x88 -> owner/kind 0xb29340 -> damage pair +0xe8 = item +0xe0 ->
  * modifiers 0xb2b2d4(area, item +0x150, 0) -> object manager 0xb63198 -> start 0xb29494. Bo's Mine (Bo_def_ulti2_area).
- * Piper's bomb 18000035 is left to env.c (sf_bomb_state / sf_explode). ConductorSign (type 53, Chuck) has no trigger in
- * the client (its update b6bcf0 only counts +0x9c down while +0x2bc, never set here, is 0): its TriggerAreaEffect
+ * Piper's bombs 18000035 / 18000146 (hypercharged) are left to env.c (sf_bomb_state / sf_explode). ConductorSign (type 53,
+ * Chuck) has no trigger in the client (its update b6bcf0 only counts +0x9c down while +0x2bc, never set here, is 0): its TriggerAreaEffect
  * ConductorSignArea (Damage) is spawned once, on the sign's first update that runs (the update is skipped while
  * +0xd4 > now), i.e. when the post lands.
  *
@@ -45,7 +45,8 @@ static int now_of(void *o) { uint8_t *sim = ((getp_t)B(0xb6a378))(o); return sim
 int g_superfix_items = 1;
 static long g_ntrig, g_nsign, g_nchain, g_nchain_item, g_nchain_early;
 static int busy;   /* our own spawns run 0xb29494 / update code again: no nested spawn */
-#define BOMB_ITEM 18000035                  /* Piper's bomb: env.c sf_bomb_state / sf_explode explode it */
+#define BOMB_ITEM 18000035                  /* Piper's bombs (normal, hypercharged OverchargedBomb): env.c */
+#define OC_BOMB_ITEM 18000146               /* sf_bomb_state / sf_explode explode them */
 #define FUSE_TYPES 0x4802020200005040ULL    /* b6cf0c: item types with a trigger fuse */
 
 static long hp_sum(uint8_t *src) {   /* debug: HP of every character (vtable 0x1209020) in src's object manager */
@@ -91,7 +92,7 @@ static void my_item_update(uint8_t *it, void *x1, void *x2, void *x3) {
     o_item_update(it, x1, x2, x3);
     if (!on) return;
     int type = I32(d, 0x54), id = I32(d, 0x20); void *trig = PTR(d, 0x60);
-    if (!trig || id == BOMB_ITEM) return;
+    if (!trig || id == BOMB_ITEM || id == OC_BOMB_ITEM) return;
     static int ring2[64], pos2;   /* debug: where each trap lies once armed (the audit's target stands still) */
     if (g_superfix_dbg && type >= 0 && type < 64 && ((FUSE_TYPES >> type) & 1) && I32(it, 0x94) <= 0 && !seen(ring2, 64, &pos2, I32(it, 8))) {
         uint8_t *mgr = PTR(it, 0x20); void **arr = mgr ? PTR(mgr, 0x28) : NULL; int cnt = mgr ? I32(mgr, 0x34) : 0; long best = -1;
@@ -119,17 +120,22 @@ static void my_item_update(uint8_t *it, void *x1, void *x2, void *x3) {
 
 /* ---- area ChainAreaEffect */
 typedef long (*mkitem_t)(void *, int, int, int, int, int, int, int, int, int, void *, void *, void *, int);
+void *hyper_dead_pet_owner(void *sim, int x, int y, int *wdmg);   /* hyper.c */
 static void on_area_expire(uint64_t *c) {
     uint8_t *a = (uint8_t *)c[0]; uint8_t *d = a ? data_of(a) : NULL;
     if (!g_superfix || !g_superfix_items || !d || busy || !mode() || U8(a, 0xf4)) return;   /* +0xf4: already expired */
     uint8_t *chain = ((getp_t)B(0xa97c04))(d);
     if (!chain) return;
     if (now_of(a) < I32(a, 0xd8)) { g_nchain_early++; return; }   /* removed before its end tick (owner died, ...): no chain */
+    void *owner = PTR(a, 0x108); uint64_t dmg = U64(a, 0xe8); int wd = 0;
+    if (!owner) {   /* a dead hypercharged pet's death area (Tick's head): its summoner, his main attack's damage (hyper.c) */
+        owner = hyper_dead_pet_owner(((getp_t)B(0xb6a378))(a), I32(a, 0x38), I32(a, 0x3c), &wd);
+        if (owner && wd > 0) dmg = (uint32_t)wd | (uint64_t)(uint32_t)wd << 32;   /* the pair +0xe8 / +0xec */
+    }
     busy = 1;
-    uint8_t *a2 = spawn_area_at(a, chain, PTR(a, 0x108), I32(a, 0xf8), U8(a, 0x2d0), U64(a, 0xe8), a + 0x168);
+    uint8_t *a2 = spawn_area_at(a, chain, owner, I32(a, 0xf8), U8(a, 0x2d0), dmg, a + 0x168);
     void *idata = PTR(chain, 0x110); long it = 0;
-    if (a2 && idata && PTR(a, 0x108)) {   /* the chain's SpawnItem, as spawnfix.c make_item */
-        void *owner = PTR(a, 0x108);
+    if (a2 && idata && owner) {   /* the chain's SpawnItem, as spawnfix.c make_item */
         it = ((mkitem_t)B(0xb55684))(idata, I32(a2, 0x38), I32(a2, 0x3c), 1, 99, I32(a2, 0xe8), I32(a2, 0xec), I32(a2, 0x80), I32(a2, 0x84),
                                      I32(a2, 0x88), owner, a2, ((getp_t)B(0xb6a378))(owner), I32(a2, 0xf8));
         if (it) g_nchain_item++;
