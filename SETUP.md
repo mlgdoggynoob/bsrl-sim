@@ -210,6 +210,9 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
 - `no_trains.patch` (a diff on top of `hyper_unmodelled.patch`): `NB_NO_TRAINS=1` skips libg's creation of Survival651's
   trains (`env.c` `no_trains`, the call at 0xc2f570). They are invisible to the observation but stop shots; off by default,
   which keeps them.
+- `bolt_overdrive.patch` (a diff on top of `no_trains.patch`): Bolt's super gets the speed (+20 %, RockSpeedUpMovement) and
+  the damaging trail (RockUltiTrail) of his Brawler_Rock component, whose tick 0xb99070 is a bare `ret` (`superfix_status.c`
+  `rock_tick`, while the super's 80-tick self status is on him; the trail spacing copies Carl's 0xba1028 [?]).
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
