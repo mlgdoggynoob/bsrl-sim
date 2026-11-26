@@ -237,6 +237,16 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   their aim / walking direction in rendered frames (`env.c` `facing_sync` copies the simulation's facing +0x324 and walking
   direction +0x320 into the client's characters, which the offline snapshot never sends). Rendering only; off unless
   `NBHOST_FACING=1`, which `policy_video.py` sets (docs/RECORDING.md).
+- `repeat_masked.patch` (issue #63, a diff on top of `facing_sync.patch`): the four REPEAT gadgets that stayed in
+  `g_masked` work and are unmasked. Darryl's spin recharges his super by CustomValue6 / 4000 of it per enemy hit
+  (`gadget.c` `gadget_root_post`); Bea's bees and Amber's flames (TravelType 8 projectiles) get the circling angle (+0x454)
+  and flag (+0x415) that libg's own circling spawn sets, so `hyper.c` `circle_travel` spaces Amber's flames on their ring;
+  Bea's bees, which have no ring radius, spiral out from her (`circle_travel`, radius Speed x time, one turn per
+  SteerLifeTime [?]; only for REPEAT gadget shots, so R-T's radius-less hypercharge lasers keep their old path);
+  `superfix_items.c`'s FUSE_TYPES mask had a wrong constant that left out item type 25, so Fang's popcorn mines (and
+  Tick's ClusterMine) now pop when their fuse runs out. `NB_REP_DBG=1` logs the path and hits of each REPEAT shot fired
+  one at a time (not Mico's volley). `gadget.c` `targets()` no longer reads an unset distance (it crashed Mico's gadget
+  and could drop Gene's nearest target). Notes: `notes/issue63.md`. `python -m super_audit --gadget`, `python -m gadget_check`.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

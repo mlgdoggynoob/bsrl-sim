@@ -3,7 +3,7 @@
  *
  * Item TriggerAreaEffect (ItemData +0x60): the item update 0xb6b8e0 (vtable 0x1209240 slot +0x28) runs the trigger: an
  * enemy within TriggerRangeSubTiles sets +0x90 (triggered) and the fuse +0x9c (Value2 / Value; b6dce0) for the fuse types
- * of the mask 0x4802020200005040 (b6cf0c: 6 Mine, 12, 14, 25, 33, 41, 59, 62); the fuse counts down 50 ms a tick
+ * of the mask 0x4800020202005040 (b6cf0c..b6cf20: 6 Mine, 12, 14, 25, 33, 41, 59, 62); the fuse counts down 50 ms a tick
  * (b6cf30) and at 0 only types 9, 0x42 and 3 have client code (b6ded0..): the item is then removed (slot 6 0xb6e4a4)
  * without its area. +0x60 is read only at b6d020 (type 25's radius): the server's spawn is compiled out. Re-implemented
  * after the update returns: when the fuse ran out in that update, the area is spawned with the sequence libg's own item
@@ -54,7 +54,9 @@ static long g_ntrig, g_nsign, g_nchain, g_nchain_item, g_nchain_early;
 static int busy;   /* our own spawns run 0xb29494 / update code again: no nested spawn */
 #define BOMB_ITEM 18000035                  /* Piper's bombs (normal, hypercharged OverchargedBomb): env.c */
 #define OC_BOMB_ITEM 18000146               /* sf_bomb_state / sf_explode explode them */
-#define FUSE_TYPES 0x4802020200005040ULL    /* b6cf0c: item types with a trigger fuse */
+#define FUSE_TYPES 0x4800020202005040ULL    /* b6cf0c..b6cf20: item types with a trigger fuse (movz / movk 0x5040, 0x200 << 16,
+                                             * 0x202 << 32, 0x4800 << 48; issue #63: was 0x4802020200005040, which left out type
+                                             * 25, Tick's ClusterMine and Fang's KickerDudeMine, and took in 49) */
 #define STICKY_TYPE 32                      /* Squeak's blombs (ItemData +0x54; 0xae6cf4) */
 
 static long hp_sum(uint8_t *src) {   /* debug: HP of every character (vtable 0x1209020) in src's object manager */
