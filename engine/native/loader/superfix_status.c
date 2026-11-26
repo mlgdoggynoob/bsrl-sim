@@ -143,11 +143,13 @@ static int zone_get(uint8_t *ch, int kind, int t) {
 
 static void pierce_mark(uint8_t *src, uint8_t *target, void *data);   /* Pierce's marked shots (below) */
 /* 0xba3230 */
+void env_status_added(uint8_t *ch, void *data, int until) __attribute__((weak));   /* env.c */
 static void *my_status_add(void *cont, uint8_t *ch, void *data, int src_player, int team, void *src_obj, uint8_t *src_ch) {
     (void)cont; (void)team;
     if (!g_superfix || !mode() || !ch || !data) return NULL;
     int dur = I32(data, SE_DUR), t = now_tick(ch);
     if (dur <= 0 || t < 0) return NULL;
+    if (env_status_added) env_status_added(ch, data, t + dur);   /* env.c: hypercharged Bolt's wall pass (RockUltiDamageReduction) */
     if (!U8(data, SE_STACK))
         for (int i = 0; i < g_nst; i++) if (g_st[i].ch == ch && g_st[i].ch_id == I32(ch, 8) && g_st[i].data == data) {
             if (U8(data, SE_REFRESH) || g_st[i].until < t + dur) g_st[i].until = t + dur;   /* refresh: a new full duration */

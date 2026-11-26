@@ -84,7 +84,7 @@ static fn_b422d0 o_root;                          /* trampoline: calls the origi
 /* ------------------------------------------------------------------ battle / episode state */
 #define MAXOBJ 4096
 typedef struct { int id, data, owner, x, y; } ItemRow;
-typedef struct { int id; void *ch; int x0, y0, x1, y1, T, t, start; } Leap;
+typedef struct { int id; void *ch; int x0, y0, x1, y1, T, t, start, oc; } Leap;   /* oc: hypercharged leap */
 typedef struct { int id, x, y, owner; } Bomb;
 typedef struct { int x, y, owner, tick; } PendBox;
 typedef struct { int kind; int a, b, c, d; void *p; } TickJob;   /* 1 spawn box, 2 explode */
@@ -735,6 +735,42 @@ static void charge_break(void *sim, uint8_t *ch, int x, int y, int r) {
     void *m = PTR(sim, 0x68); if (!m) return;
     ((fn_circ)B(0xa53b60))(m, x, y, r, 0, I32(ch, 0x80), I32(ch, 0x84), 0, 0, PTR(ch, 0x20)); g_charge_walls++;
 }
+#define SF_BOMB_WALL_R 600      /* Piper's bombs: SniperBombExplosion / SniperOverchargedBombExplosion Radius (DestroysEnvironment) */
+#define SF_OC_LAND_WALL_R 900   /* hypercharged Piper's landing: SniperOverchargedLanding Radius (DestroysEnvironment) */
+void env_sd_break(void *sim, int x, int y, int r);
+/* hypercharged Bolt (Rock): "Bolt's Super will destroy all walls!". His Brawler_Rock component (character_components_logic)
+ * lists RockUltiOverchargedWallPass (DurationTicks 80, MoveThroughWalls) for the hypercharged super, but the client libg
+ * never adds it (NB_SUPERFIX_DBG: only RockUlti's ActivationSelfStatusEffects RockUltiDamageReduction is added) and its
+ * mover has no wall pass. Here (RE-IMPLEMENTED): when RockUltiDamageReduction (also 80 ticks) is added to a hypercharged
+ * brawler (superfix_status.c calls env_status_added), the tiles he touches break every tick until it ends, like Bull's
+ * charge: the tile under him and, while the joystick moves him, the tile one ahead, so the joystick's raycast
+ * (joy_target_at: the target stops 20 u before the first blocking tile) finds it open and he walks on through. Tiles that
+ * cannot break (the border ring, IsDestructible false) still stop him. */
+#define ROCK_ULTI_SHIELD 117000347   /* RockUltiDamageReduction's data id (logged by NB_SUPERFIX_DBG's "st: add") */
+#define WALLPASS_R CHARGE_WALL_R     /* Bull's one-tile lane radius (Bolt's CollisionRadius 120 is smaller than Bull's 145) */
+#define WALLPASS_AHEAD 300           /* one tile ahead in the joystick direction */
+typedef struct { int id, until; void *ch; } WallPass;
+static WallPass g_wp[NBE_MAXP]; static int g_nwp; static long g_wp_starts, g_wp_ticks;
+void env_status_added(uint8_t *ch, void *data, int until) {
+    if (!E.sim || !ch || !data || I32(data, 0x20) != ROCK_ULTI_SHIELD || VTOF(ch) != VT_CHAR) return;
+    int i; void *p = owner_player(E.sim, ch, &i); if (!p || !hyper_active(p)) return;
+    int k; for (k = 0; k < g_nwp && g_wp[k].ch != ch; k++) {}
+    if (k == g_nwp) { if (g_nwp >= NBE_MAXP) return; g_nwp++; }
+    g_wp[k] = (WallPass){I32(ch, 8), until, ch}; g_wp_starts++;
+    static int nlog; if (nlog++ < 10) LOG("[env] wall pass: ch %d (player %d) until tick %d\n", I32(ch, 8), i, until);
+}
+static void wallpass_tick(void *sim) {
+    int t = I32(sim, 0x10);
+    for (int k = 0; k < g_nwp; k++) {
+        WallPass *w = &g_wp[k]; uint8_t *ch = obj_by_id(sim, w->id);
+        if (!ch || (void *)ch != w->ch || I32(ch, 0x3c4) <= 0 || t >= w->until || w->until - t > 200) { g_wp[k--] = g_wp[--g_nwp]; continue; }
+        int x = I32(ch, 0x38), y = I32(ch, 0x3c), i; charge_break(sim, ch, x, y, WALLPASS_R); g_wp_ticks++;
+        if (owner_player(sim, ch, &i) && i >= 0 && i < NBE_MAXP && E.moving[i] && E.last_dir[i] >= 0) {
+            double r = E.last_dir[i] * M_PI / 8;
+            charge_break(sim, ch, jround(x + WALLPASS_AHEAD * cos(r)), jround(y + WALLPASS_AHEAD * sin(r)), WALLPASS_R);
+        }
+    }
+}
 static int dig_ok(void);
 static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type, int dmg, int push, void *area1, void *area_end,
                                 void *area2) {
@@ -1005,7 +1041,8 @@ static void sf_start_hook(uint64_t *ctx) {   /* 0xb475cc (the one-instruction re
     double dist = hypot(lx - x0, ly - y0), per = speed / 20.0 > 1 ? speed / 20.0 : 1; int T = (int)ceil(dist / per); if (T < 1) T = 1;
     int slot = -1; for (int i = 0; i < E.njobs; i++) if (E.jobs[i].id == id) slot = i;
     if (slot < 0) { if (E.njobs >= NBE_MAXP) return; slot = E.njobs++; }
-    E.jobs[slot] = (Leap){id, ch, x0, y0, lx, ly, T, 0, I32(sim, 0x10)};
+    int pi; void *pp = owner_player(sim, ch, &pi);
+    E.jobs[slot] = (Leap){id, ch, x0, y0, lx, ly, T, 0, I32(sim, 0x10), pp && hyper_active(pp)};
     E.sf_started++; sf_stop(ch);
     if (item) {
         int owner = I32(ch, 0x80);
@@ -1020,7 +1057,11 @@ static void sf_tick(void *sim) {
         j->t++; double f = (double)j->t / j->T; if (f > 1) f = 1;
         I32(ch, 0x38) = jround(j->x0 + (j->x1 - j->x0) * f); I32(ch, 0x3c) = jround(j->y0 + (j->y1 - j->y0) * f);
         I32(ch, 0x40) = f < 1 ? jround(700 * 4 * f * (1 - f)) : 0;
-        if (f >= 1) { E.sf_landed++; sf_stop(ch); E.jobs[i--] = E.jobs[--E.njobs]; }
+        if (f >= 1) {
+            /* hypercharged: "She also destroys terrain when she lands": SniperOverchargedLanding (Radius 900, DestroysEnvironment;
+             * no table names it, the card's code spawns it in the server; its Pushback 200 is not re-implemented) */
+            if (j->oc) charge_break(sim, ch, I32(ch, 0x38), I32(ch, 0x3c), SF_OC_LAND_WALL_R);
+            E.sf_landed++; sf_stop(ch); E.jobs[i--] = E.jobs[--E.njobs]; }
     }
 }
 static int leaping(int id) { for (int i = 0; i < E.njobs; i++) if (E.jobs[i].id == id) return 1; return 0; }
@@ -1044,6 +1085,9 @@ static void sf_explode(void *sim, Bomb *b) {
         v = objvec(sim, &n);
     }
     if (pl) I32(pl, 0x54) = charge0;
+    /* the bomb's area (SniperBombExplosion / SniperOverchargedBombExplosion, Radius 600) is DestroysEnvironment: env does the
+     * explosion (the client removes the bomb without its area, superfix_items.c), so it breaks the tiles too */
+    if (alive) charge_break(sim, atk, b->x, b->y, SF_BOMB_WALL_R); else env_sd_break(sim, b->x, b->y, SF_BOMB_WALL_R);
     E.sf_pops++;
 }
 static void sf_bomb_state(void *sim) {   /* afterState: detect popped bombs (LEAP_BOMB: normal and hypercharged) */
@@ -1366,6 +1410,7 @@ static void pre_snapshot(void *sim) {   /* 0xb63b0c, once per tick: storm hits, 
     E.ngq = 0;
     if (E.njobs) sf_tick(sim);
     if (g_ncj) charge_contact_tick(sim);   /* diversity round: env charge contact (only after a native charge start) */
+    if (g_nwp) wallpass_tick(sim);         /* hypercharged Bolt's wall pass */
     gadget_tick(sim, I32(sim, 0x10));      /* gadget round: heals over time */
     if (g_nzone) zone_tick(sim);
     hyper_pets_tick(sim);                  /* hypercharge round: last positions of pets with an overcharged death area */
