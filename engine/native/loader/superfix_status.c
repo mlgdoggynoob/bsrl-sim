@@ -109,11 +109,12 @@ static uint8_t *by_id(uint8_t *any, int id) {
 /* issue #19 leftovers: what a character standing in an area gets while it stands there (SmokeScreen: invisibility level,
  * DamageBoost: damage percent; issue #19 final: Edgar's reload and super charge percents, Angelo's weapon switch), marked by superfix_status_area at the area's tick and read at the character's next update /
  * damage: a mark lasts until the tick after it was made */
-enum { ZN_SMOKE = 1, ZN_DMG = 2, ZN_RELOAD = 3, ZN_CHARGE = 4, ZN_SWITCH = 5 };   /* 3-5: issue #19 final (area_extra) */
+enum { ZN_SMOKE = 1, ZN_DMG = 2, ZN_RELOAD = 3, ZN_CHARGE = 4, ZN_SWITCH = 5,   /* 3-5: issue #19 final (area_extra) */
+       ZN_SHIELD = 6 };   /* issue #55: a gadget's own ShieldPercent for ShieldTicks (superfix_status_shield) */
 typedef struct { uint8_t *ch; int ch_id, kind, val, until; } Zone;
 #define ZN_MAX 64
 static Zone g_zn[ZN_MAX]; static int g_nzn; static long g_nzone;
-static void zone_mark(uint8_t *ch, int kind, int val, int t) {
+static void zone_hold(uint8_t *ch, int kind, int val, int t, int until) {   /* val from t to until (inclusive) */
     int k, id = I32(ch, 8);
     for (k = 0; k < g_nzn && !(g_zn[k].ch == ch && g_zn[k].ch_id == id && g_zn[k].kind == kind); k++) {}
     if (k == g_nzn) {
@@ -123,7 +124,15 @@ static void zone_mark(uint8_t *ch, int kind, int val, int t) {
     }
     if (g_zn[k].until < t) g_zn[k].val = 0;
     if (val > g_zn[k].val) g_zn[k].val = val;
-    g_zn[k].until = t + 1; g_nzone++;
+    if (until > g_zn[k].until) g_zn[k].until = until;
+    g_nzone++;
+}
+static void zone_mark(uint8_t *ch, int kind, int val, int t) { zone_hold(ch, kind, val, t, t + 1); }
+/* issue #55: a damage shield of pct percent for `ticks` ticks from now (gadget.c: an accessory's ShieldPercent /
+ * ShieldTicks, Tick's ClusterBombDude_Explosion), folded into char +0x954 with the status effects' shields */
+void superfix_status_shield(uint8_t *ch, int pct, int ticks) {
+    int t = ch ? now_tick(ch) : -1;
+    if (g_superfix && t >= 0 && pct > 0 && ticks > 0) zone_hold(ch, ZN_SHIELD, pct > 100 ? 100 : pct, t, t + ticks - 1);
 }
 static int zone_get(uint8_t *ch, int kind, int t) {
     int id = I32(ch, 8), v = 0;
@@ -238,6 +247,7 @@ static void on_char_update(uint64_t *ctx) {
     }
     (void)any;
     {   int z = zone_get(ch, ZN_SMOKE, t); if (z > invis) invis = z; }   /* SmokeScreen areas (superfix_status_area) */
+    {   int z = zone_get(ch, ZN_SHIELD, t); if (z > shield) shield = z; }   /* a gadget's shield (superfix_status_shield) */
     I32(ch, CH_SHIELD) = shield;   /* nothing in this libg writes these: ours */
     I32(ch, CH_INVIS) = invis;
     {   /* issue #19: crowd control. A CcImmunity status keeps LosePlayerControl / FullStun / Silence off and clears the stun

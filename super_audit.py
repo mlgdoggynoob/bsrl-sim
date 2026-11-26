@@ -60,11 +60,15 @@ live_ok / live_wrong, else live_unchecked. Output: super_audit_hyper_desc.json /
 --gadget (gadget round, issue #3): the brawlers with a gadget the host implements and this audit can see (`audit_gadgets`,
 `gadget_kind` mirrors nbhost gadget.c's classify functions: area at the brawler, the gadget's own skill shot or area, items,
 instant heals, Piper's Auto Aimer; R-T's super charge is gadget_check's; the other repeat_shot / spin_shoot volleys are off,
-issue #54). Each shooter gets
-that gadget card and fires it (fire 3, aimed at the target) in place of the super; consumed = the host counted a use
-(NbeResp gad_used). Expected effects come from the tables (`expected_gadget`). --gadget-slot 1 audits each brawler's second
-such gadget. Output: super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*)."""
-import argparse, collections, functools, json, os, sys, threading, time
+issue #54). Each shooter gets that gadget card and fires it (fire 3, aimed at the target, super_dist = d / CastingRange as
+for a super: a thrown gadget lands there) in place of the super; consumed = the host counted a use (NbeResp gad_used). An
+item gadget (a trap, a tornado) acts on an enemy that comes to it, so its target walks to the shooter's spot after the fire
+(walk_in; push = how far it is kept from that spot). Expected effects come from the tables and from the card's own
+description (`expected_gadget`: damage, push and heal that texts.csv names are expected too, issue #55; the other effects it
+names are listed as not checked live). A thrown shot whose projectiles hit nobody in flight and whose areas deal no damage
+(Damian's wall, Wendy's grenade, Spike's cactus) does not expect its skill's Damage (`thrown_harms`). --gadget-slot 1 audits
+each brawler's second such gadget. Output: super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*)."""
+import argparse, collections, functools, json, os, re, sys, threading, time
 import numpy as np
 
 NIL = -2147483648
@@ -274,15 +278,19 @@ HEAL_TYPES = ("Heal", "Hot", "HealRegen", "HealAndDamage", "HotAndDot")
 
 
 MASKED = {"BowDude_Totem", "Speedy_Rewind", "HammerDude_Pull", "HookDude_Homing", "AssaultShotgun_Bomb", "Ninja_InvisibleArea",
-          "Gladiator_Amp", "MagicalGirl_FlyArea"}   # gadget.c g_masked: classified, but no effect in this audit -> not usable
+          "Gladiator_Amp", "MagicalGirl_FlyArea",
+          "Barkeep_HealPotion", "Blower_Stopper"}   # gadget.c g_masked: classified, but no
+# effect in this audit, or (the last two, Barley's and Gale's) the effect disagrees with the game's description (desc_audit, #55)
+# -> not usable
 GADGET_KINDS = ("area", "shot", "skill_area", "item", "heal_now", "super", "auto_aim")
 
 
-def gadget_kind(a):
-    """accessories.csv row -> the host's gadget.c implementation that handles it (GADGET_KINDS), None = not usable.
+def gadget_kind(a, masked=True):
+    """accessories.csv row -> the host's gadget.c implementation that handles it (GADGET_KINDS), None = not usable
+    (masked=False: the kind a MASKED row classifies as).
     Mirrors gadget.c's classify functions (accessory Type, AreaEffect, the Skill's BehaviorType, CustomObject's table)."""
     T = _tables(); t = a.get("Type") or ""; num = lambda k: _num(a, k)
-    if a.get("Name") in MASKED: return None
+    if masked and a.get("Name") in MASKED: return None
     obj = (a.get("CustomObject") or "").split(";")[0]
     is_proj = obj in T["pskin"] or obj in T["plog"]
     if (not t or (t == "spin_shoot" and not is_proj)) and a.get("AreaEffect"):   # AREA: the area at the brawler (Fang's sweep too), Rosa's WallSpawn left out
@@ -335,7 +343,16 @@ def area_gadgets():
     return {b: next((c, n) for c, n, k in gs if k == "area") for b, gs in all_gadgets().items() if any(k == "area" for _, _, k in gs)}
 
 
-def expected_gadget(name, slot=0):
+def thrown_harms(T, e):
+    """a SHOT gadget's expected_skill() -> False when its projectiles are all thrown (Indirect) with Radius 0 (they hit nobody
+    in flight) and none of its areas has a Damage: the skill's own Damage column then reaches no one (issue #55)"""
+    pl = [T["plog"].get(T["pskin"].get(p, {}).get("Logic") or p, {}) for p in e["projectiles"]]
+    if not pl or not all(r.get("Indirect") == "true" and _num(r, "Radius") == 0 for r in pl): return True
+    al = [T["alog"].get(T["askin"].get(a, {}).get("Logic") or a, {}) for a in e["areas"]]
+    return any(_num(r, "Damage") > 0 or r.get("Type") in ("Dot", "HotAndDot") for r in al)
+
+
+def _expected_gadget(name, slot=0):
     """--gadget: the brawler's audit_gadgets(slot) gadget -> the same dict as expected(). area: area always; damage, push,
     heal from the area's area_effects_logic row, range = its radius (the target stands inside it). shot / skill_area: the
     gadget's own skill as expected_skill() reads a super. item: an item. heal_now: a heal (the target hits the shooter
@@ -356,14 +373,54 @@ def expected_gadget(name, slot=0):
         return {**base, "kind": "Gadget: area " + (al.get("Type") or "?"), "range": _num(al, "Radius") or 1000.0, "expect": ex, "areas": [area]}
     if kind in ("shot", "skill_area"):
         e = expected_skill(a["Skill"], T["skill"].get(a["Skill"], {}))
+        if kind == "shot" and "damage" in e["expect"] and not thrown_harms(T, e):   # Damian's wall, Wendy's grenade, Spike's cactus
+            e = {**e, "expect": [x for x in e["expect"] if x != "damage"],
+                 "notes": e["notes"] + ["thrown, lands on nothing that deals damage: the skill's Damage is not expected"]}
         return {**e, "skill": acc, "type": "Gadget", "kind": "Gadget: " + kind, "card": card, "delay": 0.0, "gadget_kind": kind}
     if kind == "auto_aim":
         obj = a["CustomObject"].split(";")[0]; pl = T["plog"].get(T["pskin"].get(obj, {}).get("LogicProjectile") or obj, {})
         ex = ["projectile", "damage"] + (["push"] if _num(pl, "PushbackStrength") > 0 else [])
         return {**base, "kind": "Gadget: auto_aim", "range": _num(a, "Range") * TILE, "expect": ex, "projectiles": [obj]}
     if kind == "item":
-        return {**base, "kind": "Gadget: item", "range": 600.0, "expect": ["item"], "items": [a["CustomObject"].split(";")[0]]}
+        return {**base, "kind": "Gadget: item", "range": 600.0, "expect": ["item"], "items": [a["CustomObject"].split(";")[0]],
+                "walk_in": True}   # a trap / tornado acts on an enemy that comes to it: the target walks to the shooter
     return {**base, "kind": "Gadget: heal_now", "range": 600.0, "expect": ["heal"]}
+
+
+TEXT_OBSERVABLE = ("damage", "push", "heal")     # text_effects names this audit measures (observed()): the rest is "not checked live"
+
+
+@functools.lru_cache(None)
+def _gadget_text():
+    """(brawler, accessories row name) -> the card's description text (desc_audit.rows())"""
+    import desc_audit
+    return {(r["brawler"], r["card"]): r["text"] for r in desc_audit.rows() if r["type"] == "gadget"}
+
+
+def text_expectation(name, acc):
+    """the card's description text -> (effects it names that observed() can measure, notes for the rest / the text itself)"""
+    import desc_audit
+    text = _gadget_text().get((name, acc), ""); fx = desc_audit.text_effects(text)
+    seen = [e for e in TEXT_OBSERVABLE if e in fx]
+    rest = sorted(fx - set(TEXT_OBSERVABLE))
+    notes = []
+    if rest: notes.append("not checked live (text names): " + ", ".join(rest))
+    if re.search(r"split|divid|in 2|in two", text.lower()): notes.append("not checked live (text names): split")
+    if re.search(r"shield", text.lower()) and "shield" not in rest: notes.append("not checked live (text names): shield")
+    if re.search(r"follow|homing|closest|seek", text.lower()): notes.append("not checked live (text names): homing")
+    if seen: notes.append("text says: " + ", ".join(seen))
+    return seen, notes
+
+
+def expected_gadget(name, slot=0):
+    """_expected_gadget (the data-derived effects) plus the damage / push / heal the card's description text names (text_expect);
+    other text effects (slow, speed, invisible, split, homing, stun, ...) go to notes as "not checked live" """
+    e = _expected_gadget(name, slot)
+    seen, notes = text_expectation(name, e["skill"])
+    e["text_expect"] = [x for x in seen if x not in e["expect"]]
+    e["expect"] = e["expect"] + e["text_expect"]
+    e["notes"] = e["notes"] + notes
+    return e
 
 
 # ------------------------------------------------------------------ classification
@@ -640,8 +697,9 @@ class Auditor:
                         move=0, push=0, pull=0, leaping=False, projectiles={}, summons={}, areas={}, items={},
                         changed=False, data0=int(ch[0, 1]) if len(ch) else NIL, ulti0=int(ch[0, 15]) if len(ch) else NIL,
                         ulti_active=False, foreign_near=False, target_dead=False, s=s, t=t)
+        m_x0, m_y0 = (lambda j: M[j]["x0"]), (lambda j: M[j]["y0"])
         acts = dict(idle)
-        for j, s, t in run: acts[s] = (-1, 3, geo[j]["aim"], 0.0) if self.gadget else (-1, 2, geo[j]["aim"], geo[j]["super_dist"])
+        for j, s, t in run: acts[s] = (-1, 3, geo[j]["aim"], geo[j]["super_dist"]) if self.gadget else (-1, 2, geo[j]["aim"], geo[j]["super_dist"])
         r = stp(acts, 1); n = 1
         if self.hyper:
             for j, s, t in run: M[j]["hyper_on"] = hy0[s][0] > 0
@@ -654,9 +712,13 @@ class Auditor:
                 m["leaping"] |= bool(p.leaping)
                 if p.alive: m["move"] = max(m["move"], int(np.hypot(p.x - m["x0"], p.y - m["y0"])))
                 if q.alive and not q.eliminated:
-                    m["push"] = max(m["push"], int(np.hypot(q.x - m["tx0"], q.y - m["ty0"])))
-                    if p.alive and m["push"] >= PUSH_MIN:   # pull: the target ends nearer the shooter than it started from
-                        m["pull"] = max(m["pull"], int(np.hypot(m["tx0"] - p.x, m["ty0"] - p.y) - np.hypot(q.x - p.x, q.y - p.y)))
+                    if self.info[j.name].get("walk_in"):   # walking in: pushed back = away from the shooter's spot again
+                        rr = float(np.hypot(q.x - m["x0"], q.y - m["y0"])); m["r_min"] = min(m.get("r_min", rr), rr)
+                        m["push"] = max(m["push"], int(rr - m["r_min"]))
+                    else:   # (a walk-in target ends nearer the shooter by itself: no pull read from it)
+                        m["push"] = max(m["push"], int(np.hypot(q.x - m["tx0"], q.y - m["ty0"])))
+                        if p.alive and m["push"] >= PUSH_MIN:   # pull: the target ends nearer the shooter than it started from
+                            m["pull"] = max(m["pull"], int(np.hypot(m["tx0"] - p.x, m["ty0"] - p.y) - np.hypot(q.x - p.x, q.y - p.y)))
                 m["dd"] = m.get("dd", 0) + int(p.damage_dealt)   # per step (the host clears it after every response)
                 if st is None: continue
                 if bid.get(s) != bid0.get(s): m["changed"] = True
@@ -682,6 +744,8 @@ class Auditor:
                 p, q = r.pl[s], r.pl[t]; inf = self.info[j.name]
                 if inf.get("steer") and n * 50 > inf.get("cast", 0) + 100 and q.alive and np.hypot(q.x - p.x, q.y - p.y) > 150:
                     acts[s] = (int(round(np.degrees(np.arctan2(q.y - p.y, q.x - p.x)) / 22.5)) % 16, 0, 0.0, 0.0)
+                if inf.get("walk_in") and q.alive and np.hypot(q.x - m_x0(j), q.y - m_y0(j)) > 150:   # item gadgets: the target walks in
+                    acts[t] = (int(round(np.degrees(np.arctan2(m_y0(j) - q.y, m_x0(j) - q.x)) / 22.5)) % 16, 0, 0.0, 0.0)
             # shield / status supers: the target shoots the shooter again (--post-hit for all; a ProjectileShield always)
             due = [(j, s, t) for j, s, t in run if "ph_hp0" not in M[j] and (POST_HIT or self.info[j.name].get("post_hit"))
                    and n >= (POST_HIT or self.info[j.name]["post_hit"])]
@@ -1237,22 +1301,30 @@ def _check():
         assert {c["feature"]: c["data"] for c in check_claims("Luchador")}["pull"] == "data_ok"   # OverchargedChargePushback -100
         assert all(c["data"] in ("data_ok", "data_contradicts", "no_data") for b in env_v5.hyper_brawlers() for c in check_claims(b))
         ag = area_gadgets()   # --gadget: the host's AREA gadgets, Rosa's WallSpawn left out
-        assert {"Barkeep", "DeadMariachi", "ClusterBombDude", "Ghost", "Domain", "Meeple", "KickerDude"} <= set(ag) and "Rosa" not in ag, sorted(ag)
+        assert {"Barkeep", "DeadMariachi", "Ghost", "Domain", "Meeple", "KickerDude"} <= set(ag) and "Rosa" not in ag, sorted(ag)
         assert all(c // 1000000 == 23 for c, _ in ag.values())
-        tk = expected_gadget("ClusterBombDude")
-        assert tk["skill"] == "ClusterBombDude_Explosion" and tk["expect"] == ["area", "damage", "push"] and tk["delay"] == 20, tk
+        eb = expected_gadget("ClusterBombDude")   # Tick's: the host also gives the 50 % shield, which observed() cannot see
+        assert "ClusterBombDude" in ag and eb["skill"] == "ClusterBombDude_Explosion" and {"area", "damage", "push"} <= set(eb["expect"]) and eb["delay"] == 20, eb
         assert expected_gadget("DeadMariachi")["expect"] == ["area", "heal"] and expected_gadget("Ghost")["expect"] == ["area"]
         kinds = collections.Counter(k for gs in all_gadgets().values() for _, _, k in gs)   # gadget.c's coverage of the enabled cards
         assert sum(kinds.values()) == 213 and kinds["shot"] == 25 and not {"repeat", "spin"} & set(kinds), kinds
-        assert kinds["item"] == 2 and kinds["heal_now"] == 2 and kinds["super"] == 1 and kinds["skill_area"] == 2, kinds
+        assert kinds["item"] == 1 and kinds["heal_now"] == 2 and kinds["super"] == 1 and kinds["skill_area"] == 2, kinds   # #55 masked Gale's
         assert audit_gadgets(0)["Gunslinger"][1] == "Gunslinger_Reload" and audit_gadgets(1)["Gunslinger"][1] == "Gunslinger_BigBullet"
-        assert expected_gadget("Gunslinger")["expect"][:1] == ["projectile"] and expected_gadget("Gunslinger", 1)["gadget_kind"] == "shot"
+        assert expected_gadget("Gunslinger")["expect"][:1] == ["projectile"] and expected_gadget("Gunslinger")["gadget_kind"] == "shot"
         assert not {"BowDude", "HookDude"} & set(audit_gadgets(0))
         assert kinds["auto_aim"] == 1 and audit_gadgets(0)["Sniper"][1:] == ("Sniper_HandGun", "auto_aim"), kinds
         pa = expected_gadget("Sniper")
         assert pa["expect"] == ["projectile", "damage", "push"] and pa["range"] == 2100 and pa["projectiles"] == ["PiperHandgunProjectile"], pa
-        assert "Barkeep" not in audit_gadgets(1) and expected_gadget("ElectroSniper")["expect"] == ["item"]   # HealPotion: repeat_shot, off (#54)
+        assert "Barkeep" not in audit_gadgets(1) and expected_gadget("ElectroSniper")["expect"][:1] == ["item"]   # HealPotion: repeat_shot, off (#54), and masked (#55)
         assert expected_gadget("BullDude", 1)["gadget_kind"] == "skill_area" and "area" in expected_gadget("BullDude", 1)["expect"]
+        eg = expected_gadget("ElectroSniper")   # text effects: damage the data did not give goes to text_expect, the unmeasurable to notes
+        assert eg["text_expect"] == ["damage"] and "damage" in eg["expect"] and any("slow" in x for x in eg["notes"]), eg
+        assert expected_gadget("DeadMariachi")["text_expect"] == [] and any("not checked live" in x and "slow" in x for x in expected_gadget("Ghost")["notes"])
+        assert any("slow, stun" in x for x in expected_gadget("BullDude", 1)["notes"])
+        assert eg.get("walk_in") and "Blower" not in audit_gadgets(0)   # item gadgets: the target walks in; Gale's tornado: masked (#55)
+        fg = expected_gadget("FutureGirl")   # Wendy's grenade: thrown, its areas deal no damage -> its skill's Damage is not expected
+        assert "damage" not in fg["expect"] and any("thrown" in x for x in fg["notes"]), fg
+        assert "damage" in expected_gadget("AssaultShotgun")["expect"]   # Griff's coins land on a damage area: still expected
         assert expected_gadget("Samurai")["expect"] == ["heal"] and "Splitter" not in audit_gadgets(0)
         sp = find_spots(MAP)
         assert len(sp) == 10 and all(len(d) >= 2 for _, _, d in sp), len(sp)

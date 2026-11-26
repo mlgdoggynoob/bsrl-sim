@@ -25,6 +25,7 @@
      attack Damage x CustomValue1 % x the damage percent, and at most AA_MAIN_SHARE of a main attack), pushback (the near
      one ends >= AA_PUSH_MIN farther from the shooter, the unhit far one moves < AA_STILL), needs an enemy in range (A
      spends no use, charge or cooldown, nobody loses HP).
+  7. (also --check) no usable gadget disagrees with the game's own description (desc_audit, issue #55) beyond DESC_OPEN.
 With no implemented kind in play (an old host build) it checks 1, 3 and 4 and says so.
 python -m gadget_check [--minutes 4] [--per-kind 6] [--roster Splitter,Attacher,Samurai] [--volleys 99] [--auto-aim 1]
 (--roster: only these brawlers, e.g. to reach a kind that one brawler has: R-T's SUPER; --volleys: SHOT gadgets judged
@@ -57,6 +58,18 @@ AA_MAIN_SHARE = 0.25   # "far less than one main attack": the data gives 5 % of 
 AA_PUSH_MIN = 100.0    # units farther from the shooter, as super_audit.PUSH_MIN: above walk jitter and setup rounding
                        # (PushbackStrength 70, Shelly's super's knockback)
 AA_STILL = 50.0        # the unhit control's largest move: setup rounding only (AI off, told to stand)
+DESC_OPEN = {}   # desc_audit mismatches with an open fix (card -> issue); #54 closed Piper's and Leaper's
+
+
+def desc_mismatches():
+    """usable gadgets whose kind disagrees with the game's own description (desc_audit, issue #55), minus DESC_OPEN. None:
+    no game data. A new mismatch fails the check: mask the card (gadget.c g_masked, super_audit.MASKED) or fix its kind."""
+    try:
+        import desc_audit
+        rows = desc_audit.flagged()
+    except (OSError, KeyError, StopIteration):
+        return None
+    return ["%s %s (%s): %s" % (r["brawler"], r["card"], r["kind"], ", ".join(r["flags"])) for r in rows if r["card"] not in DESC_OPEN]
 
 
 def snap(r, p):
@@ -326,7 +339,9 @@ def _check():
     assert not A(o_used1=1, o_ch1=2, o_cd1=120)["needs an enemy in range"]                # fired into nothing, a use spent
     assert not A(o_cd1=120)["needs an enemy in range"] and not A(o_dmg=90)["needs an enemy in range"]
     assert not A(o_dist=1900.0)["needs an enemy in range"] and not A(o_ready=False)["needs an enemy in range"]   # scene, not judged
-    print("gadget_check self-check ok")
+    bad = desc_mismatches()
+    assert not bad, "gadgets that disagree with their description: " + "; ".join(bad)
+    print("gadget_check self-check ok" + ("" if bad is not None else " (no game data: description audit skipped)"))
 
 
 def main():
@@ -338,6 +353,7 @@ def main():
     ap.add_argument("--check", action="store_true", help="the judging rules on made-up responses (no game)")
     a = ap.parse_args()
     if a.check: return _check()
+    bad = desc_mismatches(); assert not bad, "gadgets that disagree with their description: " + "; ".join(bad)
     _load_proto(); import env_v5 as E
     roster = [x for x in a.roster.split(",") if x] or None
     env = E.Env(1, E.make_battle_fn(10, roster=roster, gadgets=True), ticks=2, fair=True, max_ticks=4000)

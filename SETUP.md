@@ -174,6 +174,16 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   publish kind NONE until redone from the game data (the code is kept under `#if 0`). Piper's Auto Aimer is redone as
   the AUTO AIMER kind (PROJECTILE): one PiperHandgunProjectile at the nearest enemy within the row's Range (7 tiles),
   main attack Damage x CustomValue1 % (90), refused with no enemy in range; the push is the projectile's own.
+- `desc_audit.patch` (issue #55, a diff on top of `repeat_spin_off.patch` and `hyper_supers_all.patch`): gadgets made to match the game's own description
+  (`python -m desc_audit`). AREA gives the row's ShieldPercent for ShieldTicks (Tick's shield before the burst) through a
+  new `superfix_status.c` zone, `superfix_status_shield`; SHOT fires extra waves for the cards in `g_waves` (Colt's
+  Gunslinger_Reload: two shots); Barley's healing potion (REPEAT fires it as main-attack damage) joins `g_masked`;
+  `superfix_cc.c` gives Meeple's RageQuit its knockback (PushbackStrength, scaled like the stun) and lets it run under the stun.
+- `gadget_damage.patch` (issue #55 follow-up, a diff on top of `desc_audit.patch`): gadgets that ran without the damage
+  their data or text names. Fire 3's `super_dist` sets where a thrown gadget lands (`gadget.c` aimed_range, at least 300 u;
+  Griff's coin shower); a SKILL AREA with AreaEffectFollowType 1 stays at the brawler (8-Bit's Extra Credits); ITEM gives
+  the item the main attack's Damage x CustomValue1 % (Belle's trap); Gale's tornado joins `g_masked` (this libg has no
+  WindWall push). `python -m super_audit --gadget`.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
