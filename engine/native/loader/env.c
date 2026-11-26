@@ -184,7 +184,7 @@ void hyper_clear(void); void hyper_reset_player(int i, void *p); int hyper_activ
 int hyper_tick_player(int i, void *p, uint8_t *ch, int alive); int hyper_damage(void *pa, int ai, void *pv, int vi, int d);
 int hyper_speed(int i, void *p, uint8_t *ch); void hyper_publish(NbeResp *r, void **ps, int np);
 int hyper_pet_damage(void *attacker, int d); int hyper_pet_speed(uint8_t *ch);   /* hyper.c: pets of a hypercharged super */
-void hyper_pets_tick(void *sim); int hyper_spirit_damage(uint8_t *ch, int d);   /* hyper.c: Colette's spirit (overcharge_pet_charge) */
+void hyper_pets_tick(void *sim); void hyper_spirits_tick(void *sim); int hyper_spirit_damage(uint8_t *ch, int d);   /* hyper.c: Colette's spirit (overcharge_pet_charge) */
 void hyper_trail_tick(int i, uint8_t *ch);   /* hyper.c: Carl's flame trail (overcharge_whirlwind) */
 /* gear round (bsrl-sim issue #51): gear.c */
 extern int32_t g_div_gear[NBE_MAXP][2]; void gear_clear(void); void gear_reset_player(int i, void *cfg); void gear_install(void);
@@ -772,6 +772,33 @@ static void wallpass_tick(void *sim) {
         }
     }
 }
+static int charge_walkable(void *sim, int x, int y) {   /* inside the border ring and not a tile that blocks movement */
+    void *m = PTR(sim, 0x68); if (!m) return 1;
+    int W = I32(m, 0xc4), Hh = I32(m, 0xc8), tx = (int)floor(x / 300.0), ty = (int)floor(y / 300.0);
+    if (tx < 1 || ty < 1 || tx >= W - 1 || ty >= Hh - 1) return 0;
+    void *t = ((void **)PTR(m, 0x20))[tx + W * ty]; if (!t) return 1;
+    uint8_t *d = PTR(t, 0); return !d || !U8(d, 0x56);   /* BlocksMovement (0xb20cdc) */
+}
+/* Fang's hypercharge (KickerDude_overcharge, card Type overcharge_default: no card code; TID_KICKER_DUDE_OVERCHARGE_DESC
+ * "Charge through walls while dropping popcorn on the way"): the skill data's columns carry neither, the server code that does
+ * is compiled out. RE-IMPLEMENTED for a charge of type 8 started by the super slot (skill instance 1, running, its +0x31
+ * overcharged latch set: only Fang's KickerDudeUlti among the type-8 rows is a super): the lane is straight through walls
+ * (the end pulled back onto open ground), and the trail is KickerDudeMineTrail, the area row no other row names
+ * (BulletExplosion of one KickerDudeMineOC popcorn item, Radius 800: the character tick lays one each 800 u, as Stu's
+ * fire). [?] the server's spacing and the end rule. */
+static int fang_oc_super(uint8_t *ch) {
+    uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464);
+    if (!sk || n < 2 || !sk[1] || !(U8(sk[1], 0x31) & 1) || !U8(sk[1], 0x30)) return 0;
+    uint8_t *d = ((uint8_t *(*)(void *, int))B(0xb7adfc))(sk[1], 0);
+    return d && I32(d, 0x1a8) == 2;   /* a Charge skill */
+}
+static void *fang_trail_area(void) {   /* getAreaEffectByName 0xad2af0(String, referer) with a libg String (ctor 0xe96e10) */
+    static void *a; static int done;
+    if (!done) { uint64_t s[4] = {0}; ((void (*)(void *, const char *))B(0xe96e10))(s, "KickerDudeMineTrail");
+        a = ((void *(*)(void *, void *))B(0xad2af0))(s, NULL); ((void (*)(void *))B(0xe96d00))(s); done = 1;
+        LOG("[env] Fang's hypercharged trail area: %p\n", a); }
+    return a;
+}
 static int dig_ok(void);
 static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type, int dmg, int push, void *area1, void *area_end,
                                 void *area2) {
@@ -785,10 +812,18 @@ static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type
         if (L >= 50 && hypot(tx - lx, ty - ly) < 50) { lx = tx; ly = ty; }
         tx = lx; ty = ly;
     }
+    int oc_fang = full && type == 8 && fang_oc_super(ch);
+    if (oc_fang) {   /* Fang's hypercharged super through walls: a straight lane, its end pulled back onto open ground */
+        double L = hypot(tx - x0, ty - y0);
+        for (double t = L; t > 0; t -= 50) { int px = jround(x0 + (tx - x0) * t / L), py = jround(y0 + (ty - y0) * t / L);
+            if (charge_walkable(sim, px, py)) { tx = px; ty = py; break; } }
+        if (!area1) area1 = fang_trail_area();   /* the popcorn trail (+0x550, below) */
+    }
     /* the mover lays a straight two-point path (0xb512e0, no wall test) when 0xb5110c and 0xb51200 hold (char+0x98d, +0x98e),
-     * else it pathfinds around walls (0xb51550): Bull sets both for the call, everyone else keeps the pathfinder */
+     * else it pathfinds around walls (0xb51550): Bull and Fang's hypercharged super set both for the call, everyone else keeps
+     * the pathfinder */
     uint8_t s98d = U8(ch, 0x98d), s98e = U8(ch, 0x98e);
-    if (full && type == 1) { U8(ch, 0x98d) = 1; U8(ch, 0x98e) = 1; }
+    if (full && (type == 1 || oc_fang)) { U8(ch, 0x98d) = 1; U8(ch, 0x98e) = 1; }
     ((void (*)(void *, int, int, uint64_t, unsigned, unsigned, int))B(0xb4790c))(ch, tx, ty, 1, (unsigned)speed, 0, 0);
     U8(ch, 0x98d) = s98d; U8(ch, 0x98e) = s98e;
     if (I32(ch, 0x41c) <= 0) return;
@@ -1428,6 +1463,7 @@ static void pre_snapshot(void *sim) {   /* 0xb63b0c, once per tick: storm hits, 
     gadget_tick(sim, I32(sim, 0x10));      /* gadget round: heals over time */
     if (g_nzone) zone_tick(sim);
     hyper_pets_tick(sim);                  /* hypercharge round: last positions of pets with an overcharged death area */
+    hyper_spirits_tick(sim);               /* hypercharge round: Gus's hypercharged spirits (hyper.c) */
     int ntj = E.ntj; TickJob tj[64]; memcpy(tj, E.tj, ntj * sizeof *tj); E.ntj = 0;
     for (int i = 0; i < ntj; i++) {
         if (tj[i].kind == 1) sf_spawn_box(sim, tj[i].p, tj[i].a, tj[i].b, tj[i].c);

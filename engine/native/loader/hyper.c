@@ -26,11 +26,12 @@
  * per-attack projectile, the Attack handler's summon) take the overcharged list here (hyper_proj_site, hyper_summon_bl),
  * a hypercharged brawler's Heal area heals here (oc_heal_areas), and the card-value stub 0xb5281c answers the hypercharge
  * card's values for the types in CARD_TYPES (Frank's and Glowy's full circle, Gene's 3 hands, Gale's 2 wider waves, Barley's
- * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value). Four hypercharges whose card Type
+ * 3 brews, Brock's cluster volleys, Max's drinks, ...: my_card_value). Hypercharges whose card Type
  * no libg call site asks for (code compiled out) are re-implemented: Lumi's side blasts (my_spawn), Griff's extra notes
- * (hyper_chain_extra, from spawnfix.c), Colette's spirit (hyper_spirit_damage, from env.c's charge contact) and Carl's
- * flame trail (hyper_trail_tick, from env.c's hyper_tick); Damian's burning ground is libg's own component code, reached
- * through env.c's charge_end_event; Tick's dead
+ * (hyper_chain_extra, from spawnfix.c), Colette's spirit (hyper_spirit_damage, from env.c's charge contact), Carl's
+ * flame trail (hyper_trail_tick, from env.c's hyper_tick) and Gus's spirits (hyper_proj_end / hyper_spirits_tick);
+ * Damian's burning ground is libg's own component code, reached through env.c's charge_end_event; Fang's wall pass and
+ * popcorn are env.c's (fang_oc_super); Tick's dead
  * head gets its summoner for its mine chain (hyper_dead_pet_owner, from superfix_items.c). Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
  * MechaDudeBig) have a separate super instead (characters.csv OverchargedUltimateSkill): the game builds it as the brawler's
  * third skill instance (char+0x458[2], 0xb34560) but what picks it for a super cast is compiled out; here instances 1
@@ -588,6 +589,84 @@ void *hyper_chain_extra(void *owner, uint8_t *child, int reason, int *n) {
     *n = card_val(card, 1); g_oc_extra += *n;
     static int nlog; if (nlog++ < 10) LOG("[hyper] card type %d: %d more of projectile %d at max range\n", CT_GRIFF, *n, I32(nx, 0x20));
     return nx;
+}
+
+/* overcharge_soul_collector (Gus, SoulCollector_overcharge 120 / 200, TID_SOUL_COLLECTOR_OVERCHARGE_DESC "On impact, Gus' Super
+ * will drop spirits in all directions that deal damage to enemies and heal teammates!"): no card-value reader asks for type
+ * 286 and no logic column names the spirits; the data has them only in rows nothing reads here: the hypercharged ulti
+ * projectile's skin CustomObject2 SoulCollectorOverchargedAreaEffect (BulletExplosion, CustomValue 10 of
+ * GusOverchargedAreaEffectProjectile, offset 500) and the statuses GusOverchargedDmgProjectile (Damage 900, UltiChargePercent
+ * 20) / GusOverchargedHealingProjectile (Healing 340). RE-IMPLEMENTED: when the OverchargedProjectiles entry of a brawler holding
+ * this card ends (spawnfix.c on_explode -> hyper_proj_end), that area is spawned at its end point (the sequence of env.c's
+ * charge_area; spawnfix.c's area hook fires the 10 spirits), and each spirit, once per character it passes within
+ * SPIRIT_HIT_R, gives an enemy the damage status and a teammate (not Gus) the healing one through the status store
+ * (superfix_status.c; arguments of env.c's charge-hit status). [?] the server's spirit hit rule; the card's 120 / 200 have no
+ * reader and are not used. */
+#define CT_SOUL 286
+#define SPIRIT_HIT_R 270   /* GusOverchargedAreaEffectProjectile Radius 150 + 120, the CollisionRadius of most brawlers */
+static void *data_named(int table, const char *name) {   /* row by name: column 0 (0xcf6a28(row, 0)) == name (String 0xe9779c) */
+    for (int idx = 0, miss = 0; idx < 4000 && miss < 64; idx++) {
+        uint8_t *d = div_data(table * 1000000 + idx);
+        if (!d) { miss++; continue; }
+        miss = 0;
+        void *s = PTR(d, 8) ? ((void *(*)(void *, int))B(0xcf6a28))(PTR(d, 8), 0) : NULL;
+        if (s && (((int (*)(void *, const char *))B(0xe9779c))(s, name) & 1)) return d;
+    }
+    return NULL;
+}
+static void *g_soul_area, *g_soul_dmg, *g_soul_heal; static int g_soul_init;
+static struct { uint8_t *pr; int start, n; int hit[12]; } g_spirit[32];
+static long g_nsoul_area, g_nsoul_hit[2];
+static void soul_init(void) {
+    if (g_soul_init) return;
+    g_soul_init = 1; g_soul_area = data_named(17, "SoulCollectorOverchargedAreaEffect");
+    g_soul_dmg = data_named(117, "GusOverchargedDmgProjectile"); g_soul_heal = data_named(117, "GusOverchargedHealingProjectile");
+    LOG("[hyper] Gus's spirits: area %p (bullet %p), statuses %p / %p\n", g_soul_area, g_soul_area ? PTR(g_soul_area, 0x78) : NULL,
+        g_soul_dmg, g_soul_heal);
+}
+void hyper_proj_end(uint8_t *pr, int reason) {
+    if (!pr || reason == 0 || reason == 5 || I32(pr, 0x90) != 0) return;   /* the ends spawnfix.c also skips; the first end only */
+    uint8_t *owner = PTR(pr, 0xe0), *d = PTR(pr, 0x10);
+    void *p = owner ? ((void *(*)(void *))B(0xb6a718))(pr) : NULL, *cfg = p ? player_cfg(p) : NULL, *card = cfg ? PTR(cfg, 0x28) : NULL;
+    if (!card || I32(card, 0x100) != CT_SOUL || !d || oc_proj_index(owner, d) < 0 || I32(owner, 0x3c4) <= 0) return;
+    static uint8_t *last; static int last_start;
+    if (pr == last && I32(pr, 0x28) == last_start) return;
+    last = pr; last_start = I32(pr, 0x28);
+    soul_init(); if (!g_soul_area) return;
+    uint8_t *a = ((void *(*)(void *, void *, int, int, int, int, int))B(0xb2aefc))(g_soul_area, owner, I32(pr, 0x38), I32(pr, 0x3c), 0, 2, 0);
+    void *w = PTR(owner, 0x20); if (!a || !w) return;
+    ((void (*)(void *, void *))B(0xb63198))(w, a); ((void (*)(void *))B(0xb29494))(a); g_nsoul_area++;
+    if (g_nsoul_area <= 5) LOG("[hyper] Gus's hypercharged super ended (reason %d) at %d,%d: spirits area %p\n", reason, I32(pr, 0x38), I32(pr, 0x3c), a);
+}
+void hyper_spirits_tick(void *sim) {   /* after every tick: the spirits' hits */
+    if (!g_soul_init || !g_soul_area || !sim || !PTR(sim, 0)) return;
+    uint8_t *bullet = PTR(g_soul_area, 0x78), *mgr = PTR(sim, 0); void **arr = PTR(mgr, 0x28); int cnt = I32(mgr, 0x34);
+    if (!bullet || !arr || cnt < 1 || cnt > 512) return;
+    for (int i = 0; i < cnt; i++) {
+        uint8_t *pr = arr[i];
+        if (!pr || (uint64_t)((uint8_t *)PTR(pr, 0) - g_libg->base) != 0x1209318 || PTR(pr, 0x10) != bullet) continue;   /* VT_PROJ */
+        uint8_t *owner = PTR(pr, 0xe0); if (!owner) continue;
+        int k = 0, fr = -1, start = I32(pr, 0x28);
+        for (; k < 32 && !(g_spirit[k].pr == pr && g_spirit[k].start == start); k++) if (fr < 0 && !g_spirit[k].pr) fr = k;
+        if (k == 32 && I32(pr, 0x90)) continue;   /* finished before it was seen */
+        if (k == 32) { if (fr < 0) { memset(g_spirit, 0, sizeof g_spirit); fr = 0; } k = fr; g_spirit[k].pr = pr; g_spirit[k].start = start; g_spirit[k].n = 0; }
+        int x = I32(pr, 0x38), y = I32(pr, 0x3c);
+        for (int j = 0; j < cnt && g_spirit[k].n < 12; j++) {
+            uint8_t *c = arr[j];
+            if (!c || c == owner || (uint64_t)((uint8_t *)PTR(c, 0) - g_libg->base) != 0x1209020 || I32(c, 0x3c4) <= 0) continue;   /* VT_CHAR */
+            long dx = I32(c, 0x38) - x, dy = I32(c, 0x3c) - y; if (dx * dx + dy * dy > (long)SPIRIT_HIT_R * SPIRIT_HIT_R) continue;
+            int id = I32(c, 8), seen = 0; for (int h = 0; h < g_spirit[k].n; h++) seen |= g_spirit[k].hit[h] == id;
+            if (seen) continue;
+            g_spirit[k].hit[g_spirit[k].n++] = id;
+            int ally = I32(c, 0x84) == I32(owner, 0x84); void *st = ally ? g_soul_heal : g_soul_dmg;
+            if (!st) continue;
+            ((void (*)(void *, void *, int, int, void *, void *, int, int, int, int, int))B(0xb35dd0))(c, st, I32(owner, 0x80),
+                I32(owner, 0x84), owner, owner, 2, 0, -1, -1, 0);
+            if (g_nsoul_hit[0] + g_nsoul_hit[1] < 10) LOG("[hyper] Gus's spirit hits ch %d (%s)\n", id, ally ? "teammate: heal" : "enemy: damage");
+            g_nsoul_hit[ally]++;
+        }
+        g_spirit[k].pr = I32(pr, 0x90) ? NULL : g_spirit[k].pr;   /* finished: its slot is free again */
+    }
 }
 
 void hyper_install(void) {
