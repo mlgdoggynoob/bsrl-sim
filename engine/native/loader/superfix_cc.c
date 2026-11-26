@@ -60,6 +60,8 @@ static void stun(uint8_t *ch, int ticks, const char *why) {
     if (I32(ch, CH_STUN_TICKS) < ticks) I32(ch, CH_STUN_TICKS) = ticks;   /* the longer stun wins (no stacking) */
     if (g_superfix_dbg) LOG("[superfix] cc: stun ch %d for %d ticks (%s), tick %d\n", I32(ch, 8), ticks, why, now_tick(ch));
 }
+/* superfix_moves.c: Buzz's landing stun, Kit's hypercharged super */
+void superfix_cc_stun(uint8_t *ch, int ticks, const char *why) { if (on()) stun(ch, ticks, why); }
 typedef struct { uint8_t *ch; int id, until; } Sil;
 #define SIL_MAX 64
 static Sil g_sil[SIL_MAX]; static int g_nsilrec;
@@ -256,6 +258,23 @@ void superfix_cc_switch(uint8_t *ch, int inside) {
     if (!w) w = swap_rec(ch);
     if (inside) w->spare = NULL;
     w->want = want; w->mount = inside; do_swap(ch, w);
+}
+
+/* superfix_moves.c: Kit attached to a teammate throws his weapon's SecondarySkill (AttacherWeaponAlternate, the yarn balls;
+ * hypercharged: SecondarySkill2), back on his own weapon (want NULL) once he lets go; the same swap (waits while it runs) */
+void superfix_cc_weapon(uint8_t *ch, void *want) {
+    if (!on() || !is_char(ch)) return;
+    uint8_t *cd = ((uint8_t *(*)(void *))B(0xb6a384))(ch), *own = cd ? PTR(cd, 0x260) : NULL;
+    uint8_t **sk = PTR(ch, 0x458);
+    if (!own || !sk || I32(ch, 0x464) < 1 || !sk[0]) return;
+    if (!want) want = own;
+    Swap *w = NULL;
+    for (int i = 0; i < g_nsw; i++) if (g_sw[i].ch == ch && g_sw[i].id == I32(ch, 8)) w = &g_sw[i];
+    if (PTR(sk[0], 0) == want) { if (w) w->want = NULL; return; }
+    if (!w) w = swap_rec(ch);
+    if (!w) return;
+    if (want != own) w->spare = NULL;
+    w->want = want; w->mount = want != own; do_swap(ch, w);
 }
 
 /* ------------------------------------------------------------------ per character tick (superfix_status.c's update hook) */

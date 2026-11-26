@@ -35,7 +35,7 @@
  * popcorn are env.c's (fang_oc_super); Alli's boost, whose one libg reader is unreachable here, is
  * hyper_stalk (from env.c's damage root); Tick's dead
  * head gets its summoner for its mine chain (hyper_dead_pet_owner, from superfix_items.c). Also here: Ruffs' +25 % (an area's
- * overcharged byte, hyper_area_mark), Poco's overheal shield (my_heal, hyper_shield_absorb), Shade's dead centre
+ * overcharged byte, hyper_area_mark), Poco's overheal shield (my_heal, hyper_shield_absorb) and Gray's portal shield (hyper_portal_shield, from superfix_moves.c's portals), Shade's dead centre
  * (hyper_dead_centre), the repeat of a Dot area only the hypercharged super makes (Kaze's centre, hyper_area_tick) and
  * which areas those are (hyper_area_oc_only; superfix_status.c refreshes their Self / Ally statuses: Sandy's speed);
  * Stu's super recharge is env.c's charge_end. Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
@@ -282,7 +282,7 @@ static void oc_heal_areas(uint8_t *ch) {
  * and NumBulletsInOneAttack from Value2 in place of the skill's. HammerDude_overcharge 19 / 10 (Frank: "hits an entire circle
  * around him"; pattern 19 is the full circle of MegaBossFrankAttackHyper) and Mender_overcharge 19 / 14 (Glowy).
  * Checked and left at -1 (types above 210): _door_man 272 (portal count, Value 2 = the default
- * 2; the shield Value2 has no reader), _mecha_dude 281 (Value 0 / 0, which the reader 0xb7d030 skips), _geisha 296 (Value2 %
+ * 2; the shield Value2 / Value3 has no reader: hyper_portal_shield), _mecha_dude 281 (Value 0 / 0, which the reader 0xb7d030 skips), _geisha 296 (Value2 %
  * on the skill's ChargeSpeed, 0 for GeishaUlti). overcharge_stalker 319 (Alli 25 / 20): libg reads it at 0xb2a340 only
  * while the character's stalk aggregate +0x96c is set, which only the network decode writes; env.c's damage root asks it
  * through hyper_stalk instead (Value1 % of the target's max HP in place of the super's % of its current HP, Value2 % of the
@@ -808,7 +808,7 @@ static void *hyper_axe_card(uint8_t *ch, int type) {
  * [?] Value 100 read as ticks (5 s, the hypercharge's own length): 100 s would be no decay. */
 #define CT_DEAD_MARIACHI 238
 #define OSH_MAX 16
-static struct { uint8_t *ch; int id, hp, start, end; } g_osh[OSH_MAX];
+static struct { uint8_t *ch; int id, hp, start, end, flat; } g_osh[OSH_MAX];   /* flat: no decay (Gray's portals) */
 static long g_osh_given, g_osh_absorbed;
 typedef uint64_t (*heal16_t)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
                              uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
@@ -817,6 +817,7 @@ static void osh_clear(void) { memset(g_osh, 0, sizeof g_osh); }
 static int sim_now(uint8_t *ch) { uint8_t *sim = ((void *(*)(void *))B(0xb6a378))(ch); return sim ? I32(sim, 0x10) : 0; }
 static int osh_left(int k, int now) {
     if (!g_osh[k].ch || now >= g_osh[k].end) return 0;
+    if (g_osh[k].flat) return g_osh[k].hp;
     return (int)((long)g_osh[k].hp * (g_osh[k].end - now) / (g_osh[k].end - g_osh[k].start));
 }
 static uint64_t my_heal(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
@@ -832,7 +833,7 @@ static uint64_t my_heal(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint
         for (; k < OSH_MAX && !(g_osh[k].ch == ch && g_osh[k].id == I32(ch, 8)); k++) if (fr < 0 && osh_left(k, now) <= 0) fr = k;
         if (k == OSH_MAX) { if (fr < 0) break; k = fr; g_osh[k].ch = ch; g_osh[k].id = I32(ch, 8); g_osh[k].hp = 0; g_osh[k].end = now; }
         int left = osh_left(k, now), over = before + amt - mx;
-        g_osh[k].hp = left + over; g_osh[k].start = now; g_osh[k].end = now + ticks; g_osh_given += over;
+        g_osh[k].hp = left + over; g_osh[k].start = now; g_osh[k].end = now + ticks; g_osh[k].flat = 0; g_osh_given += over;
         static int nlog; if (nlog++ < 10) LOG("[hyper] overheal: ch %d hp %d + %d (max %d) -> shield %d for %d ticks\n", I32(ch, 8), before, amt, mx, g_osh[k].hp, ticks);
         break;
     }
@@ -844,11 +845,28 @@ int hyper_shield_absorb(void *victim, int dmg) {   /* env.c my_root: damage left
         int now = sim_now(ch), left = osh_left(k, now), a = dmg < left ? dmg : left;
         if (a <= 0) return dmg;
         /* what is left shrinks on from here: keep the rate, take a off the amount */
-        g_osh[k].hp = (int)((long)(left - a) * (g_osh[k].end - g_osh[k].start) / (g_osh[k].end - now)); g_osh_absorbed += a;
+        if (g_osh[k].flat) g_osh[k].hp = left - a; else g_osh[k].hp = (int)((long)(left - a) * (g_osh[k].end - g_osh[k].start) / (g_osh[k].end - now)); g_osh_absorbed += a;
         static int nlog; if (nlog++ < 10) LOG("[hyper] overheal shield of ch %d takes %d of %d (left %d)\n", I32(ch, 8), a, dmg, left - a);
         return dmg - a;
     }
     return dmg;
+}
+/* overcharge_door_man (Gray, DoorMan_overcharge 2 / 1000 / 300: "Gray opens a new pair of portals that shields him and
+ * allies for <VALUE2> when they pass through"; RE-IMPLEMENTED: libg reads only Value (the portal count, 0xb7d1a4), the
+ * teleport and the shield are the server's): superfix_moves.c's portals give a character that passes through a hypercharged
+ * pair a shield of Value2 that takes damage before HP (hyper_shield_absorb) for Value3 / 5 ticks ([?] Value3 300 read as
+ * hundredths of a second: 3 s; the description names no time). A new pass sets it to Value2 again (no stacking). */
+#define CT_DOOR_MAN 272
+int hyper_portal_shield(void *chp, int player) {   /* -> the shield given (0: none: no such card for that player) */
+    uint8_t *ch = chp; if (!ch || player < 0 || player >= NBE_MAXP || !g_card[player] || I32(g_card[player], 0x100) != CT_DOOR_MAN) return 0;
+    int hp = card_value(g_card[player], 2), ticks = card_value(g_card[player], 3) / 5, now = sim_now(ch), k = 0, fr = -1;
+    if (hp <= 0 || ticks <= 0) return 0;
+    for (; k < OSH_MAX && !(g_osh[k].ch == ch && g_osh[k].id == I32(ch, 8)); k++) if (fr < 0 && osh_left(k, now) <= 0) fr = k;
+    if (k == OSH_MAX) { if (fr < 0) return 0; k = fr; }
+    g_osh[k].ch = ch; g_osh[k].id = I32(ch, 8); g_osh[k].hp = hp; g_osh[k].start = now; g_osh[k].end = now + ticks; g_osh[k].flat = 1;
+    g_osh_given += hp;
+    static int nlog; if (nlog++ < 10) LOG("[hyper] portal shield: ch %d gets %d for %d ticks (player %d's card)\n", I32(ch, 8), hp, ticks, player);
+    return hp;
 }
 /* Shade (Ghost_overcharge, overcharge_default: "Shade's attacks during its Hypercharged Super all deal maximum damage, even if
  * the enemy is not hugged in the center"; RE-IMPLEMENTED: libg asks nothing hypercharge-specific there). The melee hit
