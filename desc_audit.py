@@ -318,10 +318,9 @@ def _check():
         assert not {"aim", "range"} & set(ok("repeat", "Screams towards the nearest enemy", acc=a5, hfx={"damage"})), sub
     assert not ok("auto_aim", "Pops a defensive shot at the closest enemy", acc={"Range": "7", "RequireEnemyInRange": "true"}, hfx={"damage", "push"})
     # the repeat_shot / spin_shoot volleys (#54 redo) and Gale's WindWall: their texts match what the host does
-    for c in ("Barkeep_HealPotion", "HookDude_Homing", "TntDude_Spin", "Leaper_Shotgun", "Blower_Stopper"):
+    for c in ("Barkeep_HealPotion", "HookDude_Homing", "TntDude_Spin", "Leaper_Shotgun", "Blower_Stopper", "BarrelBot_Spin",
+              "BeeSniper_ExtraBee", "FireDude_FlameShield", "KickerDude_Mines"):   # the last four since issue #63
         r = next(r for r in g if r["card"] == c); assert not r["masked"] and r["kind"] in ("repeat", "item") and not r["flags"], (c, r["flags"])
-    for c in ("BarrelBot_Spin", "BeeSniper_ExtraBee", "FireDude_FlameShield", "KickerDude_Mines"):   # masked: no hit seen live
-        assert next(r for r in g if r["card"] == c)["masked"], c
     assert "heal" in next(r for r in g if r["card"] == "Barkeep_HealPotion")["host_effects"]
     assert "push" in next(r for r in g if r["card"] == "Blower_Stopper")["host_effects"]
     for c in ("TrickshotDude_BounceHeal", "TntDude_Spin", "Mummy_Acid", "AssaultShotgun_Bomb"):   # real splitting / speed / wall data

@@ -24,3 +24,4 @@ docstrings and comments are the spec.
 | `desc_values.md` | #55 step 2: how libg turns cards.csv Value codes into the `<VALUEn>` numbers (static reading, partial) | this branch |
 | `issue6-split-extras.md` | #6 R-T's split, the rest: linked death, storm on the legs, water walking, blocked rejoin | this branch |
 | `issue46.md` | #46 gadgets: the next-attack modifiers (arming, consume, hit fields), readiness, skill cooldowns, the self statuses / shields / last stand / sleep / vision, heals, not doable | this branch |
+| `issue63.md` | #63 the four masked REPEAT gadgets (Darryl, Fang, Bea, Amber): causes, fixes, live numbers | this branch |

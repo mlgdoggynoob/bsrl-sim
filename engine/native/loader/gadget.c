@@ -65,9 +65,9 @@
  *         CustomValue1 ticks, the percent as the client's preview 0xb27c5c reads it) (HEAL): an instant heal through libg's
  *         heal 0xb41554.
  *   REPEAT  repeat_shot and spin_shoot rows with a CustomObject projectile other than Piper's Auto Aimer (published PROJECTILE;
- *         issue #54 redo from the game data, see the REPEAT / SPIN block): Dynamike (spin), Gene, Mico, Barley's potion
- *         (repeat). Darryl, Fang's popcorn, Bea and Amber run the same code but stay in g_masked (see there: their
- *         projectiles need more than a plain spawn).
+ *         issue #54 redo from the game data, see the REPEAT / SPIN block): Dynamike, Darryl and Fang's popcorn (spin), Gene,
+ *         Mico, Barley's potion, Bea's bees and Amber's flames (repeat; the last four of these since issue #63: Darryl's
+ *         super charge per hit, the circling fields of Bea's and Amber's projectiles, hyper.c's spiral for the bees).
  *   NEXT  next_attack_change (type 23, issue #46; published STATUS): the modifier on the brawler's next main attack. The
  *         host sets the accessory pending (+0x3c), hands libg the accessory through the getter 0xb422c8 (a stub in this
  *         build, replaced by acc_of_char) so the skill tick arms it (+0x54) and the attack code runs its own SubType
@@ -186,6 +186,7 @@ struct Gad {
                                                             * shots, next shot, its tick, ticks between, damage, range,
                                                             * projectiles per shot, target char per shot (0 = by angle) */
     double rep_ang, rep_spread;                            /* first shot's angle, a shot's spread */
+    int rep_charge;                                        /* SPIN: super charge per enemy hit (CustomValue6, Darryl 1000) */
     int burst_id, burst_left, burst_next, burst_gap, burst_deg;   /* SHOT waves after the first (g_waves): char id, volleys
                                                                    * still to fire, next tick, ticks between, angle */
     double dist;                                           /* the fire's super_dist (0, 1] (0 = full range): thrown shots
@@ -308,6 +309,7 @@ static int sd_max_charge(void *sd) { return ((int (*)(void *, int))B(0xcf6a18))(
 #define AD_CUSTOM_OBJ 0xa933a8 /* -> String* of CustomObject's first ';' token (not resolved by createReferences) */
 #define AD_CV3 0xa933f0
 #define AD_CV4 0xa93400
+#define AD_CV6 0xa93420    /* CustomValue6 (the getter after CustomValue5's 0xa93410; value code 10 reads it / 40 as a percent) */
 #define SKILL_ATTACK_SD(ch) ((void *(*)(void *))B(0xb35c00))(ch)   /* env.c SKILL_ATTACK */
 #define GAD_PROJ_KIND 4        /* projectile kind word (+0x418): 1 = main attack, 2 = super; 4 = the skill path that spawns
                                 * directly (0xb7e93c), so a gadget shot does not count as an attack or a super */
@@ -453,12 +455,23 @@ static int auto_aim_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
  * [?] the rest is this reading of the rows (the activation is compiled out of the client):
  *   SPIN (Dynamike, Darryl, Fang's popcorn): each shot turns CustomValue2 degrees from the aim (Darryl 15 x 25, Fang 7 x 50:
  *     one turn), flies CustomValue4 units, damage Damage x CustomValue3 % (Dynamike's text: scaleaccessoryvalue3; code 54).
+ *     Darryl's text (code 10: CustomValue6 / 40 %) recharges his super by CustomValue6 / 4000 of it per enemy hit
+ *     (gadget_root_post; RE-IMPLEMENTED: a kind-4 shot gets no charge from libg). Fang's kernels burst in the air at their
+ *     TriggerWithDelayMs (900 ms: ~675 u out, the game's own rule in the projectile update 0xb70408), and the 3 mines of each
+ *     burst (spawnfix.c's BulletExplosion items) arm for the item's Value ms; an enemy within TriggerRangeSubTiles (200)
+ *     then starts the Value2 ms fuse, and at its end the mine pops (superfix_items.c). An untriggered mine does not pop.
+ *     With the audit's target in range: ~75 ticks after the shot.
  *   REPEAT by SubType, damage Damage x CustomValue2 % (codes 51 / 68; Mico's text: scaleaccessoryvalue2):
  *     1 (Gene; Barley with TargetFriends): one shot at each target within Range tiles (enemies, or allies and the brawler
  *       himself), nearest first; Gene's RequireEnemyInRange refuses with none. Barley's potion carries Hitpoints x
  *       |CustomValue2| % (code 59, "heals <VALUE1> health per second") for the BarkeepHealingArea its skin spawns.
- *     2 (Bea): the bees leave along the aim, turned 360 / n degrees each, to the main attack's range.
- *     4 (Amber): |CustomValue3| flames at once, evenly around her (code 3, "creates <VALUE3> orbiting flames").
+ *     2 (Bea): the bees leave along the aim, turned 360 / n degrees each. They circle (TravelType 8, no ring radius): rep_one
+ *       sets their angle and hyper.c circle_travel spirals them out from Bea (a guess of the compiled-out server path, see
+ *       there); libg ends each at SteerLifeTime and ramps its damage from DamagePercentStart to End ("more damage the
+ *       further they go").
+ *     4 (Amber): |CustomValue3| flames at once, evenly around her (code 3, "creates <VALUE3> orbiting flames"): circling
+ *       projectiles (TravelTypeVariable 800 the ring), spaced by rep_one's angles, moved by hyper.c circle_travel, for
+ *       SteerLifeTime (code 41, "for <VALUE2> seconds": 100 ticks; CustomValue2 is the damage percent, code 51).
  *     5 (Mico): |CustomValue3| projectiles over CustomValue4 degrees at the nearest enemy within Range; none: refused.
  *   The projectile's own data (homing, circling, DamagePercentStart / End, delays, areas) is libg's. */
 static int attack_range(uint8_t *ch) { void *sd = SKILL_ATTACK_SD(ch); int cr = sd ? sd_get(sd, SD_RANGE) : 0; return cr > 0 ? cr * 100 : 1000; }
@@ -480,11 +493,60 @@ static int targets(void *sim, uint8_t *ch, int range, int friends, int *ids, int
         if (!c || I32(c, 0x3c4) <= 0 || !PTR(c, 0x20) || (I32(c, 0x84) == team) != friends || (!friends && c == ch)) continue;
         int64_t dx = I32(c, 0x38) - X, dy = I32(c, 0x3c) - Y, d2 = dx * dx + dy * dy;
         if (d2 > (int64_t)range * range) continue;
-        int k = n < max ? n++ : max - 1; if (k == max - 1 && n == max && d2 >= d2s[k]) continue;
+        int k;   /* list full: only a nearer one takes the last place (the old test also read d2s[k] before any write) */
+        if (n < max) k = n++; else { k = max - 1; if (d2 >= d2s[k]) continue; }
         while (k > 0 && d2s[k - 1] > d2) { d2s[k] = d2s[k - 1]; ids[k] = ids[k - 1]; k--; }
         d2s[k] = d2; ids[k] = I32(c, 8);
     }
     return n;
+}
+/* the REPEAT / SPIN shots fired one at a time by rep_one (not Mico's volley, which goes through volley()): a ring per
+ * player, cleared with the table: projectile id, player, super charge it gives on an enemy hit (Darryl's CustomValue6, else
+ * 0), spawn tick. 32 slots: one use fires at most 20 (Gene; Darryl 15) and the cooldown is far longer than any flight, so a
+ * player's own shots never push out one still flying. NB_REP_DBG=1 logs each one's position per tick and its hits. */
+#define RSHOT_MAX 32
+typedef struct { int id, pid, charge, tick; } RShot;
+static RShot g_rshot[NBE_MAXP][RSHOT_MAX]; static int g_rshot_k[NBE_MAXP]; static long g_rep_charged;
+static int rep_dbg(void) { static int d = -1; if (d < 0) { const char *e = getenv("NB_REP_DBG"); d = e && atoi(e) > 0; } return d; }
+#define PD_TRAVEL 0xafab60   /* ProjectileData TravelType getter (data +0x210; 8 = circling) */
+/* one REPEAT shot. A circling projectile (TravelType 8: Bea's bees, Amber's flames) gets what libg's own circling spawn
+ * 0xb78c58 writes after its 0xb78190 call (0xb790e0 / 0xb790e4): +0x454 its angle on the circle (degrees, the direction it
+ * was aimed: hyper.c circle_travel places it there) and +0x415 = 1 (the hit code at 0xb740f0 then calls 0xb5a86c on the
+ * target, which only sets the target's +0x4a0 to 6 [?] a hit-reaction state). 0xb78c58 itself is not called: it spaces all
+ * of the owner's circling projectiles of the kind from its own clock and removes the extras, which does not fit the bees
+ * that leave one by one. */
+static int rep_one(void *sim, Gad *g, uint8_t *ch, void *pd, double deg, int range) {
+    int k = shoot(sim, ch, pd, deg, range, g->rep_dmg); uint8_t *p = g_last_shot;
+    if (!p) return k;
+    if (((int (*)(void *))B(PD_TRAVEL))(pd) == 8) { I32(p, 0x454) = (((int)lround(deg)) % 360 + 360) % 360; U8(p, 0x415) = 1; }
+    int t = I32(sim, 0x10);
+    if (g->pid >= 0 && g->pid < NBE_MAXP) {
+        RShot *r = &g_rshot[g->pid][g_rshot_k[g->pid]++ % RSHOT_MAX];
+        *r = (RShot){I32(p, 8), g->pid, g->type == ACC_SPIN ? g->rep_charge : 0, t};
+    }
+    if (rep_dbg()) LOG("[gadget] rep shot %d (card %d) at tick %d: from %d,%d angle %d to range %d, ticks %d..%d, dmg %d\n", I32(p, 8),
+                       g->card, t, I32(ch, 0x38), I32(ch, 0x3c), (int)lround(deg), range, I32(p, 0x28), I32(p, 0x2c), g->rep_dmg);
+    return k;
+}
+static RShot *rshot_of(int pid, int id) {   /* player pid's listed shot with that projectile id, or NULL */
+    if (pid < 0 || pid >= NBE_MAXP || !id) return NULL;
+    for (int k = 0; k < RSHOT_MAX; k++) if (g_rshot[pid][k].id == id) return &g_rshot[pid][k];
+    return NULL;
+}
+/* hyper.c circle_travel: is this circling projectile a REPEAT gadget shot (Bea's bees)? Only those get its no-radius spiral;
+ * libg's own radius-less circling projectiles (R-T's hypercharged lasers) keep their old path. */
+int gadget_rep_shot(uint8_t *pr) {
+    uint8_t *o = pr ? PTR(pr, 0xe0) : NULL;
+    return o && rshot_of(I32(o, 0x80), I32(pr, 8)) != NULL;
+}
+static void rshot_trace(void *sim, int tick) {   /* NB_REP_DBG: where each recent shot is now (env_obj_by_id: only live ones) */
+    static long nlog;
+    for (int k = 0; k < NBE_MAXP * RSHOT_MAX && nlog < 4000; k++) {
+        RShot *r = &g_rshot[k / RSHOT_MAX][k % RSHOT_MAX]; if (!r->id || tick - r->tick > 120) continue;
+        uint8_t *p = env_obj_by_id(sim, r->id);
+        if (!p || VTOF(p) != VT_PROJ) continue;
+        LOG("[gadget] rep shot %d tick %d: at %d,%d\n", r->id, tick, I32(p, 0x38), I32(p, 0x3c)); nlog++;
+    }
 }
 static void rep_shot(void *sim, Gad *g, uint8_t *ch) {   /* shot number g->rep_i */
     void *pd = custom_proj(g->ad); int i = g->rep_i, sub = ad_get(g->ad, AD_SUBTYPE);
@@ -500,7 +562,8 @@ static void rep_shot(void *sim, Gad *g, uint8_t *ch) {   /* shot number g->rep_i
     }
     if (g->type == ACC_SPIN) deg += (double)ad_get(g->ad, AD_CV2) * i;
     else if (sub == 2) deg += 360.0 * i / g->rep_n;
-    if (g->rep_cnt > 1 && g->rep_spread >= 360) for (int k = 0; k < g->rep_cnt; k++) shoot(sim, ch, pd, deg + 360.0 * k / g->rep_cnt, range, g->rep_dmg);
+    if (g->rep_cnt > 1 && g->rep_spread >= 360) for (int k = 0; k < g->rep_cnt; k++) rep_one(sim, g, ch, pd, deg + 360.0 * k / g->rep_cnt, range);
+    else if (g->rep_cnt <= 1) rep_one(sim, g, ch, pd, deg, range);
     else volley(sim, ch, pd, deg, g->rep_cnt, g->rep_spread, range, g->rep_dmg);
     g->rep_i++;
 }
@@ -513,6 +576,7 @@ static int rep_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
     if (g->type == ACC_SPIN) {
         int r4 = ad_get(ad, AD_CV4); if (r4 > 0) g->rep_rng = r4;
         g->rep_dmg = attack_dmg_pct(ch, ad_get(ad, AD_CV3));
+        g->rep_charge = ad_get(ad, AD_CV6);   /* Darryl: super charge per enemy hit (gadget_root_post) */
     } else {
         g->rep_dmg = attack_dmg_pct(ch, ad_get(ad, AD_CV2));
         if (sub == 1) {
@@ -526,7 +590,7 @@ static int rep_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
         } else if (sub == 4) { g->rep_cnt = cv3 > 0 ? (cv3 > 16 ? 16 : cv3) : 1; g->rep_spread = 360; n = 1; }
         else if (sub == 5) {
             int id; if (!targets(sim, ch, rng, 0, &id, 1)) return 0;   /* RequireEnemyInRange */
-            uint8_t *t = env_obj_by_id(sim, id);
+            uint8_t *t = env_obj_by_id(sim, id); if (!t) return 0;
             g->rep_ang = atan2(I32(t, 0x3c) - I32(ch, 0x3c), I32(t, 0x38) - I32(ch, 0x38)) * 180 / M_PI;
             g->rep_rng = rng; g->rep_cnt = cv3 > 0 ? (cv3 > 16 ? 16 : cv3) : 1; g->rep_spread = abs(ad_get(ad, AD_CV4));
         }
@@ -766,6 +830,21 @@ void gadget_root_post(uint8_t *victim, uint8_t *attacker, uint8_t *src, int remo
         if (next_dbg()) LOG("[gadget] next: ch %d woken by damage at tick %d\n", I32(victim, 8), t);
     }
     if (!attacker || !src || VTOF(attacker) != VT_CHAR) return;
+    RShot *rs = VTOF(src) == VT_PROJ ? rshot_of(I32(attacker, 0x80), I32(src, 8)) : NULL;
+    if (rs) {   /* a REPEAT / SPIN shot hit a brawler */
+        int enemy = I32(victim, 0x84) != I32(attacker, 0x84);
+        if (rep_dbg()) LOG("[gadget] rep shot %d hit ch %d (%s) at %d,%d: -%d hp, tick %d\n", rs->id, I32(victim, 8),
+                           enemy ? "enemy" : "ally", I32(src, 0x38), I32(src, 0x3c), removed, t);
+        /* Darryl: "recharges his Super by <VALUE2>% if it hits enemies", VALUE2 = CustomValue6 / 40 (code 10): CustomValue6 / 4000
+         * of the full super (player +0x58) per hit; a kind-4 shot gets no charge from libg. RE-IMPLEMENTED (server code). */
+        void *sim_ = rs->charge > 0 && enemy && removed > 0 ? ((void *(*)(void *))B(0xb6a378))(attacker) : NULL;
+        uint8_t *pl = sim_ && char_of(sim_, rs->pid) == attacker ? player_of(sim_, rs->pid) : NULL;
+        if (pl) {
+            int mx = I32(pl, 0x58), sc = I32(pl, 0x54) + (int)((int64_t)mx * rs->charge / 4000);
+            I32(pl, 0x54) = sc < mx ? sc : mx; g_rep_charged++;
+            if (rep_dbg()) LOG("[gadget] rep shot %d: player %d super charge -> %d / %d\n", rs->id, rs->pid, I32(pl, 0x54), mx);
+        }
+    }
     int pid = I32(attacker, 0x80); if (pid < 0 || pid >= NBE_MAXP) return;
     Gad *g = &g_gad[pid]; if (!g->im || g->type != ACC_NEXT) return;
     int sub = ad_get(g->ad, AD_SUBTYPE); if (sub != 3 && sub != 10 && sub != 11 && sub != 29) return;
@@ -849,12 +928,6 @@ static const int g_masked[] = {
     23000408,   /* Ninja_InvisibleArea: the invisibility area summon never spawns */
     23001247,   /* Gladiator_Amp: the healing item never spawns */
     23001255,   /* MagicalGirl_FlyArea: the area summon never spawns */
-    /* REPEAT rows whose shots fly but do not work (super_audit --gadget, then a traced test build): */
-    23000260,   /* BarrelBot_Spin: each shot stops ~1280 u out and hits only there (600 on a target 1500 u away); enemies it
-                 * passes on the way (300, 875 u) take nothing */
-    23000440,   /* KickerDude_Mines: the kernels rise and vanish ~670 u out; the mines they leave never pop, no damage */
-    23000312,   /* BeeSniper_ExtraBee: the circling bees spawn at the map origin (0, 0) and stay there, not around Bea */
-    23000488,   /* FireDude_FlameShield: the orbiting flames spawn at the map origin (0, 0) and stay there, not around Amber */
     23000294,   /* TntDude_Stun: armed and consumed, but the explosion's damage reaches env.c's root with no source object, so
                  * the hit struct's stun (+0x10) is never read: no stun */
     23000522,   /* ShieldTank_Pull: consumed (0xb4e314), no pull */
@@ -881,6 +954,8 @@ void gadget_clear(void) {
     g_next_sleep = g_next_wake = g_next_steal = g_next_ammo = 0; memset(g_cons_lr, 0, sizeof g_cons_lr); memset(g_cons_n, 0, sizeof g_cons_n);
     if (g_buoy_nostun) LOG("[gadget] reserve buoy: %ld torpedoes without the landing stun\n", g_buoy_nostun);
     g_buoy_nostun = 0;
+    if (g_rep_charged) LOG("[gadget] repeat: %ld enemy hits gave super charge\n", g_rep_charged);
+    g_rep_charged = 0; memset(g_rshot, 0, sizeof g_rshot); memset(g_rshot_k, 0, sizeof g_rshot_k);
     memset(g_gad, 0, sizeof g_gad); g_nsleep = 0; gself_clear();
 }
 
@@ -941,6 +1016,7 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
         if (g_gad[i].im && g_gad[i].type == ACC_NEXT) next_tick(sim, &g_gad[i], tick);
         if (g_gad[i].im && g_gad[i].im->ready) g_gad[i].not_ready = !g_gad[i].im->ready(sim, &g_gad[i], char_of(sim, i));
     }
+    if (rep_dbg()) rshot_trace(sim, tick);
     gself_note_tick(sim, tick);   /* SELF: Sandy's wake-up heal; the tick gadget_vision answers for */
 }
 /* env.c, right before gadget_publish: ready() again on the state the response describes. gadget_tick's answer is from the
