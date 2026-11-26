@@ -75,6 +75,9 @@
  * (split_gas); it finds the parts through superfix_split_head / superfix_split_legs, and moves a teammate who would respawn
  * on a split head's water spot to land (superfix_land).
  *
+ * Also here, two other summons whose server half is missing: the pets a building spawns by itself (Mr. P's porters from his
+ * home base, bpet_tick) and the shadows Sirius stores from his hits (superfix_hit_event, from env.c's damage root).
+ *
  * The per-tick work runs from the character tick 0xb3ae74 (enter hook, per character; only characters with a job do
  * anything). NB_SUPERFIX=0 turns every part off (superfix_install does not call this file's install). */
 #include "nbhost.h"
@@ -518,10 +521,80 @@ static void split_tick(uint8_t *ch) {
     if (g_superfix_dbg) LOG("[superfix] split: legs %d retired (no head)\n", I32(ch, 8));
 }
 
+/* ======================= Building pets (Mr. P's porters) */
+/* A character whose CharacterData has a Pet (+0x250) and PetAutoSpawnDelay (+0x280, seconds) spawns that pet by itself:
+ * Mr. P's home base SpawnerDudeTurret (Pet SpawnerPet, 4 s) and the hypercharged one OverchargedSpawnerDudeTurret
+ * (OverchargedSpawnerPet, ExtraMinions +0x27c = 1: "he can have two active Super Porters at the same time",
+ * TID_SPAWNER_DUDE_OVERCHARGE_DESC). The client only (de)serialises the base's spawn timer (char +0x7e0, 0xb376bc / 0xb2f05c);
+ * the spawning is server code. Here, from the character tick: while the base's owner has fewer than 1 + ExtraMinions living
+ * pets of that data, a pet comes out every PetAutoSpawnDelay seconds ([?] guess: the first one that long after the base
+ * lands, the next that long after the count dropped), through the summon 0xb56e00 with the arguments R-T's split
+ * (0xb5c7b0, the same "spawn my Pet at my feet" call) passes, but no MaxSpawns count (w5 0: the count is the one above). */
+#define BPET_MAX 16
+static struct { uint8_t *ch; int id, due; } g_bpet[BPET_MAX];
+static long g_bpet_spawn;
+typedef void *(*summon_t)(void *, int, int, int, int, int, int, int, void *, uint64_t, uint64_t, uint64_t, uint64_t,
+                          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+static void bpet_tick(uint8_t *ch) {
+    uint8_t *cd = ((getp_t)B(0xb6a384))(ch), *pd = cd ? PTR(cd, 0x250) : NULL;
+    int delay = cd ? I32(cd, 0x280) : 0, own = I32(ch, 0x80);
+    if (!pd || delay < 1 || delay > 60 || own < 0 || I32(ch, 0x3c4) <= 0) return;
+    int k = 0, fr = -1, now = now_of(ch);
+    for (; k < BPET_MAX && !(g_bpet[k].ch == ch && g_bpet[k].id == I32(ch, 8)); k++)
+        if (fr < 0 && (!g_bpet[k].ch || now - g_bpet[k].due > 2000)) fr = k;   /* free, or stale */
+    if (k == BPET_MAX) { if (fr < 0) return; k = fr; g_bpet[k].ch = ch; g_bpet[k].id = I32(ch, 8); g_bpet[k].due = 0; }
+    int n, have = 0, cap = 1 + (I32(cd, 0x27c) > 0 && I32(cd, 0x27c) < 10 ? I32(cd, 0x27c) : 0); void **v = objs(sim_of(ch), &n);
+    for (int i = 0; v && i < n; i++) {
+        uint8_t *c = v[i];
+        if (c && VTOF(c) == VT_CHAR && I32(c, 0x3c4) > 0 && I32(c, 0x80) == own && ((getp_t)B(0xb6a384))(c) == pd) have++;
+    }
+    if (have >= cap) { g_bpet[k].due = 0; return; }
+    if (!g_bpet[k].due) { g_bpet[k].due = now + delay * 20; return; }   /* seconds x 20 ticks */
+    if (now < g_bpet[k].due) return;
+    g_bpet[k].due = 0;
+    uint64_t z = 0;
+    void *p = ((summon_t)B(0xb56e00))(pd, ((geti_t)B(0xb6a628))(ch), ((geti_t)B(0xb6a630))(ch), 0, 1, 0, I32(ch, 1148), I32(ch, 2724),
+                                      sim_of(ch), (uint64_t)((geti_t)B(0xb6a754))(ch), (uint64_t)((geti_t)B(0xb6a818))(ch),
+                                      (uint64_t)((geti_t)B(0xb6a884))(ch), (uint64_t)((geti_t)B(0xb6a5d4))(ch), z, z, z,
+                                      (uint64_t)U8(ch, 2801), z, 1, z, z, z, z, z, 1, z, (uint64_t)-1, z, z, z, z);
+    if (p) g_bpet_spawn++;
+    if (g_superfix_dbg || g_bpet_spawn <= 4) LOG("[superfix] building pet: ch %d (data %d) spawned %d (data %d, %d of %d) at tick %d\n",
+                                                 I32(ch, 8), I32(cd, 0x20), p ? I32(p, 8) : -1, I32(pd, 0x20), have + !!p, cap, now);
+}
+
+/* ======================= Sirius's shadows (Shadowdemon) */
+/* His Brawler_Shadowdemon component (type 13, ctor 0xb99b7c, vtable 0x120a710) is client code that listens on three of
+ * his character's event lists. Two of them libg fires itself: his skill use (char +0x190, 0xb9aebc: for an ulti it
+ * summons every stored shadow around him through 0xb9a7fc -> the summon 0xb56e00, with the traits ShadowdemonMinionDamage
+ * / Health, or their Overcharged ones while he is hypercharged: TID_SHADOWDEMON_OVERCHARGE_DESC) and his death (+0x90,
+ * 0xb9b2e4: the shadows go). The third, his hits (char +0x280, 0xb9aad8(component, event): event +0 the character hit, +32
+ * the projectile or area; every Values[0] = 4th hit of his main attack, 0xc70b70, stores that brawler's shadow, at most
+ * Values[1] = 3: TID_SHADOWDEMON_WEAPON_DESC), only the server fires, so nothing was ever stored and his super summoned
+ * nobody. Here: the damage root (env.c my_root) hands each hit he deals to superfix_hit_event, which calls that handler.
+ * The component tick 0xb9a290 (nothing stored or alive: super disabled) is not run. */
+static uint8_t *shadow_comp(uint8_t *ch) {
+    int nc = I32(ch, 0xa6c); void **c = PTR(ch, 0xa60);
+    for (int i = 0; c && i < nc && i < 64; i++)
+        if (c[i] && I32(c[i], 0x10) == 13 && PTR(c[i], 8) == ch && (*(void ***)c[i])[0x40 / 8] == (void *)B(0xb9a290)) return c[i];
+    return NULL;
+}
+static long g_shadow_hits;
+void superfix_hit_event(uint8_t *victim, uint8_t *attacker, void *src) {
+    if (!mode() || !victim || !attacker || !src || VTOF(attacker) != VT_CHAR || VTOF(victim) != VT_CHAR) return;
+    uint8_t *comp = shadow_comp(attacker); if (!comp) return;
+    void *ev[8] = {0}; ev[0] = victim; ev[4] = src;   /* +0 the character hit, +32 the projectile / area */
+    int n0 = I32(comp, 68);
+    ((void (*)(void *, void *))B(0xb9aad8))(comp, ev);
+    if (g_superfix_dbg || g_shadow_hits++ < 8) LOG("[superfix] shadowdemon hit: %d on %d, hit count %d, shadows stored %d -> %d\n",
+                                                   I32(attacker, 8), I32(victim, 8), I32(comp, 88), n0, I32(comp, 68));
+}
+
 /* ======================= per character tick (enter 0xb3ae74) */
 static void on_char_tick(uint64_t *ctx) {
     uint8_t *ch = (uint8_t *)ctx[0];
     if (!ch || !mode()) return;
+    if (VTOF(ch) == VT_CHAR && I32(ch, 0x80) >= 0) bpet_tick(ch);
     if (g_split_on && VTOF(ch) == VT_CHAR && I32(ch, 0x80) >= 0) split_tick(ch);
     if (!g_nfj && !g_nww) return;
     for (int i = 0; i < g_nfj; i++) if (g_fj[i].ch == ch) {
