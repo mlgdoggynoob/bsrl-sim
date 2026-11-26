@@ -12,11 +12,14 @@ players 0-4 shoot in phase A, players 5-9 in phase B; in each phase every shoote
 wide corridor of open tiles in at least two directions, spots >= SPACING apart; A and B use different spots) with one
 enemy target at distance d along a corridor. Per phase: teleport + heal everyone and end spawn protection; the target fires
 one normal attack at the shooter (so a self-heal is visible); fill the shooters' supers; fire the super (fire 2, aim at the
-target, super_dist = d / CastingRange, a charge aims ~1 tile past the target); watch WATCH ticks (LONG_WATCH for Bo's mines and Mico's jump). A super the player steers
+target, super_dist = d / CastingRange, a charge aims ~1 tile past the target); watch WATCH ticks (LONG_WATCH for Bo's mines and Mico's jump). Bo's mines land in a ring around the aim point
+and go off only when an enemy comes within their trigger range, so from TRAP_WALK ticks after the fire the target walks to the
+nearest of the shooter's proximity traps (`is_trap`; its push is not read while it walks). A super the player steers
 while it runs (FlyJump, Ww) has its shooter walk towards the target once its CastingTime is over (moves sent while it
 casts are dropped), so its "move" is plain walking.
 A ProjectileShield super (Buster) has its target SHIELD_D away, past the shield line, shooting into it at the first
-step POST_HIT_SHIELD ticks or more after the fire; a type-16 charge (Bonnie, who hits where she lands) is aimed at the target, not past it.
+step POST_HIT_SHIELD ticks or more after the fire. Projectiles end on a PayloadTrack tile on this host (MAP has a loop of
+them), so Buster and Bibi (her ball) take a spot and direction with none on the line to past the target (`track_spots`); a type-16 charge (Bonnie, who hits where she lands) is aimed at the target, not past it.
 Measured per shooter (state2 dump each step, attributed by owner player index): super consumed (charge < half of max),
 damage = target HP lost (or the shooter's NbeResp damage_dealt summed over the watch steps: the host reports it per step), own max displacement (dash / jump / charge; host `leaping` flag), target max
 displacement (pushback / pull), own HP gain (only when the pre-damage hit), new projectiles / summons / area effects
@@ -86,6 +89,9 @@ CORR = 8                                 # corridor length in tiles from the sho
 SPACING = 13                             # tiles between spot centres (3900 u: a long super past its target stays clear)
 WATCH = 50                               # ticks watched after the fire (2.5 s at 20 ticks/s; regen starts 3 s after a hit)
 LONG_WATCH = {"BowDude": 160, "Leaper": 160}   # Bo's mines arm and go off after 2.5 s; Mico's jump lasts 6 s: watched 8 s
+TRAP_WALK = 40       # ticks after the fire: the target walks to the nearest of the shooter's armed proximity traps (Bo's mines
+                     # land in a ring ~500 u around the aim point and arm 25-32 ticks after the fire: host run, items log)
+TRAP_RANGE = 10      # items.csv TriggerRangeSubTiles up to this is a proximity trap (Bo's Mine 3; Tick's 200 is a timer)
 STEP = 2                                 # ticks per env step while watching
 POST_HIT = 0                             # --post-hit: tick after the fire at which the target shoots the shooter again (0 off)
 POST_HIT_SHIELD = 8                      # ProjectileShield (Buster): the target shoots into the shield at the first step >= this tick
@@ -160,6 +166,12 @@ def _texts():
 def display(name):
     t = _texts().get(_tables()["char"].get(name, {}).get("TID", ""), "")
     return t.title() if t else name
+
+
+def is_trap(did):
+    """an items data id -> True for a proximity trap: a TriggerAreaEffect set off by an enemy within TriggerRangeSubTiles"""
+    r = _tables()["item"].get(data_name(did), {})
+    return bool(r.get("TriggerAreaEffect")) and 0 < _num(r, "TriggerRangeSubTiles") <= TRAP_RANGE
 
 
 def area_radius(did):
@@ -270,6 +282,10 @@ def expected_skill(sk_name, s):
            "post_hit": POST_HIT_SHIELD if bt == "ProjectileShield" else 0,
            "land": charge and s.get("ChargeType") == "16",   # Bonnie: she hits where she lands, aimed at the target (not past it)
            "throw": any(r.get("Indirect") == "true" for r in pl),   # --attack: a thrown attack lands at full range (env.c fire 1)
+           # projectiles end on a PayloadTrack tile on this host (Bibi's ball never leaves one; the targets' shells hit 2 of 13
+           # shooters standing on one, 6-10 of 13 elsewhere): Bibi's ball and the shots into Buster's shield need a corridor with
+           # none up to past the target (`track_free`, phase())
+           "track": bt == "ProjectileShield" or any(r.get("IsBouncing") == "true" and _num(r, "DamagesConstantlyTickDelay") > 0 for r in pl),
            "projectiles": projs, "summons": summons, "areas": areas, "items": items, "notes": notes}
     return out
 
@@ -534,6 +550,36 @@ def find_spots(location=MAP, n=10, seed=0, tries=400):
     return [((c[0] + 0.5) * TILE, (c[1] + 0.5) * TILE, c[2]) for c in top]
 
 
+TRACK_TILE = "PayloadTrack"   # tiles.csv row that ends projectiles on this host (Survival651 has a loop of it)
+
+
+@functools.lru_cache(None)
+def _track_map(location=MAP):
+    from nbpc import diversity as D
+    ids, rows = D.map_reference(location); H, W = len(rows), len(rows[0])
+    tid = D.table("tiles.csv")[TRACK_TILE][0]
+    return (np.asarray(ids) == tid).reshape(H, W)
+
+
+def track_free(x, y, dx, dy, location=MAP):
+    """tiles from the shooter's tile (x, y world units) along (dx, dy) before the first PayloadTrack tile on that line (0: the
+    shooter stands on one), at most CORR + 2"""
+    trk = _track_map(location); H, W = trk.shape; cx, cy = int(x // TILE), int(y // TILE); k = 0
+    while k <= CORR + 1 and 0 <= cx + dx * k < W and 0 <= cy + dy * k < H and not trk[cy + dy * k, cx + dx * k]: k += 1
+    return k
+
+
+def track_spots(spots, d):
+    """{spot index: [directions]} with no PayloadTrack on the line from the shooter to 2 tiles past a target d units away
+    (expected()'s `track`)"""
+    need = int(np.ceil(d / TILE)) + 2
+    out = {}
+    for i, (x, y, dirs) in enumerate(spots):
+        ok = [dv for dv in dirs if track_free(x, y, dv[0], dv[1]) >= need]
+        if ok: out[i] = ok
+    return out
+
+
 # ------------------------------------------------------------------ live
 def parse_state(buf):
     a = np.frombuffer(buf, "<i4")
@@ -670,8 +716,17 @@ class Auditor:
     def phase(self, inst, run, spots):
         from nbpc import proto as P
         geo, pos = {}, {}
+        sk = list(range(len(spots)))   # spot of each run position; a `track` super (Bibi, Buster) takes one clear of PayloadTrack
+        for a, (j, s, t) in enumerate(run):
+            if not self.info[j.name].get("track"): continue
+            good = track_spots(spots, DIST_MAX)
+            if sk[a] in good: continue
+            busy = {sk[b] for b, (jb, _, _) in enumerate(run) if b != a and self.info[jb.name].get("track")}
+            free = [b for b in range(len(sk)) if sk[b] in good and sk[b] not in busy]
+            if free: b = free[0]; sk[a], sk[b] = sk[b], sk[a]
         for k, (j, s, t) in enumerate(run):
-            inf = self.info[j.name]; x, y, dirs = spots[k]
+            inf = self.info[j.name]; x, y, dirs = spots[sk[k]]
+            if inf.get("track"): dirs = track_spots([spots[sk[k]]], DIST_MAX).get(0, dirs)
             dx, dy = dirs[min(j.attempt, len(dirs) - 1)]
             if inf.get("east") and (1, 0) in dirs: dx, dy = 1, 0
             d = float(np.clip(DIST_F[min(j.attempt, 1)] * inf["range"], DIST_MIN, DIST_MAX))
@@ -732,7 +787,7 @@ class Auditor:
                     if self.info[j.name].get("walk_in"):   # walking in: pushed back = away from the shooter's spot again
                         rr = float(np.hypot(q.x - m["x0"], q.y - m["y0"])); m["r_min"] = min(m.get("r_min", rr), rr)
                         m["push"] = max(m["push"], int(rr - m["r_min"]))
-                    else:   # (a walk-in target ends nearer the shooter by itself: no pull read from it)
+                    elif not m.get("trap_walk"):   # (a walk-in target ends nearer the shooter by itself: no pull read from it)
                         m["push"] = max(m["push"], int(np.hypot(q.x - m["tx0"], q.y - m["ty0"])))
                         if p.alive and m["push"] >= PUSH_MIN:   # pull: the target ends nearer the shooter than it started from
                             m["pull"] = max(m["pull"], int(np.hypot(m["tx0"] - p.x, m["ty0"] - p.y) - np.hypot(q.x - p.x, q.y - p.y)))
@@ -763,6 +818,11 @@ class Auditor:
                     acts[s] = (int(round(np.degrees(np.arctan2(q.y - p.y, q.x - p.x)) / 22.5)) % 16, 0, 0.0, 0.0)
                 if inf.get("walk_in") and q.alive and np.hypot(q.x - m_x0(j), q.y - m_y0(j)) > 150:   # item gadgets: the target walks in
                     acts[t] = (int(round(np.degrees(np.arctan2(m_y0(j) - q.y, m_x0(j) - q.x)) / 22.5)) % 16, 0, 0.0, 0.0)
+                if not (self.gadget or self.attack) and n >= TRAP_WALK and q.alive and st is not None:   # proximity traps (Bo's mines)
+                    tr = [(float(row[3]), float(row[4])) for row in st["it"] if row[2] == s and row[0] not in ids0 and is_trap(row[1])]
+                    if tr:
+                        x, y = min(tr, key=lambda c: np.hypot(c[0] - q.x, c[1] - q.y)); M[j]["trap_walk"] = True
+                        if np.hypot(x - q.x, y - q.y) > 50: acts[t] = (int(round(np.degrees(np.arctan2(y - q.y, x - q.x)) / 22.5)) % 16, 0, 0.0, 0.0)
             # shield / status supers: the target shoots the shooter again (--post-hit for all; a ProjectileShield always)
             due = [(j, s, t) for j, s, t in run if "ph_hp0" not in M[j] and (POST_HIT or self.info[j.name].get("post_hit"))
                    and n >= (POST_HIT or self.info[j.name]["post_hit"])]
@@ -896,7 +956,7 @@ HDESC_CARD = {"overcharge_weapon_spread": ("radius",), "overcharge_weapon_offset
 DMG_AREAS = ("Damage", "Dot", "DelayedDamage", "DamageAndStatusEffect", "HealAndDamage", "HotAndDot", "DamageDrain", "Pushback", "Stun",
              "CrossSlashGround")   # area types that hit enemies (Effect / StatusEffect rows carry a Damage column that hits no one)
 # (range / speed: the audit aims at a fixed distance and records no speed, so neither maps to its move field)
-HDESC_LIVE = {"count": "objects", "split": "projectiles", "spray": "projectiles", "damage": "damage", "dot": "damage", "push": "push",
+HDESC_LIVE = {"count": "objects", "split": "children", "spray": "projectiles", "damage": "damage", "dot": "damage", "push": "push",
               "pull": "pull", "heal": "heal"}
 
 
@@ -1126,7 +1186,9 @@ def live_claim(claim, mh, mn, name):
     if not mh.get("consumed") or not mh.get("hyper_cast"): return "live_unchecked", "super not cast hypercharged"
     if fld == "heal" and not mh.get("pre_damaged"): return "live_unchecked", "heal not testable (pre-damage missed)"
     n_obj = lambda m: sum(len(m.get(k, [])) for k in ("projectiles", "items", "summons", "areas"))
-    get = {"objects": n_obj, "projectiles": lambda m: len(m.get("projectiles", [])), "damage": lambda m: m.get("damage", 0),
+    # children: a split's parts are projectiles or, from a BulletExplosion area's BulletExplosionItem, items (Tick's minimines)
+    get = {"objects": n_obj, "projectiles": lambda m: len(m.get("projectiles", [])),
+           "children": lambda m: len(m.get("projectiles", [])) + len(m.get("items", [])), "damage": lambda m: m.get("damage", 0),
            "push": lambda m: m.get("push", 0), "pull": lambda m: m.get("pull", 0), "heal": lambda m: m.get("heal", 0)}[fld]
     vh = get(mh)
     if fld == "pull":   # the normal super never pulls: judged on the hypercharged run alone
@@ -1142,9 +1204,9 @@ def live_claim(claim, mh, mn, name):
                 "%s %g (the normal super's tables expect none)" % (fld, vh))
     if fld == "objects" and claim.get("hyper"):
         return ("live_ok" if n_obj(mh) >= claim["hyper"] else "live_wrong"), "%d objects seen, hypercharged tables %g" % (n_obj(mh), claim["hyper"])
-    if fld == "projectiles" and claim.get("hyper", 0) > claim.get("normal", 0):
+    if fld in ("projectiles", "children") and claim.get("hyper", 0) > claim.get("normal", 0):
         top = len([p for p in (hyper_skill(name)[1].get("Projectiles") or "").split(";") if p]) * max(1.0, _num(hyper_skill(name)[1], "NumBulletsInOneAttack"))
-        return ("live_ok" if vh > top else "live_wrong"), "%d projectiles seen, %g fired (children expected)" % (vh, top)
+        return ("live_ok" if vh > top else "live_wrong"), "%d %s seen, %g fired (children expected)" % (vh, fld, top)
     return "live_unchecked", "no normal run (super_audit.json) to compare %s with" % fld
 
 
@@ -1265,6 +1327,7 @@ def _check():
     assert live_claim({"feature": "pull"}, m(hyper_cast=True, push=300, pull=300), m(push=780), "x")[0] == "live_ok"
     assert live_claim({"feature": "push"}, hm, m(), "x")[0] == "live_unchecked"           # nothing in either run: the setup does not reach it
     assert live_claim({"feature": "count"}, m(items=["B"]), m(), "x") == ("live_unchecked", "super not cast hypercharged")
+    assert live_claim({"feature": "split"}, m(hyper_cast=True, projectiles=["P"], items=["M"] * 6), m(projectiles=["P"]), "x")[0] == "live_ok"   # Tick's minimines
     # best attempt, descriptions, checklist
     at = [{"class": "no_effect"}, {"class": "works"}]
     assert best(at)["class"] == "works" and best([{"class": "crash"}, {"class": "not_fired"}])["class"] == "not_fired"
@@ -1296,6 +1359,8 @@ def _check():
         assert all(i["range"] > 0 and i["skill"] for i in inf.values())
         assert inf["Gladiator"]["expect"] == ["move", "area"] and any("EdgeCrossing" in x for x in inf["Gladiator"]["notes"]), inf["Gladiator"]
         assert inf["ShieldTank"]["post_hit"] == POST_HIT_SHIELD and inf["BullDude"]["post_hit"] == 0
+        iid = {r[next(iter(r))]: 18000000 + i for i, r in enumerate(_tables()["rows"][18])}
+        assert is_trap(iid["Mine"]) and is_trap(iid["OverchargedMine"]) and not is_trap(iid["BoxOfMines"]) and not is_trap(iid["ClusterMine"])
         assert "MechaDudeBig" in inf and len(env_v5.forms()) == 9 and "MechaDudeBig" not in env_v5.heroes()   # forms audited, never picked
         assert display("BullDude") == "Bull" and data_name(16000000 + list(_tables()["char"]).index("BullDude")) == "BullDude"
         hy = {h: expected(h, hyper=True) for h in ("Jester", "Beamer", "Twins", "Skater", "Domain", "Dancer", "MechaDudeBig", "ShotgunGirl", "PowerLeveler")}
@@ -1356,6 +1421,10 @@ def _check():
         sp = find_spots(MAP)
         assert len(sp) == 10 and all(len(d) >= 2 for _, _, d in sp), len(sp)
         assert min(max(abs(a[0] - c[0]), abs(a[1] - c[1])) for i, a in enumerate(sp) for c in sp[i + 1:]) >= SPACING * TILE
+        assert expected("Baseball")["track"] and expected("Baseball", True)["track"] and expected("ShieldTank")["track"]
+        assert not expected("TrickshotDude")["track"] and not expected("ShotgunGirl")["track"]
+        assert track_free(1950, 4650, 0, 1) == 0 and track_free(3450, 750, 1, 0) == CORR + 2   # Bibi's ball: on / clear of the track
+        assert track_spots(sp[:5], DIST_MAX) and track_spots(sp[5:], DIST_MAX)   # each phase has a spot for it
     print("super_audit ok: classification%s" % (", tables of %d brawlers and forms, %d spots on %s" % (n_tab, 10, MAP) if n_tab else ""))
 
 
