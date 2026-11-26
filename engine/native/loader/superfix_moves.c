@@ -75,6 +75,16 @@
  * (split_gas); it finds the parts through superfix_split_head / superfix_split_legs, and moves a teammate who would respawn
  * on a split head's water spot to land (superfix_land).
  *
+ * Grapple (Buzz, RopeDudeUlti; its projectile's UniqueProperty 5, ProjectileData +0x234): the hit code names the character the
+ * torpedo hit to its owner (0xb5c180, from 0xb74a68; the follow target char +0xca0); the pull and the stun are server code.
+ * Here (superfix_grapple_end, from spawnfix.c's projectile end): a torpedo that stopped on a character or a wall (end reason 2..4)
+ * pulls Buzz in a straight dash to where it hit (env.c's dash mover); when the dash ends, every enemy within GR_STUN_R is
+ * stunned (superfix_cc.c), longer the longer the pull. The hypercharged torpedo that stops on a wall gives the super back.
+ * The speed, the radius and the stun times are host guesses (no data columns).
+ *
+ * Portals (Gray, DoorManUlti, type 16): libg drops the two Portal items; their link, the walk-in teleport and the leave /
+ * arrive areas are here (portal_tick, see the comment there), the hypercharged pair's shield in hyper.c.
+ *
  * The per-tick work runs from the character tick 0xb3ae74 (enter hook, per character; only characters with a job do
  * anything). NB_SUPERFIX=0 turns every part off (superfix_install does not call this file's install). */
 #include "nbhost.h"
@@ -275,6 +285,269 @@ static void blink_start(uint64_t *ctx) {   /* enter 0xb4ffe0(char, tx, ty, areaL
     g_blink++; g_blink_hits += hits;
     if (g_superfix_dbg) LOG("[superfix] blink type %d char %d %d,%d -> %d,%d (asked %d,%d) leave %p enter %p r %d type %d dmg %d hits %d\n",
                             type, I32(ch, 8), x0, y0, lx, ly, tx, ty, aLeave, aEnter, r, aEnter ? I32(aEnter, 0x118) : -1, dmg, hits);
+}
+
+/* ======================= Grapple (Buzz, RopeDudeUlti: a projectile of UniqueProperty 5) */
+#define GR_SPEED 3800      /* [?] the pull's speed: RopeDudeUltiProjectile's own Speed (projectiles_logic.csv), no column for it */
+#define GR_STUN_R 600      /* [?] the landing stun's radius: no data (the description: "stunning nearby opponents") */
+#define GR_STUN_MIN 10     /* [?] stun ticks after the shortest pull (0.5 s; RopeDude_unique min_stun's Value 10 read as ticks) */
+#define GR_STUN_MAX 30     /* [?] stun ticks after a pull of GR_FULL u or more (1.5 s): "The stun time increases based on distance" */
+#define GR_FULL 3000       /* RopeDudeUlti CastingRange 30 tiles (x100 u, as the skill code's range) */
+#define VT_ITEM 0x1209240  /* item vtable (env.c VT_ITEM) */
+typedef int (*rad_t)(void *);
+static int char_radius(uint8_t *c) { void **vt = *(void ***)c; return ((rad_t)vt[88 / 8])(c); }   /* vtable +88: CollisionRadius (0xb6d974) */
+typedef struct { uint8_t *ch, *tgt; int id, tick; } GrHit;
+static GrHit g_grh[8]; static int g_ngrh;
+typedef struct { uint8_t *ch; int id, x0, y0, start; } GrJob;
+static GrJob g_gr[16]; static int g_ngr;
+static long g_gr_char, g_gr_wall, g_gr_land, g_gr_stun, g_gr_reload;
+static void grapple_hit(uint64_t *ctx) {   /* enter 0xb5c180(owner, hit character): the hit of a UniqueProperty 5 projectile */
+    uint8_t *ch = (uint8_t *)ctx[0], *t = (uint8_t *)ctx[1];
+    if (!mode() || !ch || !t) return;
+    int k; for (k = 0; k < g_ngrh && g_grh[k].ch != ch; k++) {}
+    if (k == g_ngrh) { if (g_ngrh >= 8) k = 0; else g_ngrh++; }
+    g_grh[k] = (GrHit){ch, t, I32(ch, 8), now_of(ch)};
+}
+static int is_oc_proj(uint8_t *ch, void *d) {   /* d is in the brawler's super's OverchargedProjectiles (SkillData +0x68 / +0x74) */
+    uint8_t *cd = ((getp_t)B(0xb6a384))(ch), *sd = cd ? PTR(cd, 0x268) : NULL;   /* CharacterData UltimateSkill */
+    void **l = sd ? PTR(sd, 0x68) : NULL; int n = sd ? I32(sd, 0x74) : 0;
+    for (int k = 0; l && k < n && k < 8; k++) if (l[k] == d) return 1;
+    return 0;
+}
+int env_dash_start(uint8_t *ch, int tx, int ty, int speed);   /* env.c: the native charge mover, no contact job */
+void superfix_cc_stun(uint8_t *ch, int ticks, const char *why);
+static int walkable_now(void *sim, int x, int y);
+/* spawnfix.c's projectile end (0xb75998): a grapple that stopped (reason 3: on a character it does not pierce; 2 / 4: the
+ * other stops of the projectile tick 0xb70650..0xb70668, the wall in a live trace: Buzz's torpedo at the wall tile) pulls
+ * its owner there (a straight dash, the path Bull's charge lays); the hypercharged one (the super's OverchargedProjectiles:
+ * RopeDudeOverchargedUltiProjectile) that stopped on a wall gives the super back ("Buzz's torpedo can now be used again if he
+ * hits a wall": player +0x54 = max +0x58) */
+void superfix_grapple_end(uint8_t *pr, int reason) {
+    uint8_t *d = pr ? PTR(pr, 0x10) : NULL, *ch = pr ? PTR(pr, 0xe0) : NULL;
+    if (!mode() || !pr || reason < 2 || reason > 4 || I32(pr, 0x90) != 0) return;   /* 1: range end (a miss: no pull) */
+    if (!d || I32(d, 0x234) != 5 || !ch || VTOF(ch) != VT_CHAR || I32(ch, 0x3c4) <= 0) return;   /* ProjectileData UniqueProperty (getter 0xafab98) */
+    static uint8_t *last; static int last_start;
+    if (pr == last && I32(pr, 0x28) == last_start) return;
+    last = pr; last_start = I32(pr, 0x28);
+    void *sim = sim_of(ch); if (!sim) return;
+    int now = I32(sim, 0x10), x0 = I32(ch, 0x38), y0 = I32(ch, 0x3c), tx = I32(pr, 0x38), ty = I32(pr, 0x3c), k;
+    uint8_t *t = NULL;
+    for (k = 0; k < g_ngrh; k++) if (g_grh[k].ch == ch && g_grh[k].id == I32(ch, 8) && now - g_grh[k].tick <= 1) t = g_grh[k].tgt;
+    if (t && (VTOF(t) != VT_CHAR || I32(t, 0x3c4) <= 0)) t = NULL;
+    if (t) { tx = I32(t, 0x38); ty = I32(t, 0x3c); g_gr_char++; }
+    else {   /* the wall: back along the throw to open ground */
+        double L = hypot(tx - x0, ty - y0);
+        for (double b = 0; b < L && !walkable_now(sim, tx, ty); b += 50) {
+            tx = (int)floor(x0 + (I32(pr, 0x38) - x0) * (L - b) / L + 0.5); ty = (int)floor(y0 + (I32(pr, 0x3c) - y0) * (L - b) / L + 0.5); }
+        g_gr_wall++;
+        if (is_oc_proj(ch, d)) {
+            int owner = I32(ch, 0x80), np = I32(sim, 0x7c);
+            uint8_t *pl = owner >= 0 && owner < np && np <= 64 ? ((uint8_t **)PTR(sim, 0x70))[owner] : NULL;
+            if (pl) { I32(pl, 0x54) = I32(pl, 0x58); g_gr_reload++; }
+        }
+    }
+    /* the hit's follow target (char +0xca0, x/y +0xca8 / +0xcac, set by 0xb5c180): the character tick re-paths toward it once
+     * it moves (0xb3ba6c..0xb3bbfc) and drops the charge flag doing so; the pull goes to where it was hit, so it is cleared as
+     * 0xb5c180(owner, NULL) does */
+    PTR(ch, 0xca0) = NULL; I32(ch, 0xca8) = -1; I32(ch, 0xcac) = -1;
+    uint8_t s98d = U8(ch, 0x98d), s98e = U8(ch, 0x98e);
+    U8(ch, 0x98d) = 1; U8(ch, 0x98e) = 1;   /* a straight path (env.c native_charge_start, Bull) */
+    int len = env_dash_start(ch, tx, ty, GR_SPEED);
+    U8(ch, 0x98d) = s98d; U8(ch, 0x98e) = s98e;
+    if (len > 0) {
+        for (k = 0; k < g_ngr && g_gr[k].ch != ch; k++) {}
+        if (k == g_ngr && g_ngr < 16) g_ngr++;
+        if (k < 16) g_gr[k] = (GrJob){ch, I32(ch, 8), x0, y0, now};
+    }
+    if (g_superfix_dbg) LOG("[superfix] grapple char %d: %s at %d,%d, pull %d u%s\n", I32(ch, 8), t ? "character" : "wall", tx, ty, len,
+                            !t && is_oc_proj(ch, d) ? ", super given back" : "");
+}
+static int grapple_tick(GrJob *j) {   /* 0 = job over: the pull ended -> the landing stun */
+    uint8_t *ch = j->ch; void *sim = sim_of(ch); int now = sim ? I32(sim, 0x10) : 0;
+    if (I32(ch, 8) != j->id || now < j->start || now - j->start > 100 || I32(ch, 0x3c4) <= 0) return 0;
+    if (now == j->start || U8(ch, 0x490)) return 1;
+    int x = I32(ch, 0x38), y = I32(ch, 0x3c), n, hits = 0;
+    double dist = hypot(x - j->x0, y - j->y0); if (dist > GR_FULL) dist = GR_FULL;
+    int ticks = GR_STUN_MIN + (int)((GR_STUN_MAX - GR_STUN_MIN) * dist / GR_FULL);
+    void **v = objs(sim, &n);
+    for (int i = 0; i < n; i++) {
+        uint8_t *c = v[i]; if (!enemy(ch, c) || I32(c, 0x84) == I32(ch, 0x84)) continue;
+        long dx = I32(c, 0x38) - x, dy = I32(c, 0x3c) - y; if (dx * dx + dy * dy > (long)GR_STUN_R * GR_STUN_R) continue;
+        superfix_cc_stun(c, ticks, "grapple landing"); hits++;
+    }
+    g_gr_land++; g_gr_stun += hits;
+    if (g_superfix_dbg) LOG("[superfix] grapple landing char %d at %d,%d after %.0f u: %d stunned for %d ticks\n", j->id, x, y, dist, hits, ticks);
+    return 0;
+}
+
+/* ======================= Portals (Gray, DoorManUlti, BehaviorType 16) */
+/* libg's Portals handler (0xb7d198..0xb7e7e0) drops the pair: one Portal item (ItemData +84 == 0x31) at Gray, one at the skill's
+ * target, each with the player (+0x80), team (+0x84), pair number (+0x2c0), overcharged byte (+0x2c4: OverChargedPortal from the
+ * hypercharged super) and its leave / arrive area ids (+0x2e4 / +0x2e8); before that it destroys the oldest of his pairs of the
+ * same kind past the limit (2, or the hypercharge card's Value) together with the partner in item +0x128, which only the server
+ * fills. The walk-in is server code too. Here: each tick the two portals of a cast are linked through +0x128 (so a third cast
+ * destroys a whole pair, not a NULL partner), and a character of the portal's team that steps into one (the client pickup range:
+ * TriggerRangeSubTiles (ItemData +0xe0) x 100 + its CollisionRadius, 0xb6d964..0xb6d9bc) is moved to the partner, the item's
+ * CustomAreaEffect1 (leave, 0xae81b4) spawned at the one it entered and CustomAreaEffect2 (arrive, 0xae81bc) at the one it
+ * reached; it goes again only after it has left the portal it arrived in (a door that opens under it does not move it). A hypercharged pair shields (hyper.c
+ * hyper_portal_shield). [?] no cooldown: the data has none (Portal Value 1 is the count the handler caps). */
+#define PORTAL_KIND 0x31
+typedef struct { uint8_t *ch, *in; int id; } PIn;   /* the portal a character stands in (NULL: none) */
+static PIn g_pin[32]; static int g_npin;
+static uint8_t *g_portal[16]; static int g_nportal, g_portal_tick = -1, g_portal_new[16]; static void *g_portal_sim;
+static struct { uint8_t *p; int id, tick; } g_pseen[32]; static int g_npseen;   /* when each portal was first seen */
+static long g_portal_tp, g_portal_links, g_portal_shields;
+int hyper_portal_shield(void *ch, int player) __attribute__((weak));   /* hyper.c */
+static void portals_scan(void *sim, int now) {   /* once per tick: the live portals, partners linked */
+    if (sim == g_portal_sim && now == g_portal_tick) return;
+    if (sim != g_portal_sim || now < g_portal_tick) g_npin = g_npseen = 0;   /* a new battle or episode */
+    g_portal_sim = sim; g_portal_tick = now; g_nportal = 0;
+    int n; void **v = objs(sim, &n);
+    for (int i = 0; i < n && g_nportal < 16; i++) {
+        uint8_t *o = v[i]; if (!o || VTOF(o) != VT_ITEM || U8(o, 144)) continue;   /* +144: destroyed (0xb6e0b0) */
+        uint8_t *d = ((getp_t)B(0xb6a384))(o); if (!d || I32(d, 84) != PORTAL_KIND) continue;
+        int k; for (k = 0; k < g_npseen && !(g_pseen[k].p == o && g_pseen[k].id == I32(o, 8)); k++) {}
+        if (k == g_npseen) { if (g_npseen >= 32) g_npseen = k = 0; g_pseen[g_npseen++] = (typeof(g_pseen[0])){o, I32(o, 8), now}; }
+        g_portal_new[g_nportal] = g_pseen[k].tick == now || now < g_pseen[k].tick; g_portal[g_nportal++] = o;
+    }
+    for (int i = 0; i < g_nportal; i++) {
+        uint8_t *p = g_portal[i]; if (PTR(p, 0x128)) continue;
+        for (int j = i + 1; j < g_nportal; j++) {
+            uint8_t *q = g_portal[j];
+            if (PTR(q, 0x128) || I32(q, 0x80) != I32(p, 0x80) || I32(q, 0x2c0) != I32(p, 0x2c0) || U8(q, 0x2c4) != U8(p, 0x2c4)) continue;
+            PTR(p, 0x128) = q; PTR(q, 0x128) = p; g_portal_links++; break;
+        }
+    }
+}
+static void portal_tick(uint8_t *ch) {
+    void *sim = sim_of(ch); if (!sim) return;
+    int now = I32(sim, 0x10); portals_scan(sim, now);
+    int k; for (k = 0; k < g_npin && !(g_pin[k].ch == ch && g_pin[k].id == I32(ch, 8)); k++) {}
+    if (!g_nportal && k == g_npin) return;
+    uint8_t *in = NULL; int x = I32(ch, 0x38), y = I32(ch, 0x3c), r = I32(ch, 0x3c4) > 0 ? char_radius(ch) : 0;
+    for (int i = 0; i < g_nportal && I32(ch, 0x3c4) > 0; i++) {
+        uint8_t *p = g_portal[i], *d = ((getp_t)B(0xb6a384))(p);
+        if (I32(p, 0x84) != I32(ch, 0x84)) continue;   /* his team's doors only */
+        long range = (long)I32(d, 0xe0) * 100 + r, dx = I32(p, 0x38) - x, dy = I32(p, 0x3c) - y;
+        if (dx * dx + dy * dy <= range * range && (!in || (k < g_npin && p == g_pin[k].in))) in = p;   /* the one he is
+                                               * in stays his, so a door over the one he arrived in does not send him on */
+    }
+    int fresh = 0; for (int i = 0; in && i < g_nportal; i++) if (g_portal[i] == in) fresh = g_portal_new[i];   /* a door that
+                                                * opened under him (Gray's own at his feet) counts as one he is already in */
+    if (k == g_npin) { if (!in || g_npin >= 32) return; g_pin[g_npin++] = (PIn){ch, fresh ? in : NULL, I32(ch, 8)}; }
+    uint8_t *q = in ? PTR(in, 0x128) : NULL;
+    if (in && in != g_pin[k].in && !fresh && q && !U8(q, 144) && !U8(ch, 0x490)) {   /* stepped in (not in a dash / charge) */
+        uint8_t *d = ((getp_t)B(0xb6a384))(in);
+        void *aLeave = ((getp_t)B(0xae81b4))(d), *aArrive = ((getp_t)B(0xae81bc))(d);
+        int px = I32(in, 0x38), py = I32(in, 0x3c), qx = I32(q, 0x38), qy = I32(q, 0x3c);
+        stop_mover(ch);
+        ((void (*)(void *, int, int, int))B(0xb6a61c))(ch, qx, qy, 0);
+        if (aLeave) spawn_area(ch, aLeave, px, py, 0, 2);
+        if (aArrive) spawn_area(ch, aArrive, qx, qy, 0, 2);
+        int sh = U8(in, 0x2c4) && hyper_portal_shield ? hyper_portal_shield(ch, I32(in, 0x80)) : 0;
+        g_portal_tp++; g_portal_shields += sh > 0;
+        if (g_superfix_dbg) LOG("[superfix] portal: char %d %d,%d -> %d,%d (pair %d of player %d%s), shield %d\n", I32(ch, 8), px, py, qx, qy,
+                                I32(in, 0x2c0), I32(in, 0x80), U8(in, 0x2c4) ? ", hypercharged" : "", sh);
+        in = q;
+    }
+    g_pin[k].in = in;
+    if (!in && !g_nportal) g_pin[k] = g_pin[--g_npin];
+}
+
+/* ======================= Attach (Kit, AttacherUlti: a charge of type 19) */
+/* The jump is env.c's native charge (type 19, its contact hit); what happens where Kit lands is server code. Here, when a type-19
+ * charge ends, the nearest other living character within KIT_GRAB_R of Kit is grabbed:
+ *   - an enemy gets his CharacterData StatusEffect AttacherUltiDot (Damage 125 every TriggerRate 20 ticks, DurationTicks 40)
+ *     and Kit rides on it for those 40 ticks ("damages enemies over time"); hypercharged, the enemy is stunned for them instead
+ *     and Kit stays free (TID_ATTACHER_OVERCHARGE_DESC "Kit's Super stuns the enemy but he can move and attack normally");
+ *   - a teammate carries him for his ulti card's Value seconds (Attacher_ulti 20) and is healed KIT_HEAL every 20 ticks (x
+ *     KIT_OC_HEAL % hypercharged: "Attaching to teammates will heal them more"); while attached his weapon is its SecondarySkill
+ *     (AttacherWeaponAlternate, the yarn balls; hypercharged SecondarySkill2, AttacherWeaponAlternateOvercharge: CastingRange 30
+ *     vs 22, "his Yarn Balls have a longer range"), through superfix_cc.c's swap. A rider is put on his carrier every tick.
+ * [?] the grab radius, the teammate's carry time and heal and the hypercharged stun time are host guesses (see the numbers). */
+#define KIT_GRAB_R 400     /* [?] landing within 400 u (between centres) of a character grabs it */
+#define KIT_HEAL 125       /* [?] a carrier's heal per 20 ticks: AttacherUltiDot's Damage, read as the heal (no heal column) */
+#define KIT_OC_HEAL 150    /* [?] hypercharged: the heal x 150 % (the description: "heal them more"; no number) */
+typedef struct { uint8_t *ch, *on; int id, on_id, until, next, ally, oc, jumping; } KitJob;
+static KitJob g_kit[8]; static int g_nkit;
+static long g_kit_jumps, g_kit_ally, g_kit_enemy, g_kit_stun, g_kit_heal;
+static int card_value(void *cd, int meta, int k);
+static void *status_named(const char *name) {   /* status_effects row by name (table 117, as hyper.c data_named) */
+    extern void *div_data(int id);
+    static void *cache; static int done; if (done) return cache;
+    for (int idx = 0, miss = 0; idx < 4000 && miss < 64; idx++) {
+        uint8_t *d = div_data(117000000 + idx);
+        if (!d) { miss++; continue; }
+        miss = 0;
+        void *s = PTR(d, 8) ? ((void *(*)(void *, int))B(0xcf6a28))(PTR(d, 8), 0) : NULL;
+        if (s && (((int (*)(void *, const char *))B(0xe9779c))(s, name) & 1)) { cache = d; break; }
+    }
+    done = 1; return cache;
+}
+static void kit_land(KitJob *j, void *sim, int now) {
+    uint8_t *ch = j->ch, *best = NULL; long bd = (long)KIT_GRAB_R * KIT_GRAB_R; int n, x = I32(ch, 0x38), y = I32(ch, 0x3c);
+    void **v = objs(sim, &n);
+    for (int i = 0; i < n; i++) {
+        uint8_t *c = v[i]; if (!c || c == ch || VTOF(c) != VT_CHAR || I32(c, 0x3c4) <= 0 || I32(c, 0x80) < 0) continue;
+        long dx = I32(c, 0x38) - x, dy = I32(c, 0x3c) - y; if (dx * dx + dy * dy >= bd) continue;
+        bd = dx * dx + dy * dy; best = c;
+    }
+    j->on = NULL; if (!best) return;
+    uint8_t *cd = ((getp_t)B(0xb6a384))(ch), *own = cd ? PTR(cd, 0x260) : NULL;
+    j->ally = I32(best, 0x84) == I32(ch, 0x84);
+    if (j->ally) {
+        int secs = card_value(cd, 3, 1);   /* Attacher_ulti Value (cards.csv MetaType 3) */
+        j->on = best; j->on_id = I32(best, 8); j->until = now + (secs > 0 ? secs : 20) * 20; j->next = now + 20; g_kit_ally++;
+        void *w = own ? PTR(own, j->oc ? 0x160 : 0x158) : NULL;   /* SkillData SecondarySkill / SecondarySkill2 */
+        extern void superfix_cc_weapon(uint8_t *, void *) __attribute__((weak));
+        if (w && superfix_cc_weapon) superfix_cc_weapon(ch, w);
+        if (g_superfix_dbg) LOG("[superfix] kit %d rides teammate %d for %d ticks%s, weapon -> skill %d\n", j->id, j->on_id, j->until - now,
+                                j->oc ? " (hypercharged)" : "", w ? I32(w, 0x20) : -1);
+        return;
+    }
+    uint8_t *st = status_named("AttacherUltiDot");   /* CharacterData StatusEffect (characters.csv) */
+    if (st) ((void (*)(void *, void *, int, int, void *, void *, int, int, int, int, int))B(0xb35dd0))(best, st, I32(ch, 0x80),
+        I32(ch, 0x84), ch, ch, 2, 0, -1, -1, 0);
+    g_kit_enemy++;
+    if (j->oc) { superfix_cc_stun(best, 40, "kit hypercharged super"); g_kit_stun++; }   /* AttacherUltiDot DurationTicks 40 */
+    else { j->on = best; j->on_id = I32(best, 8); j->until = now + 40; }                 /* rides it as long as the Dot lasts */
+    if (g_superfix_dbg) LOG("[superfix] kit %d grabs enemy %d (dot %p)%s\n", j->id, I32(best, 8), st, j->oc ? ": stunned, Kit free" : "");
+}
+static int kit_tick(KitJob *j) {   /* 0 = job over */
+    uint8_t *ch = j->ch; void *sim = sim_of(ch); int now = sim ? I32(sim, 0x10) : 0;
+    if (I32(ch, 8) != j->id || I32(ch, 0x3c4) <= 0) return 0;
+    if (j->jumping) {
+        if (U8(ch, 0x490) && I32(ch, 0x508) == 19) return 1;
+        j->jumping = 0; kit_land(j, sim, now);
+        return j->on != NULL;
+    }
+    uint8_t *on = j->on;
+    int alive = on && I32(on, 8) == j->on_id && VTOF(on) == VT_CHAR && I32(on, 0x3c4) > 0;
+    if (!alive || now >= j->until || (U8(ch, 0x490) && I32(ch, 0x508) == 19)) {   /* let go (a new jump starts its own job) */
+        extern void superfix_cc_weapon(uint8_t *, void *) __attribute__((weak));
+        if (j->ally && superfix_cc_weapon) superfix_cc_weapon(ch, NULL);
+        if (g_superfix_dbg) LOG("[superfix] kit %d lets go of %d\n", j->id, j->on_id);
+        return 0;
+    }
+    stop_mover(ch);
+    ((void (*)(void *, int, int, int))B(0xb6a61c))(ch, I32(on, 0x38), I32(on, 0x3c), 0);
+    if (j->ally && now >= j->next) {
+        int mx = I32(on, 0x3c8), hp = I32(on, 0x3c4), h = j->oc ? KIT_HEAL * KIT_OC_HEAL / 100 : KIT_HEAL;
+        if (hp < mx) { I32(on, 0x3c4) = hp + h < mx ? hp + h : mx; g_kit_heal++; }
+        j->next = now + 20;
+    }
+    return 1;
+}
+static void kit_watch(uint8_t *ch) {   /* a type-19 charge started: a job (one per Kit) */
+    if (!U8(ch, 0x490) || I32(ch, 0x508) != 19) return;
+    int k; for (k = 0; k < g_nkit && !(g_kit[k].ch == ch && g_kit[k].id == I32(ch, 8)); k++) {}
+    if (k < g_nkit && g_kit[k].jumping) return;
+    if (k < g_nkit && g_kit[k].ally) { extern void superfix_cc_weapon(uint8_t *, void *) __attribute__((weak)); if (superfix_cc_weapon) superfix_cc_weapon(ch, NULL); }
+    if (k == g_nkit) { if (g_nkit >= 8) return; g_nkit++; }
+    uint8_t **sk = PTR(ch, 0x458);
+    int oc = (sk && I32(ch, 0x464) > 1 && sk[1] && (U8(sk[1], 0x31) & 1)) ||   /* the super's overcharged latch (0xb82d34) */
+             ((int (*)(void *))B(0xb35bf0))(ch);   /* or isOvercharged now (hyper.c answers it): the charge skill sets no latch */
+    g_kit[k] = (KitJob){ch, NULL, I32(ch, 8), 0, 0, 0, 0, oc, 1}; g_kit_jumps++;
 }
 
 /* ======================= ChangeCharacter: the new character for battle_fix.c's hook on 0xb4ffec */
@@ -523,6 +796,10 @@ static void on_char_tick(uint64_t *ctx) {
     uint8_t *ch = (uint8_t *)ctx[0];
     if (!ch || !mode()) return;
     if (g_split_on && VTOF(ch) == VT_CHAR && I32(ch, 0x80) >= 0) split_tick(ch);
+    if (VTOF(ch) == VT_CHAR) portal_tick(ch);
+    for (int i = 0; i < g_ngr; i++) if (g_gr[i].ch == ch && !grapple_tick(&g_gr[i])) g_gr[i--] = g_gr[--g_ngr];
+    if (VTOF(ch) == VT_CHAR) kit_watch(ch);
+    for (int i = 0; i < g_nkit; i++) if (g_kit[i].ch == ch && !kit_tick(&g_kit[i])) g_kit[i--] = g_kit[--g_nkit];
     if (!g_nfj && !g_nww) return;
     for (int i = 0; i < g_nfj; i++) if (g_fj[i].ch == ch) {
         if (I32(ch, 8) != g_fj[i].id) { g_fj[i--] = g_fj[--g_nfj]; continue; }   /* object reused */
@@ -555,13 +832,19 @@ void superfix_moves_install(void) {
             o_wow = (wow_t)hook_replace(g_libg, 0xb51200, (void *)my_wow); n |= 32;
         } else LOG("[superfix] moves: 0xb51200 is not canWalkOverWater: R-T's head keeps off water\n");
     } else LOG("[superfix] moves: R-T's split sites differ: left out\n");
-    LOG("[superfix] moves installed:%s%s%s%s%s%s%s cross-slash\n", n & 1 ? " flyjump" : "", n & 2 ? " ww" : "", n & 4 ? " blink" : "", " change",
-        n & 8 ? " change-area" : "", n & 16 ? " split" : "", n & 32 ? " split-water" : "");
+    if (*(uint32_t *)B(0xb5c180) == 0xa9be7bfd && *(uint32_t *)B(0xb74a68) == 0x97ff9dc6) { hook_enter(g_libg, 0xb5c180, grapple_hit); n |= 64; }   /* stp x29, x30, [sp, #-32]!; bl 0xb5c180 */
+    else LOG("[superfix] moves: 0xb5c180 is not the grapple target setter: Buzz pulls to walls only\n");
+    LOG("[superfix] moves installed:%s%s%s%s%s%s%s cross-slash, portals, grapple%s\n", n & 1 ? " flyjump" : "", n & 2 ? " ww" : "", n & 4 ? " blink" : "", " change",
+        n & 8 ? " change-area" : "", n & 16 ? " split" : "", n & 32 ? " split-water" : "", n & 64 ? " (character hits)" : "");
 }
 void superfix_moves_status(void) {
     LOG("[superfix] moves: flyjump %ld starts, %ld landings (%ld fallback); ww %ld starts, %ld hits; blink %ld (%ld back), %ld hits; "
         "change character %ld (%ld left to battle_fix), with area %ld (%ld hits); cross slash %ld (%ld hits); split: rejoins %ld, "
-        "component ticks %ld, speed ticks %ld, legs retired without a head %ld, water walks %ld, put on land %ld\n", g_fj_start, g_fj_land,
+        "component ticks %ld, speed ticks %ld, legs retired without a head %ld, water walks %ld, put on land %ld; portals: %ld links, "
+        "%ld teleports (%ld shields); grapple: %ld character / %ld wall pulls, %ld landings (%ld stuns), %ld supers given back; "
+        "kit: %ld jumps, %ld on teammates (%ld heals), %ld on enemies (%ld stuns)\n", g_fj_start, g_fj_land,
         g_fj_fallback, g_ww_start, g_ww_hits, g_blink, g_blink_back, g_blink_hits, g_change, g_change_skip, g_change_area, g_change_hits,
-        g_slash_n, g_slash_hits, g_split_rejoin, g_split_comp, g_split_spd, g_split_orphan, g_split_wow, g_split_land);
+        g_slash_n, g_slash_hits, g_split_rejoin, g_split_comp, g_split_spd, g_split_orphan, g_split_wow, g_split_land, g_portal_links, g_portal_tp,
+        g_portal_shields, g_gr_char, g_gr_wall, g_gr_land, g_gr_stun, g_gr_reload, g_kit_jumps,
+        g_kit_ally, g_kit_heal, g_kit_enemy, g_kit_stun);
 }
