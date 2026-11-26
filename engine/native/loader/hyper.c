@@ -35,8 +35,10 @@
  * popcorn are env.c's (fang_oc_super); Alli's boost, whose one libg reader is unreachable here, is
  * hyper_stalk (from env.c's damage root); Tick's dead
  * head gets its summoner for its mine chain (hyper_dead_pet_owner, from superfix_items.c). Also here: Ruffs' +25 % (an area's
- * overcharged byte, hyper_area_mark), Poco's overheal shield (my_heal, hyper_shield_absorb) and Gray's portal shield (hyper_portal_shield, from superfix_moves.c's portals), Shade's dead centre
- * (hyper_dead_centre), the repeat of a Dot area only the hypercharged super makes (Kaze's centre, hyper_area_tick) and
+ * overcharged byte, hyper_area_mark), Poco's overheal shield (my_heal, hyper_shield_absorb), Pam's (hyper_overheal, from
+ * superfix.c's turret heal) and Gray's portal shield (hyper_portal_shield, from superfix_moves.c's portals), Shade's dead
+ * centre (hyper_dead_centre), Cordelius's slow of his realm target (hyper_realm_enter, hyper_slow_pct), the repeat of a Dot
+ * area only the hypercharged super makes (Kaze's centre, hyper_area_tick) and
  * which areas those are (hyper_area_oc_only; superfix_status.c refreshes their Self / Ally statuses: Sandy's speed);
  * Stu's super recharge is env.c's charge_end. Seven brawlers (Jester, Beamer, Twins, Skater, Domain, Dancer,
  * MechaDudeBig) have a separate super instead (characters.csv OverchargedUltimateSkill): the game builds it as the brawler's
@@ -242,7 +244,7 @@ void hyper_proj_site(void); void hyper_summon_bl(void);
  * ("Pam's turret heals on deploy", TID_MINIGUN_DUDE_OVERCHARGE_DESC): the area apply 0xb29494 acts on a Heal area only
  * for a positive amount (0xb29628..0xb29670) and no client code heals with it. Here, after each tick (hyper_tick_player),
  * each new Heal area the hypercharged brawler owns (area +0x108) heals every living character of its team (+0x84) within
- * Radius (+0x12c) once, up to max HP (the hypercharge's overheal shield is not modelled), by the area's damage word +0xe8
+ * Radius (+0x12c) once, up to max HP (the turret's later heals overheal: hyper_overheal), by the area's damage word +0xe8
  * negated, or where that is not negative by the DamageScaleType 2 amount of the area create 0xb2b124: the owner's max HP
  * +0x3c8 x Damage (+0x134) / 100. */
 static void oc_heal_areas(uint8_t *ch) {
@@ -881,6 +883,26 @@ int hyper_portal_shield(void *chp, int player) {   /* -> the shield given (0: no
     static int nlog; if (nlog++ < 10) LOG("[hyper] portal shield: ch %d gets %d for %d ticks (player %d's card)\n", I32(ch, 8), hp, ticks, player);
     return hp;
 }
+/* Pam (MinigunDude_overcharge, overcharge_pet_change: "It continues to heal Brawlers over their max health by providing them
+ * with a decaying shield"; RE-IMPLEMENTED: the area type HotAndOverheals 45 and its OverHeal* columns, AreaEffectData +0x1a4
+ * OverHealTicks / +0x1a8 StackOverHeal / +0x1ac MaxOverHeal / +0x1b0 OverHealMultiplier (stores at 0xa96420..0xa964a8), have
+ * no reader in the client). superfix.c's summon heal of the hypercharged turret's MinigunOverchargedHealingStationHeal
+ * (OverHealTicks 150, StackOverHeal, MaxOverHeal 6000, OverHealMultiplier 80) calls this with what went past max HP: a shield
+ * of amount x mult / 100, added to what is left when the data stacks (else the larger), at most max, which shrinks linearly
+ * to 0 over OverHealTicks ticks after the last overheal (the same store as Poco's above, taken by hyper_shield_absorb).
+ * [?] OverHealTicks read as the decay time in ticks (7.5 s) and MaxOverHeal as an absolute cap (power-11 HP). */
+void hyper_overheal(uint8_t *ch, int over, uint8_t *ad) {
+    int ticks = ad ? I32(ad, 0x1a4) : 0, mx = ad ? I32(ad, 0x1ac) : 0, amt = ad ? (int)((long)over * I32(ad, 0x1b0) / 100) : 0;
+    if (!ch || over <= 0 || ticks <= 0 || amt <= 0) return;
+    int now = sim_now(ch), k = 0, fr = -1;
+    for (; k < OSH_MAX && !(g_osh[k].ch == ch && g_osh[k].id == I32(ch, 8)); k++) if (fr < 0 && osh_left(k, now) <= 0) fr = k;
+    if (k == OSH_MAX) { if (fr < 0) return; k = fr; g_osh[k].ch = ch; g_osh[k].id = I32(ch, 8); g_osh[k].hp = 0; g_osh[k].end = now; }
+    int left = osh_left(k, now), hp = U8(ad, 0x1a8) ? left + amt : (amt > left ? amt : left);
+    if (mx > 0 && hp > mx) hp = mx;
+    g_osh[k].hp = hp; g_osh[k].start = now; g_osh[k].end = now + ticks; g_osh[k].flat = 0; g_osh_given += hp - left;
+    static int nlog; if (nlog++ < 10) LOG("[hyper] turret overheal: ch %d +%d over max (x %d %%) -> shield %d for %d ticks\n", I32(ch, 8), over,
+                                          I32(ad, 0x1b0), hp, ticks);
+}
 /* Shade (Ghost_overcharge, overcharge_default: "Shade's attacks during its Hypercharged Super all deal maximum damage, even if
  * the enemy is not hugged in the center"; RE-IMPLEMENTED: libg asks nothing hypercharge-specific there). The melee hit
  * 0xb5ad54..0xb5ae98 (x22 the attacker) gives MeleeDeadCenterBoost (trait 267, GhostDeadCenterBoost 100: damage + 100 %, and
@@ -901,6 +923,35 @@ int hyper_dead_centre(void *a, void *b, void *c, uint8_t *att) {
 }
 void hyper_dc_thunk(void);
 __asm__(".text\n.global hyper_dc_thunk\nhyper_dc_thunk:\n\tmov x3, x22\n\tb hyper_dead_centre\n");
+/* Cordelius (Duelist_overcharge, overcharge_default: "Cordelius slows down his targets when sending them to the Shadow Realm";
+ * RE-IMPLEMENTED: no slow in the data, the card's Value 6 is the batch value of ten overcharge_default cards). His super's
+ * hit (UniqueProperty 13, 0xb750cc..0xb75208) sends him and the target x27 to the Shadow Realm with 0xb58214 (ch, enter,
+ * ticks, ...); its last call (0xb751fc) sets the target's realm ticks (w2, from 0xb77e3c). hook_bl on that call
+ * (hyper_realm_thunk, which passes the projectile x25): a hypercharged Cordelius's target is slowed REALM_SLOW % for the
+ * realm's ticks (hyper_slow_pct, read by superfix_status.c's speed for env.c's mover). */
+#define REALM_SLOW 30   /* [?] guess: no number in the data or texts; 30 % is the most common SpeedReducePercent of the slows */
+static struct { uint8_t *ch; int id, until, pct; } g_slow[16];
+int hyper_slow_pct(uint8_t *ch) {   /* superfix_status.c superfix_status_speed: an extra SpeedReducePercent, 0 = none */
+    int t = -1, pct = 0;
+    for (int k = 0; ch && k < 16; k++) if (g_slow[k].ch == ch && g_slow[k].id == I32(ch, 8)) {
+        if (t < 0) t = sim_now(ch);
+        if (t < g_slow[k].until && g_slow[k].pct > pct) pct = g_slow[k].pct;
+    }
+    return pct;
+}
+void hyper_realm_enter(uint8_t *target, int enter, int ticks, int a3, int a4, uint8_t *proj) {
+    ((void (*)(void *, int, int, int, int))B(0xb58214))(target, enter, ticks, a3, a4);
+    uint8_t *owner = proj ? PTR(proj, 0xe0) : NULL;
+    if (!owner || !target || PTR(target, 0) != B(0x1209020) || ticks <= 0 || !(my_is_oc(owner) & 1)) return;
+    int now = sim_now(target), k = 0, fr = 0;
+    for (; k < 16 && !(g_slow[k].ch == target && g_slow[k].id == I32(target, 8)); k++) if (g_slow[k].until < g_slow[fr].until) fr = k;
+    if (k == 16) k = fr;   /* a new record over the one that ends first */
+    g_slow[k].ch = target; g_slow[k].id = I32(target, 8); g_slow[k].until = now + ticks; g_slow[k].pct = REALM_SLOW;
+    static int nlog; if (nlog++ < 10) LOG("[hyper] shadow realm: ch %d slowed %d %% for %d ticks (Cordelius ch %d)\n", I32(target, 8),
+                                          REALM_SLOW, ticks, I32(owner, 8));
+}
+void hyper_realm_thunk(void);
+__asm__(".text\n.global hyper_realm_thunk\nhyper_realm_thunk:\n\tmov x5, x25\n\tb hyper_realm_enter\n");
 void hyper_install(void) {
     hook_enter(g_libg, 0xb709e4, on_travel);   /* homing projectiles (above) */
     { uint32_t *pc = (uint32_t *)B(0xb5adc8);   /* bl 0xd00b6c (Shade's dead centre, above) */
@@ -915,6 +966,9 @@ void hyper_install(void) {
         LOG("[hyper] isOvercharged 0xb35bf0: unexpected bytes %08x %08x, hypercharged skills off\n", f[0], f[1]); return;
     }
     hook_replace(g_libg, 0xb35bf0, (void *)my_is_oc);
+    { uint32_t *pc = (uint32_t *)B(0xb751fc);   /* bl 0xb58214: the target's realm ticks (Cordelius's slow, above) */
+      if ((*pc & 0xfc000000) == 0x94000000 && (uint8_t *)pc + (((int32_t)(*pc << 6)) >> 4) == B(0xb58214)) hook_bl(g_libg, 0xb751fc, (void *)hyper_realm_thunk);
+      else LOG("[hyper] 0xb751fc: unexpected bytes, Cordelius's hypercharged slow is off\n"); }
     uint32_t *cv = (uint32_t *)B(0xb5281c);
     if (cv[0] == 0x12800000 && cv[1] == 0xd65f03c0) hook_replace(g_libg, 0xb5281c, (void *)my_card_value);   /* mov w0, #-1 ; ret */
     else LOG("[hyper] 0xb5281c: unexpected bytes %08x %08x, hypercharge card values off\n", cv[0], cv[1]);
