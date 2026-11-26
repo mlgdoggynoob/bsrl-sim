@@ -33,7 +33,8 @@ typedef struct {
     int32_t fire;         /* 0 none, 1 attack (attack_angle), 2 super (super_angle + super_dist), 3 gadget (input kind 8, diversity round),
                              4 hypercharge (hypercharge round, hyper.c; no aim) */
     float aim_deg;        /* any degrees, x right / y down */
-    float super_dist;     /* (0, 1] -> leap length 2600 * dist */
+    float super_dist;     /* (0, 1] -> leap length 2600 * dist; fire 3: a thrown gadget lands this share of its CastingRange out
+                             (gadget.c aimed_range; 0 = full range) */
 } NbeAction;
 
 typedef struct {          /* diversity round: NbeCmd.div (RESET) */
