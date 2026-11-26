@@ -20,5 +20,9 @@ env_v5 / star-power files, env.c storm + spawnfix.c: don't touch.
 - Live audit (super_audit --gadget, both slots): 38 of 53 work; 8 rows masked in g_masked (no effect), 7 partial kept.
 - super_audit: --gadget-slot, gadget_kind / all_gadgets / audit_gadgets / expected_skill; gadget_check: PROJECTILE / SUPER
   effects, --roster.
+- Issue #54 (`repeat_spin_off.patch`): REPEAT and SPIN are off again (kind NONE, code under `#if 0` in gadget.c): they fired
+  N copies of the main attack at full damage and range (Piper 5 x 1800). super_audit.gadget_kind returns None for them.
+  Piper's Sniper_HandGun is redone as AUTO AIMER (card 23000268 only, super_audit kind "auto_aim"): one CustomObject shot at
+  the nearest enemy within Range x 300 u, main attack Damage x CustomValue1 %, refused with no enemy in range.
 - Next: final checks run (scratchpad checks.sh: gadget_check x2, super_audit x2, test_fast, train_ppo smoke), patch file
   engine/patches/gadgets_batch2.patch (git diff --relative=engine origin/main -- engine), PR.

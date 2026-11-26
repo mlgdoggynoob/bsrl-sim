@@ -159,7 +159,7 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | `setup.sh` | One-command setup: host build, venv, game files (SETUP.md). Rebuilds the host when its sources changed. |
 | `update.sh` | Updates a checkout to the latest `main` (fast-forward, or a merge into your branch), then reruns `setup.sh`; `--check` runs the self-checks. |
 | `engine/` | nirkt's battle host and environment as one tree: `native/` (host sources, qemu patches), `py/` (`nbpc`, `models4.py`), `train/`, nirkt's vision-label tools; this project's changes applied. What came from where: `engine/NOTICE.md`. |
-| `engine/patches/` | Record of this project's changes to nirkt's host and camera rules (`training_round`, `fair_view`, `live_state`, `gadgets`, `charge`, `hypercharge`, `hypercharged_supers`, `hyper_supers_fix`, `area_gadgets`, `gadgets_batch2`, `showdown`, `showdown_leftovers`, `star_probe`, `star_card_hits`, `supers`, `status_movement`, `obs_invisibility`, `trio_respawn_gas`, `broken_supers`, `guessed_numbers`, `status_leftovers`, `meg_mech`, `split_and_paint`, `status_final`, `heal_scale`, `gears`, `hyper_piper_bombs`, `hyper_supers_all`; already applied in `engine/`). |
+| `engine/patches/` | Record of this project's changes to nirkt's host and camera rules (`training_round`, `fair_view`, `live_state`, `gadgets`, `charge`, `hypercharge`, `hypercharged_supers`, `hyper_supers_fix`, `area_gadgets`, `gadgets_batch2`, `showdown`, `showdown_leftovers`, `star_probe`, `star_card_hits`, `supers`, `status_movement`, `obs_invisibility`, `trio_respawn_gas`, `broken_supers`, `guessed_numbers`, `status_leftovers`, `meg_mech`, `split_and_paint`, `status_final`, `heal_scale`, `gears`, `repeat_spin_off`, `hyper_piper_bombs`, `hyper_supers_all`; already applied in `engine/`). |
 | `notes/` | Working notes from the sessions behind each host change (libg offsets, measurements, guesses); index and dates in `notes/README.md`. |
 | `pro_strategies.md` | Community Showdown habits and what each means for the observation / reward. |
 
@@ -238,7 +238,7 @@ cd $SIM_WORK/runs && python -m http.server 8766      # dashboard: http://localho
 - Generated layouts (`--gen`) were made for the vision models' training data and are not used for RL; their
   generator is not in this repository.
 - The fire head is none / attack / super / gadget / hypercharge. The gadget class is masked unless the host activates
-  that gadget's kind (`gadget.c`: dashes, heals, areas, the gadget's own skill shot, extra shots, items, R-T's super charge; 55 of the 213 gadgets) and a use is left (`obs_v5` self 3). The hypercharge class is
+  that gadget's kind (`gadget.c`: dashes, heals, areas, the gadget's own skill shot, items, R-T's super charge, Piper's Auto Aimer; 48 of the 213 gadgets; the other repeat / spin extra shots are off, issue #54) and a use is left (`obs_v5` self 3). The hypercharge class is
   masked unless the brawler has its card, the charge is full and it is not active (`hyper.c`, `obs_v5` self 4); active,
   it gives the brawler's speed, damage and shield buffs for 5 s, and its skills are the hypercharged ones: the game's own
   skill code runs the tables' `Overcharged*` columns (the client build's "is hypercharged" check always said no), and the
