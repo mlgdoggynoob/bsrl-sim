@@ -203,6 +203,13 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   head left on water after his legs are gone, and a teammate respawning on a split head's water spot are moved to the
   nearest walkable spot (100 u rings up to 900 u [?], then the nearest walkable tile of the map). `python -m charge_check`
   scene 6 and its storm battle.
+- `hyper_unmodelled.patch` (issues #65, #66, #67, a diff on top of `split_extras.patch`): the hypercharges and supers the host
+  could not model (Gray's portals, Kit's attach, Buzz's grapple, Mr. P's porters, Sirius's shadows, TravelType 8 circling,
+  Grom's diagonal walls, Pam, Cordelius, Lou, Amber, Moe, Jae-Yong, Carl's trail) and Squeak's blomb (`superfix_items.c`).
+  `NB_SPAWNFIX_ANGLE=0` and `NB_AUTOCHARGE=0` turn off the angle offset and the auto charge. `python -m super_audit --attack`.
+- `no_trains.patch` (a diff on top of `hyper_unmodelled.patch`): `NB_NO_TRAINS=1` skips libg's creation of Survival651's
+  trains (`env.c` `no_trains`, the call at 0xc2f570). They are invisible to the observation but stop shots; off by default,
+  which keeps them.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
