@@ -1,4 +1,4 @@
-# Survival651's trains off behind a flag, a diff on top of the other patches (after hyper_unmodelled.patch). Paths relative
+# Survival651's trains off behind a flag, a diff on top of the other patches (after gadgets_batch3.patch). Paths relative
 # to engine/. env.c: NB_NO_TRAINS=1 replaces libg's train creation call (0xc2f570 bl 0xc2fc14) with a no-op; off by default.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index bcae502..92439a3 100644

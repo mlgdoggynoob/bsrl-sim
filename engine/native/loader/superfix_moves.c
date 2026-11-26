@@ -301,7 +301,7 @@ typedef int (*rad_t)(void *);
 static int char_radius(uint8_t *c) { void **vt = *(void ***)c; return ((rad_t)vt[88 / 8])(c); }   /* vtable +88: CollisionRadius (0xb6d974) */
 typedef struct { uint8_t *ch, *tgt; int id, tick; } GrHit;
 static GrHit g_grh[8]; static int g_ngrh;
-typedef struct { uint8_t *ch; int id, x0, y0, start; } GrJob;
+typedef struct { uint8_t *ch; int id, x0, y0, start, nostun; } GrJob;
 static GrJob g_gr[16]; static int g_ngr;
 static long g_gr_char, g_gr_wall, g_gr_land, g_gr_stun, g_gr_reload;
 static void grapple_hit(uint64_t *ctx) {   /* enter 0xb5c180(owner, hit character): the hit of a UniqueProperty 5 projectile */
@@ -318,7 +318,8 @@ static int is_oc_proj(uint8_t *ch, void *d) {   /* d is in the brawler's super's
     return 0;
 }
 int env_dash_start(uint8_t *ch, int tx, int ty, int speed);   /* env.c: the native charge mover, no contact job */
-void superfix_cc_stun(uint8_t *ch, int ticks, const char *why);
+int superfix_cc_stun(uint8_t *ch, int ticks, const char *why);
+int gadget_buoy_nostun(uint8_t *ch) __attribute__((weak));   /* gadget.c: Buzz's Reserve Buoy, "his next Super does not stun" */
 static int walkable_now(void *sim, int x, int y);
 /* spawnfix.c's projectile end (0xb75998): a grapple that stopped (reason 3: on a character it does not pierce; 2 / 4: the
  * other stops of the projectile tick 0xb70650..0xb70668, the wall in a live trace: Buzz's torpedo at the wall tile) pulls
@@ -327,8 +328,11 @@ static int walkable_now(void *sim, int x, int y);
  * hits a wall": player +0x54 = max +0x58) */
 void superfix_grapple_end(uint8_t *pr, int reason) {
     uint8_t *d = pr ? PTR(pr, 0x10) : NULL, *ch = pr ? PTR(pr, 0xe0) : NULL;
-    if (!mode() || !pr || reason < 2 || reason > 4 || I32(pr, 0x90) != 0) return;   /* 1: range end (a miss: no pull) */
+    if (!mode() || !pr || I32(pr, 0x90) != 0) return;
     if (!d || I32(d, 0x234) != 5 || !ch || VTOF(ch) != VT_CHAR || I32(ch, 0x3c4) <= 0) return;   /* ProjectileData UniqueProperty (getter 0xafab98) */
+    static uint8_t *nlast; static int nlast_start, nostun;   /* issue #46: the torpedo after a Reserve Buoy, hit or miss */
+    if (pr != nlast || I32(pr, 0x28) != nlast_start) { nlast = pr; nlast_start = I32(pr, 0x28); nostun = gadget_buoy_nostun && gadget_buoy_nostun(ch); }
+    if (reason < 2 || reason > 4) return;   /* 1: range end (a miss: no pull) */
     static uint8_t *last; static int last_start;
     if (pr == last && I32(pr, 0x28) == last_start) return;
     last = pr; last_start = I32(pr, 0x28);
@@ -360,7 +364,7 @@ void superfix_grapple_end(uint8_t *pr, int reason) {
     if (len > 0) {
         for (k = 0; k < g_ngr && g_gr[k].ch != ch; k++) {}
         if (k == g_ngr && g_ngr < 16) g_ngr++;
-        if (k < 16) g_gr[k] = (GrJob){ch, I32(ch, 8), x0, y0, now};
+        if (k < 16) g_gr[k] = (GrJob){ch, I32(ch, 8), x0, y0, now, nostun};
     }
     if (g_superfix_dbg) LOG("[superfix] grapple char %d: %s at %d,%d, pull %d u%s\n", I32(ch, 8), t ? "character" : "wall", tx, ty, len,
                             !t && is_oc_proj(ch, d) ? ", super given back" : "");
@@ -373,13 +377,14 @@ static int grapple_tick(GrJob *j) {   /* 0 = job over: the pull ended -> the lan
     double dist = hypot(x - j->x0, y - j->y0); if (dist > GR_FULL) dist = GR_FULL;
     int ticks = GR_STUN_MIN + (int)((GR_STUN_MAX - GR_STUN_MIN) * dist / GR_FULL);
     void **v = objs(sim, &n);
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n && !j->nostun; i++) {   /* nostun: the first super after a Reserve Buoy (gadget.c) */
         uint8_t *c = v[i]; if (!enemy(ch, c) || I32(c, 0x84) == I32(ch, 0x84)) continue;
         long dx = I32(c, 0x38) - x, dy = I32(c, 0x3c) - y; if (dx * dx + dy * dy > (long)GR_STUN_R * GR_STUN_R) continue;
         superfix_cc_stun(c, ticks, "grapple landing"); hits++;
     }
     g_gr_land++; g_gr_stun += hits;
-    if (g_superfix_dbg) LOG("[superfix] grapple landing char %d at %d,%d after %.0f u: %d stunned for %d ticks\n", j->id, x, y, dist, hits, ticks);
+    if (g_superfix_dbg) LOG("[superfix] grapple landing char %d at %d,%d after %.0f u: %d stunned for %d ticks%s\n", j->id, x, y, dist, hits, ticks,
+                            j->nostun ? " (Reserve Buoy: no stun)" : "");
     return 0;
 }
 

@@ -13,8 +13,10 @@ CustomObject projectile / area / item rows it uses.
             set for the kind lacks, or says it deals damage while the host only heals. The host's set comes from the kind
             plus the data it spawns: area -> its area_effects_logic Type / Damage / PushbackStrength / StunTicks; shot,
             auto_aim, repeat -> damage plus the projectile's PushbackStrength / StunLengthMS / HealOwnPercent / ConsumableShield
-            (repeat with TargetFriends, Barley's potion: heal in place of damage); heal_now -> heal; super -> super charge;
-            item -> the item (Gale's WindWall also push: gadget.c's repel zone, REPEL).
+            (repeat with TargetFriends, Barley's potion: heal in place of damage); heal_now -> heal; super -> super charge
+            (Buzz's buoy also stun: the text is about his super's stun); item -> the item (Gale's WindWall also push:
+            gadget.c's repel zone, REPEL); next / status (issue #46: libg's own next-attack branch, the statuses in
+            superfix's store) -> status; shield -> shield.
             Status effects and items run the game's own data ("status" / "item" cover any text effect: not compared).
     aim     the text says closest / nearest / automatic target (AIM_WORDS) and the kind fires along the policy's aim
             (shot, repeat, and skill_area with an AimableArea skill). auto_aim and the repeat_shot rows with SubType 1 (one shot
@@ -111,6 +113,11 @@ def host_effects(kind, area=None, projs=(), skill=None, acc=None):
     if kind == "item" and (acc or {}).get("Name") in REPEL: ex.add("push")
     if kind == "heal_now": ex.add("heal")
     if kind == "super": ex.add("super")
+    if kind == "super" and (acc or {}).get("Type") == "ulti_change": ex.add("stun")   # Buzz's buoy: the text is about his super's stun,
+                                                                                     # which the host's grapple runs (and skips once)
+    if kind in ("next", "status"): ex.add("status")   # gadget.c NEXT (libg's own SubType branch on the row's data, the row's
+                                                     # StatusEffectEnemy) and gadget_self.c's statuses: the game's own data (issue #46)
+    if kind == "shield": ex.add("shield")             # gadget_self.c SHIELD: the row's ShieldPercent for ShieldTicks
     return ex
 
 

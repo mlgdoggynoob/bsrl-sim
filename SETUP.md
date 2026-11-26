@@ -207,7 +207,27 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   could not model (Gray's portals, Kit's attach, Buzz's grapple, Mr. P's porters, Sirius's shadows, TravelType 8 circling,
   Grom's diagonal walls, Pam, Cordelius, Lou, Amber, Moe, Jae-Yong, Carl's trail) and Squeak's blomb (`superfix_items.c`).
   `NB_SPAWNFIX_ANGLE=0` and `NB_AUTOCHARGE=0` turn off the angle offset and the auto charge. `python -m super_audit --attack`.
-- `no_trains.patch` (a diff on top of `hyper_unmodelled.patch`): `NB_NO_TRAINS=1` skips libg's creation of Survival651's
+- `gadgets_batch3.patch` (issue #46, a diff on top of `hyper_unmodelled.patch`, the whole chain above): `gadget.c`'s NEXT
+  kind (published STATUS), the next-main-attack gadgets (`next_attack_change`): the accessory getter 0xb422c8 (a stub)
+  replaced so libg arms the modifier and runs its own SubType branch, the "modifier used" stub 0xb27cfc hooked to clear it,
+  0xb78c28 hooked for SubType 2 / 33's enemy status, and `gadget_root_post` (called from `env.c` my_root) for the hit
+  fields the client leaves to the server (sleep, Pam's ammo sink). A readiness test per kind (no fire while a modifier is
+  pending), the skill gadgets' cooldown from the skill's BonusSkillCooldown, six more masked rows (Squeak's next-attack
+  range is not one of them: it works since `superfix_items.c` makes his blobs blow). `superfix_cc.c`: `superfix_cc_stun`
+  returns whether the stun was applied (one function for `superfix_moves.c` and `gadget.c`).
+  `NB_GAD_NEXT=0` turns the kind off. Batch 2: `gadget_self.c` (new) for the gadgets that act on the brawler itself
+  (published STATUS, Hank's and Lou's SHIELD): statuses in superfix's store (the card's row or a synthetic one), Draco's
+  Last Stand and Trunk's damage inversion (`gadget_root_pre`, from `env.c` my_root), CancelOnDamage and Surge's ammo,
+  Sandy's sleep, Tara's and Buzz's bush vision (`gadget_vision`, from `env.c`'s bush hiding); `gadget.c`: Meg's heal (in
+  her mech), Byron's ammo cost, Buster's heal area, Buzz's buoy (BUOY, SUPER; `superfix_moves.c`'s grapple asks
+  `gadget_buoy_nostun`, so the torpedo after a buoy does not stun), Kenji's percent and window the right way round;
+  `superfix_status.c`: the statuses' UltiChargeBoostPercent in `superfix_status_charge_pct`. `NB_GAD_SELF=0` turns the
+  SELF kinds off; `python -m status_check --battles 5,6,7,8`. Review fixes: the gadget table cleared when a battle is
+  built, the accessory getter only for the brawler's own NEXT gadget, readiness refreshed before each response (Byron's
+  counting his queued attacks), Shelly's and Colette's 3 shots per cooldown, Willow's dive no longer invisible, Hank's
+  slow masked, the skill Cooldown fallback read as ms. `desc_audit.py` reads the new kinds as the game's own data
+  (next, status) or a shield. Notes: `notes/issue46.md`.
+- `no_trains.patch` (a diff on top of `gadgets_batch3.patch`): `NB_NO_TRAINS=1` skips libg's creation of Survival651's
   trains (`env.c` `no_trains`, the call at 0xc2f570). They are invisible to the observation but stop shots; off by default,
   which keeps them.
 - `bolt_overdrive.patch` (a diff on top of `no_trains.patch`): Bolt's super gets the speed (+20 %, RockSpeedUpMovement) and

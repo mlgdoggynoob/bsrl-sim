@@ -1,0 +1,1165 @@
+# issue #46 gadgets batch 3 (bsrl-sim), a diff on top of the other patches (the whole chain, after hyper_unmodelled.patch).
+# gadget.c: NEXT kind (next_attack_change, type 23; published STATUS). The accessory getter 0xb422c8 (mov x0, xzr; ret in
+# this client build) is replaced by acc_of_char (player(ch) +0x190), so the skill tick arms a pending modifier (+0x3c ->
+# +0x54) and libg's attack code runs its own SubType branch; hook_enter on the "modifier used" stub 0xb27cfc clears it;
+# hook_enter on 0xb78c28 puts SubType 2 / 33's StatusEffectEnemy on the shot's hit struct (+0xd0); gadget_root_post
+# (called from env.c my_root) applies the hit struct's server-only fields (11 sleep, 10 ammo sink; 3 stun and 29 lifesteal
+# coded, their rows masked). A pending modifier is dropped after NEXT_IDLE ticks armed with no consume or NEXT_TIMEOUT
+# unarmed. GadImpl.ready: no fire while not ready (published cooldown >= 1). Skill gadgets' cooldown: the accessory's,
+# else the skill's BonusSkillCooldown (0xb0d878), else its Cooldown (ms / 50). Six more rows in g_masked. NB_GAD_NEXT=0
+# turns the kind off, NB_GAD_DBG=1 logs it. env.c: the gadget_root_post call, gadget_install after gear_install.
+# superfix_cc.c: superfix_cc_stun returns whether the stun was applied (one definition for superfix_moves.c and gadget.c).
+# Batch 2: gadget_self.c (new): the SELF kinds (published STATUS, Hank's / Lou's SHIELD): statuses put in superfix's store
+# through 0xb35dd0 (the card's own row, or synthetic StatusEffectData for Hank / Lou / Willow / Kit / Juju / Moe /
+# Bonnie's reload / Sandy), Draco's Last Stand and Trunk's ReceiveDamageInversion (gadget_root_pre, called from env.c
+# my_root before libg's root), CancelOnDamage of the gadget statuses and Surge's 2 ammo (gself_root_post), Sandy's sleep
+# (LoseControl, full heal at the wake, woken by damage), Tara's / Buzz's bush vision (gadget_vision, read by env.c's bush
+# hiding). gadget.c: HEAL SubType 4 (Meg, only in her mech) and ConsumesAmmo (Byron, 0x123f7c0 through 0xcf6a08), AREA
+# heal SubType 6 (Buster), BUOY (Buzz's Reserve Buoy, SUPER), Kenji's percent / window swapped (CustomValue2 % over
+# CustomValue1 ticks), the SELF entries. env.c: gadget_root_pre / gadget_vision weak calls, env_ground (bush / water).
+# superfix_status.c: superfix_status_charge_pct adds the statuses' UltiChargeBoostPercent (+0xc4); superfix_status_live.
+# build.sh: gadget_self.c. NB_GAD_SELF=0 turns the SELF kinds off. superfix_moves.c: the grapple asks gadget_buoy_nostun
+# (gadget.c) when a torpedo ends; the first one after a Reserve Buoy lands without the stun.
+# Review fixes: gadget_clear also at env.c env_on_build (the old battle's accessories are freed before its intro ticks run
+# gadget_tick); acc_of_char only for the player's own brawler with a NEXT gadget (else NULL, as the stub); a NEXT modifier
+# dropped when its brawler dies or changes; next_hit_tick (-1 at reset) only from a real consume; Sandy's wake lowers the
+# stun ticks by the sleep's own only; the NEXT counters zeroed per battle; gadget_ready_refresh before gadget_publish (the
+# readiness of the response's state); gadget_root_pre after env.c's just_popped / respawn checks, not for storm damage;
+# skill gadgets with MaxCharge > 1 (Shelly, Colette) fire that many times per cooldown; Willow's dive without
+# invisibility; FishTank_Slow masked; the skill Cooldown fallback read as ms; Byron's readiness counts his attacks still
+# queued for the next step start (env.c env_pending_attacks). Notes: notes/issue46.md. Paths relative to engine/.
+diff --git a/native/loader/build.sh b/native/loader/build.sh
+index d09f608..645b6cf 100755
+--- a/native/loader/build.sh
++++ b/native/loader/build.sh
+@@ -10,5 +10,5 @@
+ set -e
+ cd "$(dirname "$0")"
+ aarch64-linux-gnu-gcc -O2 -g -ffp-contract=off -fno-omit-frame-pointer -static -D_GNU_SOURCE -Wall -Wno-unused-function -Wno-incompatible-pointer-types \
+-  -Wno-int-conversion -fno-strict-aliasing -Iinc -o nbhost_spawnfix2.tmp main.c elfload.c bionic_shim.c android_shim.c jni_fake.c boot.c hook.c offline.c battle_fix.c env.c prof.c encode.c heapcheck.c bar_fix.c gl_client.c gl_client_gen.c spawnfix.c superfix.c superfix_items.c superfix_moves.c superfix_status.c superfix_cc.c gadget.c hyper.c gear.c star.c showdown_mods.c trace.c thunk.S -lm -lpthread
++  -Wno-int-conversion -fno-strict-aliasing -Iinc -o nbhost_spawnfix2.tmp main.c elfload.c bionic_shim.c android_shim.c jni_fake.c boot.c hook.c offline.c battle_fix.c env.c prof.c encode.c heapcheck.c bar_fix.c gl_client.c gl_client_gen.c spawnfix.c superfix.c superfix_items.c superfix_moves.c superfix_status.c superfix_cc.c gadget.c gadget_self.c hyper.c gear.c star.c showdown_mods.c trace.c thunk.S -lm -lpthread
+ mv -f nbhost_spawnfix2.tmp nbhost_spawnfix2 && echo "built native/loader/nbhost_spawnfix2"
+diff --git a/native/loader/env.c b/native/loader/env.c
+index bcae502..65807d8 100644
+--- a/native/loader/env.c
++++ b/native/loader/env.c
+@@ -213,6 +213,9 @@ static int taunt_target(uint8_t *ch, int *tx, int *ty) {
+ }
+ void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) __attribute__((weak));   /* superfix_cc.c: projectile stuns */
+ void spawnfix_proj_hit(void *src, void *victim) __attribute__((weak));   /* spawnfix.c: chain of a reason-3 hit */
++void gadget_root_post(uint8_t *victim, uint8_t *attacker, uint8_t *src, int removed) __attribute__((weak));   /* gadget.c: next-attack hit fields */
++int gadget_root_pre(uint8_t *victim, uint8_t *attacker, int *dmg, int *a3) __attribute__((weak));   /* gadget_self.c: last stand, inversion */
++int gadget_vision(int li, int x, int y) __attribute__((weak));   /* gadget_self.c: Tara's / Buzz's bush vision */
+ void hyper_install(void); void *hyper_super_data(int i, uint8_t *ch, void *sd); void hyper_unswap(int i, uint8_t *ch);
+ void hyper_char_changed(uint8_t *old, uint8_t *nc);
+ static void *owner_player(void *sim, void *c, int *idx) {   /* the player whose current brawler c is (NULL: none) */
+@@ -504,8 +507,15 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
+     int vchar = victim && VTOF(victim) == VT_CHAR, before = vchar ? I32(victim, 0x3c4) : 0;
+     if (vchar && mode3 && just_popped(victim)) { E.charge_level = saved_level; return 0; }
+     int ow = vchar && mode3 && resp_on() && E.sim ? brawler_owner(E.sim, victim) : -1;
++    /* gadget round (issue #46): Trunk's inversion heals the hit, Draco's Last Stand clamps it to hp - 1. Not for a hit the
++     * game drops anyway (Meg just ejected, a respawning brawler) and not for the storm's damage [?] (the cards speak of
++     * damage taken from attacks; a gas tick would spend Trunk's inversion) */
++    if (dmg > 0 && vchar && mode3 && gadget_root_pre && !waiting(ow) && E.in_own_call != 1 && gadget_root_pre(victim, attacker, &dmg, &a3)) {
++        E.charge_level = saved_level; return 0;
++    }
+     uint64_t r = o_root(victim, a1, dmg, a3, a4, attacker, src, a7, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9);
+     if (waiting(ow)) { I32(victim, 0x3c4) = before; E.charge_level = saved_level; return r; }   /* respawning: invulnerable */
++    if (vchar && mode3 && gadget_root_post) gadget_root_post(victim, attacker, src, before - I32(victim, 0x3c4));   /* gadget round */
+     int pop = vchar && mode3 && mech_pop(E.sim, victim, before);   /* the mech's HP is gone, Meg stands in its place */
+     if (vchar && mode3) record_event(victim, attacker, pop ? before + 1 : before, pop ? 1 : I32(victim, 0x3c4));   /* no kill */
+     if (stalk_heal > 0 && vchar) stalk_heal_after(attacker, stalk_heal, before - I32(victim, 0x3c4));
+@@ -1804,7 +1814,7 @@ static void fire_input(void *sim, int pidx, uint8_t *ch, int super, double deg,
+  * 1000 u (like a relative attack input). NOTE: 0xb27c58 is a bare ret in this libg: the input reaches the game, nothing happens.
+  * gadget round: a gadget with a host implementation (gadget.c) is activated there instead. */
+ int gadget_use(void *sim, int i, uint8_t *ch, double deg, double dist, int tick); void gadget_publish(NbeResp *r, int tick);
+-void gadget_clear(void); void gadget_reset_player(int i, void *acc); void gadget_tick(void *sim, int tick);
++void gadget_clear(void); void gadget_reset_player(int i, void *acc); void gadget_tick(void *sim, int tick); void gadget_ready_refresh(void *sim);
+ void *env_obj_by_id(void *sim, int id) { return obj_by_id(sim, id); }   /* for gadget.c */
+ /* gadget.c's dash: the native charge mover (as native_charge_start) with charge type 1, but no active-skill slot (+0x6d8 = 0)
+  * and no env contact job, so a brawler whose super is a charge (Bull, El Primo) does not run that super's hits while it
+@@ -1837,6 +1847,13 @@ static void skill_idx_input(void *sim, int pidx, uint8_t *ch, int idx, double de
+         I32(sd, 0x20), type, kind, cr, ab, I32(sk, 0x10), I32(sk, 0x18), I32(sk, 0x30));
+     apply_input(sim, pidx, kind, ab ? tx : tx - X, ab ? ty : ty - Y, sd);
+ }
++/* gadget round (issue #46): player i's main attacks still queued for the next step start (g_fire_delay), which spend
++ * ammo before that step's gadget input: gadget.c's readiness of an ammo-cost gadget (Byron) counts them */
++int env_pending_attacks(int i) {
++    int n = 0; if (i < 0 || i >= NBE_MAXP) return 0;
++    for (int k = 0; k < E.pf[i].n; k++) n += !E.pf[i].super[k];
++    return n;
++}
+ static void apply_pending_fires(void *sim, int i, uint8_t *ch) {   /* origin = the shooter's sim position now */
+     for (int k = 0; k < E.pf[i].n; k++) fire_input_now(sim, i, ch, E.pf[i].super[k], E.pf[i].deg[k], E.pf[i].dist[k], I32(ch, 0x38), I32(ch, 0x3c));
+     E.pf[i].n = 0;
+@@ -2116,6 +2133,7 @@ static long g_streams_freed; int g_free_snap_stream = 1;   /* --keep-snap-stream
+ static void apply_teams(void *sim);
+ void env_on_build(void *battle, void *sim) {   /* a new battle was built: forget the old one */
+     g_lead_n = 0; g_lead_skip = 0;
++    gadget_clear();   /* gadget round: the old battle's accessories are freed; its table must not reach the intro ticks */
+     int gen = E.gen + 1, hr = E.have_reset, seed = E.reset_seed, gas = E.gas_on, act = E.act_tick, sa = E.seed_applied, rr = E.reset_req;
+     int ga_ok = E.gas_args_ok, a4 = E.ga4, a5 = E.ga5, a7 = E.ga7, s0 = E.gs0;
+     NbeCmd cur = E.cur;
+@@ -2173,6 +2191,11 @@ static int bush_at(void *sim, int x, int y) {   /* gear round: a bush tile (300
+     int tx = x / 300, ty = y / 300;
+     return g_emap.bush && x >= 0 && y >= 0 && tx < g_emap.W && ty < g_emap.H && g_emap.bush[ty * g_emap.W + tx];
+ }
++int env_ground(void *sim, int x, int y) {   /* gadget round (issue #46, Juju): 1 bush, 2 water, 0 other ground at world (x, y) */
++    if (bush_at(sim, x, y)) return 1;
++    int tx = x / 300, ty = y / 300;
++    return g_emap.water && x >= 0 && y >= 0 && tx < g_emap.W && ty < g_emap.H && g_emap.water[ty * g_emap.W + tx] ? 2 : 0;
++}
+ /* Sim-only mode has no client, so state2's 'client' flags (presence in the client's object list = what the viewer sees;
+  * the encoder's enemy 'visible' feature r[19]) would all be -1 (= not visible: bc3p then ranked 6.84 on the PC vs 5.85 on
+  * the phone). Emulation fitted to the phone (T6, runs/t6/_vis_fit.py: 10,632 enemy rows of 7 phone episodes, 98.7 %
+@@ -2199,7 +2222,8 @@ static void emulate_client_flags(void *sim, int32_t *a) {
+         int32_t *r = ch + k * 23; int v = INVIEW(r[3], r[4]);
+         if (v && r[2] >= 0 && r[2] != li && r[18] == 0 && r[1] != 16000120) {   /* enemy brawler (or its summon): bush hiding */
+             int tx = r[3] / 300, ty = r[4] / 300; if (tx >= W) tx = W - 1; if (ty >= Hh) ty = Hh - 1;
+-            if (tx >= 0 && ty >= 0 && g_emap.bush && g_emap.bush[ty * W + tx] && hypot(r[3] - mx, r[4] - my) > 900) v = 0;
++            if (tx >= 0 && ty >= 0 && g_emap.bush && g_emap.bush[ty * W + tx] && hypot(r[3] - mx, r[4] - my) > 900 &&
++                !(gadget_vision && gadget_vision(li, r[3], r[4]))) v = 0;   /* gadget round: Tara's / Buzz's vision */
+         }
+         if (me == r) v = 1;
+         r[19] = v;
+@@ -2274,7 +2298,7 @@ static void publish(void *sim, uint32_t seq, int status, const char *err) {
+     R->steps_in_frame = E.steps_in_frame; R->frame = E.frame;
+     fill_players(sim);
+     if (E.cur.type == NBE_CMD_RESET) div_publish(sim);   /* diversity round (before gadget_publish: it sets up the gadgets) */
+-    gadget_publish(R, I32(sim, 0x10));                   /* gadget round */
++    gadget_ready_refresh(sim); gadget_publish(R, I32(sim, 0x10));   /* gadget round (readiness on this response's state) */
+     { int np; void **ps = players(sim, &np); hyper_publish(R, ps, np); }   /* hypercharge round */
+     gear_publish(R);                                                        /* gear round */
+     R->njumps = 0; for (int i = 0; i < E.njobs && i < NBE_MAXP; i++) { int *j = R->jumps[R->njumps++]; j[0] = E.jobs[i].id; j[1] = E.jobs[i].t; j[2] = E.jobs[i].T; j[3] = E.jobs[i].x1; j[4] = E.jobs[i].y1; }
+@@ -2952,6 +2976,7 @@ void env_install(void) {
+     o_dispatch = hook_replace(g_libg, 0xb47084, my_dispatch);
+     hyper_install();   /* hypercharge round: Character::isOvercharged (hyper.c) */
+     gear_install();    /* gear round (issue #51): NB_GEARS */
++    { extern void gadget_install(void); gadget_install(); }   /* gadget round (issue #46): the next-attack gadgets' hooks */
+     if (!g_env_simonly) {
+         /* client-mode crash fix (T4/T5): 0xdc1ec0 walks a slot table of weak pointers (x19+0xd0); when lock() 0x11a51c0 fails
+          * for an entry that was not yet marked expired (freed concurrently, seen during a reset's loading screen: SIGSEGV
+diff --git a/native/loader/gadget.c b/native/loader/gadget.c
+index f697b69..4216e0e 100644
+--- a/native/loader/gadget.c
++++ b/native/loader/gadget.c
+@@ -17,17 +17,20 @@
+  *         CustomValue1 units (600..1300) along the aim at CustomValue2 u/s (2000..3500) with the native charge mover
+  *         (env.c env_dash_start). Movement only: a row's extras (Maisie's damage area, Skater's taunt, CustomValue3/4) are
+  *         not applied, and the "requires ..." conditions (MissingTargetText) are not checked.
+- *   HEAL  type 8, SubType 2 (Bibi's Vitamin Booster, Byron's Shot in the Arm): heals CustomValue1 % of max hp per second
+- *         (the card texts say "per second for N seconds") for ActiveTicks ticks, at most up to max hp, ended by the
+- *         brawler's death. Byron's ammo cost (ConsumesAmmo) is not applied. The other heal SubTypes need state the host
+- *         does not have (Ash's rage, Meg's mech, Sandy's sleep, area heals) and stay unimplemented.
++ *   HEAL  type 8, SubType 2 (Bibi's Vitamin Booster, Byron's Shot in the Arm) and 4 (Meg's, only in her mech: characters.csv
++ *         UniqueProperty 2 through 0xab3d04, as env.c mech_pop): heals CustomValue1 % of max hp per second (the card texts
++ *         say "per second for N seconds") for ActiveTicks ticks, at most up to max hp, ended by the brawler's death or a
++ *         change of character (Meg's eject). ConsumesAmmo (Byron; column word 0x123f7c0, read with the generic bool getter
++ *         0xcf6a08) costs one ammo bar and needs one. SubType 6 (Buster) is an AREA, 1 (Sandy) a SELF sleep; 3 (Ash's
++ *         rage) is not doable.
+  *   AREA  empty Type (+0x24 == 0) with an AreaEffect (AccessoryData +0x70, resolved by createReferences at 0xa92568): the
+  *         gadgets that only drop their area at the brawler (Barley's Slow, Poco's Regen and Cleanse, Tick's Explosion,
+- *         Shade's Spooky, Trunk's Area). Left out: Rosa's GrowBush (a WallSpawn area: spawnfix.c's wall ring would put
+- *         walls where she grows bushes). Meeple's RageQuit (HpBasedStun) stuns and knocks back through superfix_cc.c (issues #19, #55);
+- *         the spin_shoot rows without a projectile (Fang's KickerDude_Sweep, a LineOfSight stun area, and Painter_Push) are
+- *         AREA too (their spin animation is the client's). Published
+- *         as kind SPAWN; `python -m super_audit --gadget` checks each one's effects. The area is spawned
++ *         Shade's Spooky, Trunk's Area; issue #46: Buster's heal, heal SubType 6 with ShieldTankHeal, healing once through
++ *         superfix's Heal area path; its per-ally scaling, CustomValue 3, is not modelled: partial). Left out: Rosa's
++ *         GrowBush (a WallSpawn area: spawnfix.c's wall ring would put walls where she grows bushes). Meeple's RageQuit
++ *         (HpBasedStun) stuns and knocks back through superfix_cc.c (issues #19, #55); the spin_shoot rows without a
++ *         projectile (Fang's KickerDude_Sweep, a LineOfSight stun area, and Painter_Push) are AREA too (their spin animation
++ *         is the client's). Published as kind SPAWN; `python -m super_audit --gadget` checks each one's effects. The area is spawned
+  *         at the brawler with the shipped helper 0xb35c40 (create 0xb2aefc, world add 0xb63198, start 0xb29494, the chain
+  *         superfix.c's spawnAreaEffect uses), kind 2 and no extra damage, as at every shipped caller: the area's damage,
+  *         heal, status and wall spawn then come from libg and the earlier rounds (superfix, spawnfix). ActivationDelay
+@@ -54,15 +57,62 @@
+  *         through the item factory 0xb55684, with the main attack's Damage x CustomValue1 % as its damage; Gale's WindWall
+  *         also gets env's repel zone (env_repel_zone), which this libg lacks.
+  *   SUPER charge_ulti (R-T; published SUPER): the super charge to CustomValue1 % of its maximum.
+- *   HEAL_NOW  heal_attached_and_self (Kit) and heal_damage_taken (Kenji) (HEAL): an instant heal through libg's heal 0xb41554.
++ *   BUOY  ulti_change SubType 1 with CustomValue5 (Buzz's Reserve Buoy; SUPER): the super filled, ready only while it is not
++ *         full. The card's catch, a next torpedo that does not stun: the host's grapple (superfix_moves.c, Buzz's pull and
++ *         landing stun, a server-side re-implementation) asks gadget_buoy_nostun at the landing, which answers yes once per
++ *         buoy use for the first landing after it (and forgets it when Buzz dies or changes character).
++ *   HEAL_NOW  heal_attached_and_self (Kit) and heal_damage_taken (Kenji: CustomValue2 % of the damage taken in the last
++ *         CustomValue1 ticks, the percent as the client's preview 0xb27c5c reads it) (HEAL): an instant heal through libg's
++ *         heal 0xb41554.
+  *   REPEAT  repeat_shot and spin_shoot rows with a CustomObject projectile other than Piper's Auto Aimer (published PROJECTILE;
+  *         issue #54 redo from the game data, see the REPEAT / SPIN block): Dynamike (spin), Gene, Mico, Barley's potion
+  *         (repeat). Darryl, Fang's popcorn, Bea and Amber run the same code but stay in g_masked (see there: their
+  *         projectiles need more than a plain spawn).
+- * Every other gadget publishes kind NONE (not usable): next_attack_change, summons / turrets, status buffs, shields, Nori's
+- * fish heal (needs his fish count), the Charge skills (Brock's jump, Max's dash, ...), ... Each player gets GAD_USES uses per battle (unlimited by default, as in the live game since February 2025) and
+- * the accessory's cooldown between uses. The accessory's Type parses to the int at +0x24 (0xb2731c:
+- * spin_shoot 3, spawn 9, repeat_shot 13, heal_attached_and_self 50, charge_ulti 56, heal_damage_taken 58).
++ *   NEXT  next_attack_change (type 23, issue #46; published STATUS): the modifier on the brawler's next main attack. The
++ *         host sets the accessory pending (+0x3c), hands libg the accessory through the getter 0xb422c8 (a stub in this
++ *         build, replaced by acc_of_char) so the skill tick arms it (+0x54) and the attack code runs its own SubType
++ *         branch, clears it when libg calls the "modifier used" stub 0xb27cfc (hook_enter), and adds what the client code
++ *         leaves to the server: SubType 2 / 33's enemy status on the shot's hit struct (0xb78c28 hook) and the hit
++ *         struct's server-only fields after the damage (gadget_root_post from env.c: 11 sleep, 10 Pam's ammo sink; 3 stun
++ *         and 29 lifesteal are coded but their rows are masked). Working live (super_audit --gadget): Mandy Slow, Finx,
++ *         Pearl Poison and Healing, Cordelius, Janet, Pam, Doug x2, Sandy, Ollie, Byron, Otis, Belle, Piper, Squeak's
++ *         longer throw (16 rows; Squeak's showed no damage until superfix_items.c made his blobs blow; Hank's slow, 32, is
++ *         masked: its status never reaches a target).
++ *         Not done: SubTypes 5, 6, 8, 13, 17, 18, 19, 25, 27, 28, 30 and Grom's burst (2 without a projectile / range): their
++ *         effect has no client code. A pending modifier with no attack is dropped after NEXT_TIMEOUT, and at once when the
++ *         brawler dies or changes character [?]. acc_of_char gives the accessory only for the player's own brawler with
++ *         a NEXT gadget (summons and the other types get NULL, as the stub gave).
++ *   SELF  the gadgets that act on the brawler itself (issue #46, gadget_self.c; published STATUS, Hank's and Lou's SHIELD):
++ *         statuses in superfix's store (Jacky, Bonnie, Hank, Lou, Willow, Juju, Kit's box, Surge x2, Trunk, Moe), Draco's
++ *         Last Stand, Sandy's sleep, Tara's and Buzz's bush vision. Its header lists what each one does and the guesses.
++ * Readiness: a kind may have a ready() test (NEXT: not while a modifier is pending; HEAL: Meg out of her mech, Byron without
++ * ammo; BUOY: the super full; SELF: an effect still running, a form gate); while it fails the gadget publishes a
++ * cooldown of at least 1 and a fire is refused without spending a use. Cooldown: the accessory's +0xc4, else the Skill's
++ * BonusSkillCooldown (getter 0xb0d878, the gadget value of the skill), else its Cooldown (ms / 50). A skill gadget whose
++ * skill has MaxCharge > 1 (Shelly's Clay Pigeons, Colette's lifesteal shot: 3, "can be fired 3 times before cooldown")
++ * fires that many times per cooldown, the skill's own Cooldown (ms) apart [?]; the cooldown starts after the last one.
++ * Its UseWeaponAmmo (a shot costing weapon ammo [?]) is not applied.
++ * Every other gadget publishes kind NONE (not usable): summons / turrets, the Charge skills (Brock's jump, Max's dash, ...),
++ * weapon / super swaps, the masked rows (g_masked), the not-doable cards below, ... Each player gets GAD_USES uses per
++ * battle (unlimited by default, as in the live game since February 2025) and the accessory's cooldown between uses.
++ * The accessory's Type parses to the int at +0x24 (0xb2731c: dash 2, spin_shoot 3, heal 8, spawn 9, vision 12,
++ * repeat_shot 13, next_attack_change 23, ulti_change 31, movement_speed 37, dive 46, invisible 49, heal_attached_and_self
++ * 50, give_buff_to_self 54, charge_ulti 56, heal_damage_taken 58, voodoo_self_buff 60, give_status_effect 63;
++ * gadget_self.c's T_* are the same enum).
++ * The table is cleared when a new battle is built (env.c env_on_build, before its intro ticks: the old accessories are
++ * freed with the old battle) and set up again at the RESET response (gadget_reset_player).
++ * Not doable for now (state or code this host does not have; kind NONE): Ash Chill Pill and Rotten Banana (rage meter not
++ * modelled), Gus Soul Switcher (spirit storage not found), Nori Sushi Snack (fish count not in the host), Clancy Snappy
++ * Shooting (token counter), Kenji Dashi Dash (server attack chain), Alli Cold-Blooded (bloodhunt component state), Glowy
++ * More Lumens (tether model), Melodie Perfect Pitch and Interlude (orbiting-note fields), Stu Breakthrough (wall-breaking
++ * charge plus debris; CustomValues unknown), Chuck Ghost Train (his two-phase super never runs in the host), Lou Cryo Syrup
++ * (no freeze meter when batch 2 was done; superfix_cc.c has one now: for a later batch), Sirius Master of Shadows (shadows
++ * not spawned then; superfix_moves.c spawns them now: for a later batch), Eve Motherly Love (no egg-hatch hook), Jessie Recoil
++ * Spring (turret attack-timer field not found), Lumi Grim and Frostbitten (no slippery), Amber Fire Starters
++ * (PetrolDistribution and its ignition are server-only), Penny Trusty Spyglass (turret attack rules), Draco Upper Cut (no
++ * knock-up state; consumed by MountUp at 0xba02b4), Grom Radio Check (burst not in the client code): 22 cards. Not done
++ * yet (guesses for later): Edgar's consumable shield, Bolt's speed shield, Nani's Return to Sender, Chester's Candy Beans,
++ * Kit's still-standing super charge.
+  *
+  * To add a kind: write classify (accessory -> 1 if this implementation handles it) and fire (the effect at the brawler, with
+  * libg's own functions where they exist), add the entry to g_impl, then run `python -m gadget_check` (bsrl-sim) on the built
+@@ -77,10 +127,18 @@
+ #define PTR(p, o) (*(void *volatile *)((uint8_t *)(p) + (o)))
+ #define U8(p, o) (*(volatile uint8_t *)((uint8_t *)(p) + (o)))
+ #define B(off) ((uint8_t *)g_libg->base + (off))
++#define VTOF(o) ((int)((uint8_t *)PTR(o, 0) - g_libg->base))
++enum { VT_CHAR = 0x1209020, VT_ITEM = 0x1209240, VT_ITEM2 = 0x1208ca8, VT_PROJ = 0x1209318 };   /* env.c's vtables */
+ extern Module *g_libg;
++void *hook_replace(Module *m, uint64_t off, void *repl);
++void hook_enter(Module *m, uint64_t off, void (*fn)(uint64_t *ctx));
+ extern int32_t g_div_gadget[NBE_MAXP];   /* env.c: the RESET's requested gadget cards (offline.c puts them in the configs) */
+ void *env_obj_by_id(void *sim, int id);  /* env.c */
+ int env_dash_start(uint8_t *ch, int tx, int ty, int speed);   /* env.c: -> path length, 0 = no dash */
++/* gadget_self.c: the SELF kinds (statuses, shields, sleep, last stand, vision) */
++int gself_kind(void *ad, int type); int gself_published(int sk); int gself_ready(void *sim, int pid, uint8_t *ch, void *ad, int sk);
++int gself_fire(void *sim, int pid, uint8_t *ch, void *ad, int card, int sk, int tick);
++void gself_note_tick(void *sim, int tick); void gself_clear(void); void gself_root_post(uint8_t *victim, int removed);
+ 
+ #define GAD_USES 9999     /* no per-battle limit: gadgets "no longer have charges but are now based on cooldowns" and can be
+                            * used "an unlimited amount of times in a match" (Supercell release notes, Feb 2025); the
+@@ -108,9 +166,18 @@ typedef struct {
+     int kind;                                                                     /* NBE_GAD_* */
+     int (*classify)(void *ad, int type);                                          /* 1 = handles this accessory */
+     int (*fire)(void *sim, Gad *g, uint8_t *ch, double deg, int tick);           /* 1 = activated (a use is spent) */
++    int (*ready)(void *sim, Gad *g, uint8_t *ch);   /* optional precondition: 0 = not usable now (published as a cooldown of
++                                                     * 1 tick, refused without spending a use); NULL = always */
+ } GadImpl;
+ struct Gad {
+     int pid, type, card, uses, cd, cd_until, used; void *ad; const GadImpl *im;
++    int charges, charge_max, charge_gap;                   /* skill gadgets with MaxCharge > 1: shots left in this cooldown
++                                                            * window, MaxCharge, ticks between two of them */
++    uint8_t *acc; int not_ready;                           /* the accessory object (player +0x190); ready() said no at the
++                                                            * last tick (gadget_tick), what gadget_publish reports */
++    int next_at, next_idle, next_hit_tick, next_ch;        /* NEXT: tick of the fire, ticks armed while the attack is over,
++                                                            * tick of the last consume (statuses of that attack's shots; -1 =
++                                                            * none), the brawler's id at the fire */
+     int hot_id, hot_start, hot_end, hot_total, hot_done;   /* heal over time: char id, ticks, hp to give, hp given */
+     int area_id, area_at;                                  /* area: char id, tick to spawn at (0 = none pending) */
+     void *area_data; int area_x, area_y, area_here;        /* the area to spawn (NULL = the accessory's AreaEffect) and where
+@@ -124,6 +191,8 @@ struct Gad {
+     double dist;                                           /* the fire's super_dist (0, 1] (0 = full range): thrown shots
+                                                             * and AimableArea areas land this share of CastingRange out */
+     int hp_prev, hp_lost[100];                        /* damage taken per tick (ring by tick % 100), for HEAL_TAKEN */
++    int buoy_ch;                                           /* BUOY: the brawler's id at the fire while its next super has not
++                                                            * landed yet (0 = none; gadget_buoy_nostun) */
+ };
+ static Gad g_gad[NBE_MAXP]; static int g_rep_log;
+ static long g_fired[8], g_areas, g_areas_lost;
+@@ -139,12 +208,30 @@ static int dash_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+ 
+ /* ---- HEAL (over time) */
+ static int heal_classify(void *ad, int type) {
+-    return type == ACC_HEAL && ad_get(ad, AD_SUBTYPE) == 2 && ad_get(ad, AD_CV1) > 0 && ad_get(ad, AD_ACTIVE_TICKS) > 0;
++    int sub = type == ACC_HEAL ? ad_get(ad, AD_SUBTYPE) : 0;
++    return (sub == 2 || sub == 4) && ad_get(ad, AD_CV1) > 0 && ad_get(ad, AD_ACTIVE_TICKS) > 0;
++}
++#define MECH 2   /* characters.csv UniqueProperty of Meg's mech (0xab3d04, as env.c mech_pop) */
++static int consumes_ammo(void *ad) {   /* ConsumesAmmo (column index word 0x123f7c0, no getter in libg: the generic bool 0xcf6a08) */
++    return ((int (*)(void *, int))B(0xcf6a08))(PTR(ad, 8), *(int32_t *)B(0x123f7c0));
++}
++static uint8_t *ammo_skill(uint8_t *ch) { uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464); return sk && n >= 1 && n <= 16 ? sk[0] : NULL; }
++/* Meg's (SubType 4) only in her mech; Byron's (ConsumesAmmo) only with one ammo bar (weapon skill instance +0x18, 1000 a bar)
++ * left after his main attacks still queued for the next step start (env_pending_attacks, a bar each): they spend it before
++ * the next step's gadget input, so a gadget published ready on the bar they take would be refused (gadget_check) */
++int env_pending_attacks(int i);   /* env.c */
++static int heal_ready(void *sim, Gad *g, uint8_t *ch) {
++    (void)sim;
++    if (!ch || I32(ch, 0x3c4) <= 0) return 0;
++    if (ad_get(g->ad, AD_SUBTYPE) == 4) { void *cd = ((void *(*)(void *))B(0xb6a384))(ch); if (!cd || ((int (*)(void *))B(0xab3d04))(cd) != MECH) return 0; }
++    if (consumes_ammo(g->ad)) { uint8_t *sk = ammo_skill(ch); if (!sk || I32(sk, 0x18) < 1000 * (1 + env_pending_attacks(g->pid))) return 0; }
++    return 1;
+ }
+ static int heal_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+-    (void)sim; (void)deg;
++    (void)deg;
+     int dur = ad_get(g->ad, AD_ACTIVE_TICKS), maxhp = I32(ch, 0x3c8);
+-    if (I32(ch, 0x3c4) <= 0 || maxhp <= 0) return 0;
++    if (I32(ch, 0x3c4) <= 0 || maxhp <= 0 || !heal_ready(sim, g, ch)) return 0;
++    if (consumes_ammo(g->ad)) I32(ammo_skill(ch), 0x18) -= 1000;
+     g->hot_id = I32(ch, 8); g->hot_start = tick; g->hot_end = tick + dur; g->hot_done = 0;
+     g->hot_total = (int)floor((double)maxhp * ad_get(g->ad, AD_CV1) / 100.0 * dur / TICKS_PER_S + 0.5);
+     return 1;
+@@ -164,8 +251,9 @@ static void heal_tick(void *sim, Gad *g, int tick) {
+ #define AREA_WALLSPAWN 15   /* AreaEffectData +0x118 type: spawnfix.c's wall ring would build walls (Sprout / Wally tiles),
+                              * not Rosa's bushes: left out until a bush ring exists */
+ static void *custom_proj(void *ad);
+-static int area_classify(void *ad, int type) {   /* issue #19 final: also spin_shoot rows with an area and no projectile */
+-    void *a = type == ACC_PLAIN || (type == ACC_SPIN && !custom_proj(ad)) ? PTR(ad, AD_AREA) : NULL;
++static int area_classify(void *ad, int type) {   /* issue #19 final: also spin_shoot rows with an area and no projectile;
++                                                 * issue #46: Buster's heal (heal SubType 6, ShieldTankHeal) */
++    void *a = type == ACC_PLAIN || (type == ACC_SPIN && !custom_proj(ad)) || (type == ACC_HEAL && ad_get(ad, AD_SUBTYPE) == 6) ? PTR(ad, AD_AREA) : NULL;
+     return a && I32(a, 0x118) != AREA_WALLSPAWN;
+ }
+ static void area_spawn(void *sim, Gad *g) {
+@@ -200,12 +288,17 @@ static uint8_t *char_of(void *sim, int i) {     /* the player's brawler (env.c p
+     return env_obj_by_id(sim, id);
+ }
+ static int sd_get(void *sd, uint64_t getter) { return ((AdGet)B(getter))(sd); }
++/* SkillData MaxCharge (skills.csv; column name at 0x1ec27c, index word 0x1241000+1068): no getter reads it on this table, so
++ * the generic int getter 0xcf6a18 (the one the SkillData getters tail-call) on the row, as consumes_ammo does */
++static int sd_max_charge(void *sd) { return ((int (*)(void *, int))B(0xcf6a18))(PTR(sd, 8), *(int32_t *)B(0x1241000 + 1068)); }
+ #define SD_DAMAGE 0xb0dc14
+ #define SD_SPREAD 0xb0dc6c
+ #define SD_NBULLETS 0xb0dd0c
+ #define SD_RANGE 0xb0d948      /* CastingRange, tiles x 100 */
+ #define SD_FOLLOW 0xc0         /* SkillData +0xc0: AreaEffectFollowType (1 "follow": the area at the brawler; set at 0xb0bafc) */
+-#define SD_COOLDOWN 0xb0d868
++#define SD_COOLDOWN 0xb0d868   /* Cooldown (skills.csv, ms as the table has it: the getter is the raw column #832) */
++#define SD_BONUS_CD 0xb0d878   /* BonusSkillCooldown (skills.csv, ms; column name at 0x1d71fb, index word 0x1241000+1208), the
++                                * getter divides by 50: ticks. The skill gadgets' real gadget cooldown (Colt 15000 ms) */
+ #define SD_PROJ 0x58           /* SkillData +0x58 ProjectileData* array, +0x64 its size (createReferences, getter 0xb0dbb0) */
+ #define SD_AREA 0xa0           /* SkillData +0xa0 AreaEffectObject (AreaEffectData*) */
+ #define SD_BEHAVIOR 0x1a8      /* BehaviorType enum (superfix_moves.c) */
+@@ -490,12 +583,43 @@ static int super_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+     return 1;
+ }
+ 
++/* ---- BUOY: ulti_change SubType 1 with CustomValue5 (Buzz's Reserve Buoy): the super charge filled (+0x54 = +0x58). Ready only
++ * while the super is not full (the row's TargetAlreadyActiveText ULTI_ALREADY_CHARGED). The weaker torpedo it brings ("his
++ * next Super does not stun"): the fire remembers the brawler (buoy_ch), and the host's grapple (superfix_moves.c, Buzz's pull
++ * and landing stun) asks gadget_buoy_nostun when his next torpedo ends, hit or miss; yes once, then the super stuns again.
++ * A new brawler object (death, character change) has another id, so the catch is dropped with it [?]. */
++#define AD_CV5 0xa93410
++enum { ACC_ULTI_CHANGE = 31 };
++static int buoy_classify(void *ad, int type) { return type == ACC_ULTI_CHANGE && ad_get(ad, AD_SUBTYPE) == 1 && ad_get(ad, AD_CV5) > 0; }
++static int buoy_ready(void *sim, Gad *g, uint8_t *ch) {
++    uint8_t *p = player_of(sim, g->pid); return p && ch && I32(ch, 0x3c4) > 0 && I32(p, 0x58) > 0 && I32(p, 0x54) < I32(p, 0x58);
++}
++static int buoy_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
++    (void)deg; (void)tick;
++    uint8_t *p = player_of(sim, g->pid); if (!buoy_ready(sim, g, ch)) return 0;
++    I32(p, 0x54) = I32(p, 0x58); g->buoy_ch = I32(ch, 8);
++    return 1;
++}
++static long g_buoy_nostun;
++/* superfix_moves.c's grapple, at the end of a torpedo of brawler ch: -> 1 = it is the first super after a buoy (no landing
++ * stun), and the buoy's catch is used up */
++int gadget_buoy_nostun(uint8_t *ch) {
++    if (!ch) return 0;
++    for (int i = 0; i < NBE_MAXP; i++)
++        if (g_gad[i].buoy_ch && g_gad[i].buoy_ch == I32(ch, 8)) { g_gad[i].buoy_ch = 0; g_buoy_nostun++; return 1; }
++    return 0;
++}
++
+ /* ---- HEAL_NOW: instant heals through libg's heal 0xb41554 (capped at max hp, the game's heal modifiers apply)
+- *   heal_attached_and_self (Kit's Cheeseburger): CustomValue1 % of max hp to Kit (the attached ally is not modelled:
+- *     the host has no attach state; the card's flat <VALUE1> = Value 70 has an unknown scale, so CV1 30 is read as %)
+- *   heal_damage_taken (Kenji): CustomValue1 % (60) of the damage taken in the last CustomValue2 ticks (50 = 2.5 s; the
+- *     host keeps the hp lost per tick for every player with this gadget, gadget_tick) */
+-static int heal_now_classify(void *ad, int type) { return (type == ACC_HEAL_SELF || type == ACC_HEAL_TAKEN) && ad_get(ad, AD_CV1) > 0; }
++ *   heal_attached_and_self (Kit's Cheeseburger): CustomValue1 % of max hp to Kit (the attached ally is not healed: the
++ *     host's attach, superfix_moves.c, keeps no link this gadget reads yet; the card's flat <VALUE1> = Value 70 has an
++ *     unknown scale, so CV1 30 is read as %)
++ *   heal_damage_taken (Kenji): CustomValue2 % (50) of the damage taken in the last CustomValue1 ticks (60 = 3 s; the
++ *     host keeps the hp lost per tick for every player with this gadget, gadget_tick). The client's preview 0xb27c5c computes
++ *     (acc +0x88 - w1) * CustomValue2 / 100, so CustomValue2 is the percent; [?] CustomValue1 as the window in ticks */
++static int heal_now_classify(void *ad, int type) {
++    return (type == ACC_HEAL_SELF && ad_get(ad, AD_CV1) > 0) || (type == ACC_HEAL_TAKEN && ad_get(ad, AD_CV1) > 0 && ad_get(ad, AD_CV2) > 0);
++}
+ static int damage_taken(Gad *g, int tick, int ticks) {
+     int s = 0; ticks = ticks > 100 ? 100 : ticks;
+     for (int t = tick - ticks + 1; t <= tick; t++) s += g->hp_lost[((t % 100) + 100) % 100];
+@@ -505,7 +629,7 @@ static int heal_now_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+     (void)sim; (void)deg;
+     int hp = I32(ch, 0x3c4), mx = I32(ch, 0x3c8), cv1 = ad_get(g->ad, AD_CV1), amt;
+     if (hp <= 0 || mx <= 0) return 0;
+-    if (g->type == ACC_HEAL_TAKEN) amt = (int)((int64_t)damage_taken(g, tick, ad_get(g->ad, AD_CV2)) * cv1 / 100);
++    if (g->type == ACC_HEAL_TAKEN) amt = (int)((int64_t)damage_taken(g, tick, cv1) * ad_get(g->ad, AD_CV2) / 100);
+     else amt = (int)((int64_t)mx * cv1 / 100);
+     if (amt > 0 && hp < mx)   /* a use is spent even when there is nothing to heal (the game's button has no such check) */
+         ((void (*)(void *, int, int, int, void *, int, int, int, long, long))B(0xb41554))(ch, g->pid, amt, 1, NULL, 0, 0, 0, 0, 0);
+@@ -516,9 +640,190 @@ static void taken_tick(void *sim, Gad *g, int tick) {   /* hp lost this tick (a
+     g->hp_lost[k] = hp > 0 && g->hp_prev > hp ? g->hp_prev - hp : 0; g->hp_prev = hp;
+ }
+ 
++/* ---- NEXT: next_attack_change (Type 23): one modifier on the brawler's next main attack, used up by it. The client attack
++ * code applies most SubTypes itself once the accessory is armed (see the header); the host only sets it pending (+0x3c),
++ * gives libg the accessory (acc_of_char), clears it when libg consumes it, and adds the hit effects libg leaves to the
++ * server (next_root_post) and SubType 2 / 33's enemy status (on_hit_struct). */
++enum { ACC_NEXT = 23, ACC_ACTIVE = 0x3c, ACC_ARMED = 0x54, ACC_ARMED_SUPER = 0x55, AD_SE_ENEMY = 0x60 };
++#define NEXT_TIMEOUT 200   /* ticks a pending modifier waits for an attack before the host drops it (10 s) [?] the game keeps
++                            * it until the next attack (ActiveTicks 100000); the timeout guards against an attack path that
++                            * never arms it */
++#define NEXT_IDLE 20       /* ticks an armed modifier may sit with char +0x4f4 at 0 before the host drops it (1 s): libg
++                            * consumes some SubTypes at the hit, not the shot (Alli 4 ticks after arming at 0xb3e1ac, Pearl's
++                            * heal 10 ticks at 0xb3b800), and +0x4f4 stayed 0 for every armed attack the audit logged */
++static int g_next_on = -1;   /* NB_GAD_NEXT=0: the kind is off (rows publish NONE) and its hooks are not installed */
++static long g_next_fired, g_next_armed, g_next_consumed, g_next_fallback, g_next_timeout, g_next_dead, g_next_se, g_next_stun,
++            g_next_sleep, g_next_wake, g_next_steal, g_next_ammo;
++static uint64_t g_cons_lr[24]; static long g_cons_n[24];   /* consume sites (return address) and counts, for the log */
++static int next_dbg(void) { static int d = -1; if (d < 0) { const char *e = getenv("NB_GAD_DBG"); d = e && atoi(e) > 0; } return d; }
++static int next_classify(void *ad, int type) {
++    if (type != ACC_NEXT || !g_next_on) return 0;
++    switch (ad_get(ad, AD_SUBTYPE)) {
++    case 2: return custom_proj(ad) || ad_get(ad, AD_CV1) > 0;   /* projectile swap / range; Grom's burst (neither) is not in libg */
++    case 3: case 10: case 11: case 29: return 1;                /* server-only hit fields: next_root_post */
++    case 7: case 14: case 15: case 16: case 21: case 23: case 24: case 32: case 33: return 1;   /* libg's own branches; 33: on_hit_struct */
++    default: return 0;   /* 5, 6, 8, 13, 17, 18, 19, 25, 27, 28, 30: effects with no client code, not re-implemented yet */
++    }
++}
++static void next_clear(uint8_t *acc) { U8(acc, ACC_ACTIVE) = 0; U8(acc, ACC_ARMED) = 0; U8(acc, ACC_ARMED_SUPER) = 0; }
++static int next_ready(void *sim, Gad *g, uint8_t *ch) { (void)sim; (void)ch; return g->acc && !U8(g->acc, ACC_ACTIVE); }
++static int next_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
++    (void)sim; (void)deg;
++    if (!g->acc || I32(ch, 0x3c4) <= 0 || U8(g->acc, ACC_ACTIVE)) return 0;
++    U8(g->acc, ACC_ACTIVE) = 1; U8(g->acc, ACC_ARMED) = 0; g->next_at = tick; g->next_idle = 0; g->next_ch = I32(ch, 8); g_next_fired++;
++    if (next_dbg()) LOG("[gadget] next: player %d card %d subtype %d pending at tick %d\n", g->pid, g->card, ad_get(g->ad, AD_SUBTYPE), tick);
++    return 1;
++}
++/* gadget_tick: an armed modifier whose attack is over (char +0x4f4, the attack's active ms, 0 for NEXT_IDLE ticks) without a consume
++ * this host reaches, or a pending one no attack armed within NEXT_TIMEOUT, is dropped; so is any one whose brawler died or
++ * changed (another character id) [?] the game is taken to clear it on death; without this the first attack after a
++ * respawn could still carry it. A drop does not set next_hit_tick: only a real consume (on_consume) marks the shots of
++ * its tick for on_hit_struct. */
++static void next_tick(void *sim, Gad *g, int tick) {
++    uint8_t *acc = g->acc, *ch = char_of(sim, g->pid); const char *why = NULL;
++    if (!acc || !U8(acc, ACC_ACTIVE)) { g->next_idle = 0; return; }
++    if (!ch || I32(ch, 0x3c4) <= 0 || I32(ch, 8) != g->next_ch) { next_clear(acc); g_next_dead++; why = "brawler dead or changed"; }
++    else if (U8(acc, ACC_ARMED)) {
++        if (I32(ch, 0x4f4) <= 0) { if (++g->next_idle >= NEXT_IDLE) { next_clear(acc); g_next_fallback++; why = "attack over"; } }
++        else g->next_idle = 0;
++    } else if (tick - g->next_at >= NEXT_TIMEOUT) { next_clear(acc); g_next_timeout++; why = "timeout"; }
++    if (next_dbg() && why) LOG("[gadget] next: player %d dropped at tick %d (%s)\n", g->pid, tick, why);
++}
++static Gad *gad_of_acc(uint8_t *acc) { for (int i = 0; i < NBE_MAXP; i++) if (g_gad[i].acc == acc && g_gad[i].im) return &g_gad[i]; return NULL; }
++static int sim_tick(void *obj) { uint8_t *sim = ((void *(*)(void *))B(0xb6a378))(obj); return sim ? I32(sim, 0x10) : -1; }
++/* hook_replace of 0xb422c8 (`mov x0, xzr; ret`, 5 callers: the skill tick's arming at 0xb7b540 / 0xb81f9c and 0xb7fc10,
++ * 0xb82464, 0xb842ac): the character's accessory, player(ch) +0x190. With it the arming at 0xb7b588 / 0xb81fe4 runs (acc
++ * +0x3c set, type 0x17, the skill instance's kind +68 == 1 = weapon, char +0x4f4 > 0) and sets +0x54. Only for the
++ * player's current brawler (0xb6a718 maps a summon with an owner index to its owner too: its skill tick must not arm or
++ * use up the owner's modifier) and only for a NEXT gadget the host set up (0xb842ac's cooldown write for the other types
++ * and 0xb7c1cc's +0x55 arming of ulti_change stay off, as with the stub): else NULL, the stub's answer. */
++static void *acc_of_char(uint8_t *ch) {
++    if (!ch || VTOF(ch) != VT_CHAR) return NULL;
++    uint8_t *p = ((uint8_t *(*)(void *))B(0xb6a718))(ch), *sim = ((void *(*)(void *))B(0xb6a378))(ch);
++    int pid = I32(ch, 0x80);
++    if (!p || !sim || pid < 0 || pid >= NBE_MAXP || player_of(sim, pid) != p || char_of(sim, pid) != ch) return NULL;
++    Gad *g = &g_gad[pid];
++    return g->im && g->type == ACC_NEXT && g->acc && g->acc == PTR(p, 0x190) ? g->acc : NULL;
++}
++/* hook_enter of 0xb27cfc (a bare `ret`, 20 call sites; x0 = accessory, x1 = character): libg's "modifier used". For type
++ * 0x17 the host clears it; other types (swap_weapon 0x3b, activate_skill 0x34) are not the host's */
++static void on_consume(uint64_t *ctx) {
++    uint8_t *acc = (uint8_t *)ctx[0];
++    if (!acc || I32(acc, 0x24) != ACC_NEXT) return;
++    Gad *g = gad_of_acc(acc); int armed = U8(acc, ACC_ARMED);
++    if (armed) g_next_armed++;
++    next_clear(acc); g_next_consumed++;
++    if (g && ctx[1]) g->next_hit_tick = sim_tick((void *)ctx[1]);
++    int k; for (k = 0; k < 24 && g_cons_lr[k] && g_cons_lr[k] != ctx[9]; k++) {}
++    if (k < 24) { g_cons_lr[k] = ctx[9]; g_cons_n[k]++; }
++    if (next_dbg()) LOG("[gadget] next: consumed (armed %d) player %d from %#lx\n", armed, g ? g->pid : -1, (unsigned long)(ctx[9] - (uint64_t)g_libg->base));
++}
++/* hook_enter of 0xb78c28(projectile, hit struct, flag) (the hit struct -> projectile +0x468 copy, 6 callers: the attack
++ * 0xb4b79c's spawns, 0xb7d3a8, 0xb8f670). SubType 2 swaps (Ollie, Finx) and 33 (Mandy's slow) carry a StatusEffectEnemy that
++ * libg's attack copies only for SubTypes 14 / 23: written to struct +0xd0 here (-> projectile +0x538, applied on hit at
++ * 0xb721f0) for a shot of the owner's brawler while its modifier is armed, or consumed in this tick (SubType 2 consumes
++ * before the spawn, 0xb4bf1c). */
++static void on_hit_struct(uint64_t *ctx) {
++    uint8_t *pr = (uint8_t *)ctx[0], *st = (uint8_t *)ctx[1], *ow = pr ? PTR(pr, 0xe0) : NULL;
++    if (!st || !ow || VTOF(ow) != VT_CHAR) return;
++    int pid = I32(ow, 0x80); if (pid < 0 || pid >= NBE_MAXP) return;
++    Gad *g = &g_gad[pid]; if (!g->im || g->type != ACC_NEXT || !g->acc) return;
++    int sub = ad_get(g->ad, AD_SUBTYPE); void *se = PTR(g->ad, AD_SE_ENEMY);
++    if ((sub != 2 && sub != 33) || !se || PTR(st, 0xd0)) return;
++    void *sim = ((void *(*)(void *))B(0xb6a378))(ow);
++    if (!sim || char_of(sim, pid) != ow) return;   /* the brawler's own shot, not a summon's */
++    int armed = U8(g->acc, ACC_ACTIVE) && U8(g->acc, ACC_ARMED);
++    if (!armed && g->next_hit_tick != I32(sim, 0x10)) return;
++    PTR(st, 0xd0) = se; g_next_se++;
++    if (next_dbg()) LOG("[gadget] next: player %d shot %p gets status %p (subtype %d)\n", pid, pr, se, sub);
++}
++/* server-only hit fields the armed attack wrote into its hit struct (projectile +0x468, an area of it +0x168; no client
++ * reader), applied from env.c's damage root after the hit (gadget_root_post): SubType 3 struct +0x10 stun ticks (Dynamike
++ * 30), 11 +0x174 / +0x178 sleep ticks / flag (Sandy 20: a stun the victim's next damage ends), 29 +0xc4 lifesteal percent
++ * (Alli 100: libg's heal 0xb41554 of the damage dealt), 10 +0x16c / +0x170 (Pam 25 / 50: the victim loses that percent of
++ * its full ammo, Pam gets that percent of it; ammo = weapon skill instance +0x18, 1000 a bar, full = 0xb7aea4 x 1000). Only
++ * for a hit of the player's own brawler whose gadget has that SubType. Stuns go through superfix_cc (immunity, the stop).
++ * Dynamike's (3) and Alli's (29) rows are masked: their hits reach the root with no source object / not at all. */
++int superfix_cc_stun(uint8_t *ch, int ticks, const char *why) __attribute__((weak));
++typedef struct { uint8_t *ch; int id, until; void *src; } Sleep;
++static Sleep g_sleep[NBE_MAXP]; static int g_nsleep;
++static int max_ammo(uint8_t *ch, uint8_t **sk0) {
++    uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464);
++    *sk0 = sk && n >= 1 && n <= 16 ? sk[0] : NULL; if (!*sk0) return 0;
++    int m = ((int (*)(void *, void *))B(0xb7aea4))(*sk0, ch) * 1000;
++    return m > 1000 ? m : 1000;
++}
++void gadget_root_post(uint8_t *victim, uint8_t *attacker, uint8_t *src, int removed) {
++    if (!victim || VTOF(victim) != VT_CHAR) return;
++    gself_root_post(victim, removed);   /* the SELF kinds: CancelOnDamage, Sandy's sleep */
++    int t = sim_tick(victim);
++    for (int i = 0; i < g_nsleep; i++) {   /* a sleeping victim wakes on the next damage (not the hit that put it to sleep) */
++        Sleep *s = &g_sleep[i];
++        if (s->until <= t) { g_sleep[i--] = g_sleep[--g_nsleep]; continue; }   /* slept it out */
++        if (s->ch != victim || s->id != I32(victim, 8) || removed <= 0 || src == s->src) continue;
++        int left = s->until - t, st = I32(victim, 0xe1c);   /* only the sleep's own ticks: a longer stun from elsewhere stays */
++        I32(victim, 0xe1c) = st > left ? st - left : 0; g_next_wake++; g_sleep[i--] = g_sleep[--g_nsleep];
++        if (next_dbg()) LOG("[gadget] next: ch %d woken by damage at tick %d\n", I32(victim, 8), t);
++    }
++    if (!attacker || !src || VTOF(attacker) != VT_CHAR) return;
++    int pid = I32(attacker, 0x80); if (pid < 0 || pid >= NBE_MAXP) return;
++    Gad *g = &g_gad[pid]; if (!g->im || g->type != ACC_NEXT) return;
++    int sub = ad_get(g->ad, AD_SUBTYPE); if (sub != 3 && sub != 10 && sub != 11 && sub != 29) return;
++    int vs = VTOF(src); uint8_t *d = PTR(src, 0x10), *hs = NULL;
++    if (vs == VT_PROJ) hs = src + 0x468;
++    else if ((vs == VT_ITEM || vs == VT_ITEM2) && d && I32(d, 0x20) / 1000000 == 17) hs = src + 0x168;   /* an area (data type 17) */
++    if (!hs) return;
++    void *sim = ((void *(*)(void *))B(0xb6a378))(attacker);
++    if (!sim || char_of(sim, pid) != attacker) return;
++    if (sub == 3 && I32(hs, 0x10) > 0 && superfix_cc_stun) { superfix_cc_stun(victim, I32(hs, 0x10), "gadget next attack"); g_next_stun++; }
++    if (sub == 11 && U8(hs, 0x178) && I32(hs, 0x174) > 0 && superfix_cc_stun && superfix_cc_stun(victim, I32(hs, 0x174), "gadget sleep")) {
++        int k; for (k = 0; k < g_nsleep && !(g_sleep[k].ch == victim && g_sleep[k].id == I32(victim, 8)); k++) {}
++        if (k == g_nsleep && g_nsleep < NBE_MAXP) g_nsleep++;
++        if (k < g_nsleep) g_sleep[k] = (Sleep){victim, I32(victim, 8), t + I32(hs, 0x174), src};
++        g_next_sleep++;
++    }
++    if (sub == 29 && I32(hs, 0xc4) > 0 && removed > 0 && I32(attacker, 0x3c4) > 0) {
++        int amt = (int)((int64_t)removed * I32(hs, 0xc4) / 100);
++        if (amt > 0) ((void (*)(void *, int, int, int, void *, int, int, int, long, long))B(0xb41554))(attacker, pid, amt, 1, NULL, 0, 0, 0, 0, 0);
++        g_next_steal++;
++        if (next_dbg()) LOG("[gadget] next: player %d lifesteal %d of %d\n", pid, amt, removed);
++    }
++    if (sub == 10 && I32(hs, 0x16c) > 0 && removed > 0) {
++        uint8_t *vk, *ak; int vm = max_ammo(victim, &vk), am = max_ammo(attacker, &ak);
++        if (vk && ak) {
++            int take = (int)((int64_t)vm * I32(hs, 0x16c) / 100); if (take > I32(vk, 0x18)) take = I32(vk, 0x18); if (take < 0) take = 0;
++            int give = (int)((int64_t)take * I32(hs, 0x170) / 100);
++            I32(vk, 0x18) -= take; I32(ak, 0x18) = I32(ak, 0x18) + give < am ? I32(ak, 0x18) + give : am;
++            g_next_ammo++;
++            if (next_dbg()) LOG("[gadget] next: player %d ammo sink: victim -%d, Pam +%d\n", pid, take, give);
++        }
++    }
++}
++static void next_install(void) {
++    const char *e = getenv("NB_GAD_NEXT"); g_next_on = !(e && !atoi(e));
++    if (!g_next_on) { LOG("[gadget] next attack gadgets off (NB_GAD_NEXT=0)\n"); return; }
++    if (*(uint32_t *)B(0xb422c8) != 0xaa1f03e0 || *(uint32_t *)B(0xb422cc) != 0xd65f03c0 ||   /* mov x0, xzr; ret */
++        *(uint32_t *)B(0xb27cfc) != 0xd65f03c0 ||                                              /* ret */
++        *(uint32_t *)B(0xb78c28) != 0xa9be7bfd) {                                              /* stp x29, x30, [sp, #-32]! */
++        LOG("[gadget] libg bytes differ from v68.279: next attack gadgets off\n"); g_next_on = 0; return;
++    }
++    hook_replace(g_libg, 0xb422c8, (void *)acc_of_char);
++    hook_enter(g_libg, 0xb27cfc, on_consume);
++    hook_enter(g_libg, 0xb78c28, on_hit_struct);
++    LOG("[gadget] next attack gadgets: accessory getter 0xb422c8, consume 0xb27cfc, hit struct 0xb78c28 hooked\n");
++}
++
++/* ---- SELF: statuses, shields, a sleep, a last stand, bush vision on the brawler itself (gadget_self.c) */
++static int self_shield_classify(void *ad, int type) { int k = gself_kind(ad, type); return k && gself_published(k) == NBE_GAD_SHIELD; }
++static int self_status_classify(void *ad, int type) { int k = gself_kind(ad, type); return k && gself_published(k) == NBE_GAD_STATUS; }
++static int self_ready(void *sim, Gad *g, uint8_t *ch) { return gself_ready(sim, g->pid, ch, g->ad, gself_kind(g->ad, g->type)); }
++static int self_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
++    (void)deg; return gself_fire(sim, g->pid, ch, g->ad, g->card, gself_kind(g->ad, g->type), tick);
++}
++
+ static const GadImpl g_impl[] = {
+     {NBE_GAD_DASH, dash_classify, dash_fire},
+-    {NBE_GAD_HEAL, heal_classify, heal_fire},
++    {NBE_GAD_HEAL, heal_classify, heal_fire, heal_ready},
+     {NBE_GAD_SPAWN, area_classify, area_fire},
+     {NBE_GAD_PROJECTILE, shot_classify, shot_fire},
+     {NBE_GAD_SPAWN, skill_area_classify, skill_area_fire},
+@@ -527,6 +832,10 @@ static const GadImpl g_impl[] = {
+     {NBE_GAD_SPAWN, item_classify, item_fire},
+     {NBE_GAD_SUPER, super_classify, super_fire},
+     {NBE_GAD_HEAL, heal_now_classify, heal_now_fire},
++    {NBE_GAD_STATUS, next_classify, next_fire, next_ready},
++    {NBE_GAD_SUPER, buoy_classify, buoy_fire, buoy_ready},
++    {NBE_GAD_SHIELD, self_shield_classify, self_fire, self_ready},
++    {NBE_GAD_STATUS, self_status_classify, self_fire, self_ready},
+     {NBE_GAD_NONE, NULL, NULL}};
+ 
+ /* cards whose kind classifies but whose effect did not show in `python -m super_audit --gadget` (cards.csv data ids, fixed
+@@ -546,25 +855,59 @@ static const int g_masked[] = {
+     23000440,   /* KickerDude_Mines: the kernels rise and vanish ~670 u out; the mines they leave never pop, no damage */
+     23000312,   /* BeeSniper_ExtraBee: the circling bees spawn at the map origin (0, 0) and stay there, not around Bea */
+     23000488,   /* FireDude_FlameShield: the orbiting flames spawn at the map origin (0, 0) and stay there, not around Amber */
++    23000294,   /* TntDude_Stun: armed and consumed, but the explosion's damage reaches env.c's root with no source object, so
++                 * the hit struct's stun (+0x10) is never read: no stun */
++    23000522,   /* ShieldTank_Pull: consumed (0xb4e314), no pull */
++    23000546,   /* Beamer_Pierce: armed, never consumed in 20 ticks, no pierce */
++    23000678,   /* InsectMan_Pierce: armed, never consumed in 20 ticks, no pierce */
++    23000991,   /* Stalker_Lifesteal: consumed at the hit (0xb3e1ac), but the dash damage never reaches env.c's root: no heal */
++    23000579,   /* FishTank_Slow: armed and consumed (0xb7fcd0, which puts the row's StatusEffectEnemy in the attack's hit struct
++                 * +0xf8), but no FishTankGadgetAreaSlow is ever added to a target (NB_SUPERFIX_DBG): a plain attack */
+ };
+ static int masked(int card) { for (unsigned k = 0; k < sizeof g_masked / sizeof *g_masked; k++) if (g_masked[k] == card) return 1; return 0; }
+ 
+-void gadget_clear(void) { memset(g_gad, 0, sizeof g_gad); }
++/* a new battle was built (env.c env_on_build) and its RESET response (div_publish): the last battle's NEXT counters (when any
++ * modifier was used; logged once, then zeroed), then a clean table. Called at the build too because the old battle's
++ * accessories are freed by then and its intro ticks run gadget_tick before the RESET response. */
++void gadget_clear(void) {
++    if (g_next_fired) {
++        LOG("[gadget] next attack: %ld pending, %ld consumed (%ld armed), dropped %ld (attack over) / %ld (timeout); statuses on shots %ld, "
++            "stuns %ld, sleeps %ld (woken %ld), lifesteals %ld, ammo sinks %ld; brawler dead / changed %ld\n", g_next_fired,
++            g_next_consumed, g_next_armed, g_next_fallback, g_next_timeout, g_next_se, g_next_stun, g_next_sleep, g_next_wake,
++            g_next_steal, g_next_ammo, g_next_dead);
++        for (int k = 0; k < 24 && g_cons_lr[k]; k++) LOG("[gadget] next attack: consume from %#lx x%ld\n", (unsigned long)(g_cons_lr[k] - (uint64_t)g_libg->base), g_cons_n[k]);
++    }
++    g_next_fired = g_next_armed = g_next_consumed = g_next_fallback = g_next_timeout = g_next_dead = g_next_se = g_next_stun = 0;
++    g_next_sleep = g_next_wake = g_next_steal = g_next_ammo = 0; memset(g_cons_lr, 0, sizeof g_cons_lr); memset(g_cons_n, 0, sizeof g_cons_n);
++    if (g_buoy_nostun) LOG("[gadget] reserve buoy: %ld torpedoes without the landing stun\n", g_buoy_nostun);
++    g_buoy_nostun = 0;
++    memset(g_gad, 0, sizeof g_gad); g_nsleep = 0; gself_clear();
++}
+ 
+ /* RESET response (env.c div_publish), per player: its requested card and the accessory object the game made for it */
+ void gadget_reset_player(int i, void *acc) {
+     if (i < 0 || i >= NBE_MAXP) return;
+-    Gad *g = &g_gad[i]; memset(g, 0, sizeof *g);
++    Gad *g = &g_gad[i]; memset(g, 0, sizeof *g); g->next_hit_tick = -1;
+     if (!acc || !g_div_gadget[i]) return;
+-    g->card = g_div_gadget[i]; g->ad = PTR(acc, 0x10); g->pid = i;
++    g->card = g_div_gadget[i]; g->ad = PTR(acc, 0x10); g->pid = i; g->acc = acc;
+     int type = g->type = I32(acc, 0x24); g_cls_card = g->card;
+     for (const GadImpl *im = g_impl; g->ad && !masked(g->card) && im->classify; im++)
+         if (im->classify(g->ad, type)) {
+             static int uses = -1; if (uses < 0) { const char *e = getenv("NB_GAD_USES"); uses = e && atoi(e) > 0 ? atoi(e) : GAD_USES; }
+             g->im = im; g->uses = uses; g->cd = I32(acc, 0xc4) > 0 ? I32(acc, 0xc4) : 0;
+-            /* the skill gadgets' rows leave Cooldown empty: their skill's Cooldown (skills.csv, ticks as the accessory's:
+-             * Shelly's Clay Pigeons 250, getter 0xb0d868) */
+-            if (!g->cd && PTR(g->ad, AD_SKILL)) { int c = sd_get(PTR(g->ad, AD_SKILL), SD_COOLDOWN); g->cd = c > 0 ? c : 0; }
++            /* the skill gadgets' rows leave Cooldown empty: their skill's BonusSkillCooldown (skills.csv, ms, the getter
++             * gives ticks: Colt's Speedloader 15000 ms = 300 ticks), else its Cooldown (ms / 50 = ticks; no classified row
++             * has an empty BonusSkillCooldown) */
++            if (!g->cd && PTR(g->ad, AD_SKILL)) {
++                void *sd = PTR(g->ad, AD_SKILL); int c = sd_get(sd, SD_BONUS_CD), mc = c > 0 ? sd_max_charge(sd) : 1;
++                if (c <= 0) c = sd_get(sd, SD_COOLDOWN) / 50;
++                g->cd = c > 0 ? c : 0;
++                if (mc > 1 && mc <= 9) {   /* MaxCharge shots per cooldown, the skill's Cooldown (ms: 250 = 5 ticks) apart [?] */
++                    int gap = sd_get(sd, SD_COOLDOWN) / 50;
++                    g->charge_max = g->charges = mc; g->charge_gap = gap > 0 ? gap : 1;
++                }
++            }
++            if (type == ACC_NEXT) next_clear(acc);   /* nothing pending from the accessory's construction */
+             break;
+         }
+     static int nlog; if (nlog++ < 20) LOG("[gadget] player %d card %d type %d: %s, %d uses, cooldown %d ticks\n", i, g->card, type,
+@@ -577,8 +920,12 @@ int gadget_use(void *sim, int i, uint8_t *ch, double deg, double dist, int tick)
+     if (i < 0 || i >= NBE_MAXP || !g_gad[i].im) return 0;
+     Gad *g = &g_gad[i]; g->dist = dist;
+     if (g->uses <= 0 || tick < g->cd_until || !ch) return 1;
++    if (g->im->ready && (g->not_ready || !g->im->ready(sim, g, ch))) return 1;   /* published as not ready: refused, nothing spent */
+     if (g->im->fire(sim, g, ch, deg, tick)) {
+         g->uses--; g->used++; g->cd_until = tick + g->cd;
++        if (g->charge_max > 1) {   /* a shot of a MaxCharge window: the next one after charge_gap, the cooldown after the last */
++            if (--g->charges > 0) g->cd_until = tick + g->charge_gap; else g->charges = g->charge_max;
++        }
+         if (g_fired[g->im->kind & 7]++ < 10) LOG("[gadget] player %d kind %d fired at tick %d, %d uses left\n", i, g->im->kind, tick, g->uses);
+     }
+     return 1;
+@@ -591,7 +938,18 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
+         if (g_gad[i].rep_n) rep_tick(sim, &g_gad[i], tick);
+         if (g_gad[i].burst_left) burst_tick(sim, &g_gad[i], tick);
+         if (g_gad[i].im && g_gad[i].type == ACC_HEAL_TAKEN) taken_tick(sim, &g_gad[i], tick);
++        if (g_gad[i].im && g_gad[i].type == ACC_NEXT) next_tick(sim, &g_gad[i], tick);
++        if (g_gad[i].im && g_gad[i].im->ready) g_gad[i].not_ready = !g_gad[i].im->ready(sim, &g_gad[i], char_of(sim, i));
+     }
++    gself_note_tick(sim, tick);   /* SELF: Sandy's wake-up heal; the tick gadget_vision answers for */
++}
++/* env.c, right before gadget_publish: ready() again on the state the response describes. gadget_tick's answer is from the
++ * start of the step's last tick, before that tick's attacks (Byron's ammo bar spent by his attack read as ready, and the
++ * fire on the next step was refused: gadget_check "use not spent"; heal_ready also counts the attacks queued for the
++ * next step start) */
++void gadget_ready_refresh(void *sim) {
++    for (int i = 0; i < NBE_MAXP; i++)
++        if (g_gad[i].im && g_gad[i].im->ready) g_gad[i].not_ready = !g_gad[i].im->ready(sim, &g_gad[i], char_of(sim, i));
+ }
+ 
+ void gadget_publish(NbeResp *r, int tick) {   /* every response */
+@@ -600,5 +958,8 @@ void gadget_publish(NbeResp *r, int tick) {   /* every response */
+         const Gad *g = &g_gad[i];
+         r->gad_card[i] = g->card; r->gad_kind[i] = g->im ? g->im->kind : NBE_GAD_NONE; r->gad_charges[i] = g->im ? g->uses : 0;
+         r->gad_cd[i] = g->im && g->cd_until > tick ? g->cd_until - tick : 0; r->gad_used[i] = g->used;
++        if (g->im && g->not_ready && r->gad_cd[i] < 1) r->gad_cd[i] = 1;   /* ready() said no: "not usable now" without an obs change */
+     }
+ }
++
++void gadget_install(void) { next_install(); }   /* env.c's install, once at startup: the NEXT kind's hooks */
+diff --git a/native/loader/superfix_cc.c b/native/loader/superfix_cc.c
+index 8420123..b2d4931 100644
+--- a/native/loader/superfix_cc.c
++++ b/native/loader/superfix_cc.c
+@@ -61,8 +61,6 @@ static void stun(uint8_t *ch, int ticks, const char *why) {
+     if (I32(ch, CH_STUN_TICKS) < ticks) I32(ch, CH_STUN_TICKS) = ticks;   /* the longer stun wins (no stacking) */
+     if (g_superfix_dbg) LOG("[superfix] cc: stun ch %d for %d ticks (%s), tick %d\n", I32(ch, 8), ticks, why, now_tick(ch));
+ }
+-/* superfix_moves.c: Buzz's landing stun, Kit's hypercharged super */
+-void superfix_cc_stun(uint8_t *ch, int ticks, const char *why) { if (on()) stun(ch, ticks, why); }
+ typedef struct { uint8_t *ch; int id, until; } Sil;
+ #define SIL_MAX 64
+ static Sil g_sil[SIL_MAX]; static int g_nsilrec;
+@@ -79,6 +77,13 @@ static void silence(uint8_t *ch, int ticks, const char *why) {
+     if (g_sil[k].until < t + ticks) g_sil[k].until = t + ticks;
+     if (g_superfix_dbg) LOG("[superfix] cc: silence ch %d for %d ticks (%s), tick %d\n", I32(ch, 8), ticks, why, t);
+ }
++/* superfix_moves.c (Buzz's landing stun, Kit's hypercharged super) and gadget.c (next-attack stuns and sleeps): -> 1 = the stun
++ * was applied (superfix on, a living character without CcImmunity) */
++int superfix_cc_stun(uint8_t *ch, int ticks, const char *why) {
++    if (!on() || !is_char(ch) || ticks <= 0 || I32(ch, 0x3c4) <= 0) return 0;
++    if (U8(ch, CH_CCIMM)) { g_nimm++; return 0; }
++    stun(ch, ticks, why); return 1;
++}
+ /* superfix_status.c's aggregate asks every tick */
+ int superfix_cc_silenced(uint8_t *ch, int t) {
+     if (!g_cc_on) return 0;
+diff --git a/native/loader/superfix_moves.c b/native/loader/superfix_moves.c
+index 1513368..80e2b5e 100644
+--- a/native/loader/superfix_moves.c
++++ b/native/loader/superfix_moves.c
+@@ -301,7 +301,7 @@ typedef int (*rad_t)(void *);
+ static int char_radius(uint8_t *c) { void **vt = *(void ***)c; return ((rad_t)vt[88 / 8])(c); }   /* vtable +88: CollisionRadius (0xb6d974) */
+ typedef struct { uint8_t *ch, *tgt; int id, tick; } GrHit;
+ static GrHit g_grh[8]; static int g_ngrh;
+-typedef struct { uint8_t *ch; int id, x0, y0, start; } GrJob;
++typedef struct { uint8_t *ch; int id, x0, y0, start, nostun; } GrJob;
+ static GrJob g_gr[16]; static int g_ngr;
+ static long g_gr_char, g_gr_wall, g_gr_land, g_gr_stun, g_gr_reload;
+ static void grapple_hit(uint64_t *ctx) {   /* enter 0xb5c180(owner, hit character): the hit of a UniqueProperty 5 projectile */
+@@ -318,7 +318,8 @@ static int is_oc_proj(uint8_t *ch, void *d) {   /* d is in the brawler's super's
+     return 0;
+ }
+ int env_dash_start(uint8_t *ch, int tx, int ty, int speed);   /* env.c: the native charge mover, no contact job */
+-void superfix_cc_stun(uint8_t *ch, int ticks, const char *why);
++int superfix_cc_stun(uint8_t *ch, int ticks, const char *why);
++int gadget_buoy_nostun(uint8_t *ch) __attribute__((weak));   /* gadget.c: Buzz's Reserve Buoy, "his next Super does not stun" */
+ static int walkable_now(void *sim, int x, int y);
+ /* spawnfix.c's projectile end (0xb75998): a grapple that stopped (reason 3: on a character it does not pierce; 2 / 4: the
+  * other stops of the projectile tick 0xb70650..0xb70668, the wall in a live trace: Buzz's torpedo at the wall tile) pulls
+@@ -327,8 +328,11 @@ static int walkable_now(void *sim, int x, int y);
+  * hits a wall": player +0x54 = max +0x58) */
+ void superfix_grapple_end(uint8_t *pr, int reason) {
+     uint8_t *d = pr ? PTR(pr, 0x10) : NULL, *ch = pr ? PTR(pr, 0xe0) : NULL;
+-    if (!mode() || !pr || reason < 2 || reason > 4 || I32(pr, 0x90) != 0) return;   /* 1: range end (a miss: no pull) */
++    if (!mode() || !pr || I32(pr, 0x90) != 0) return;
+     if (!d || I32(d, 0x234) != 5 || !ch || VTOF(ch) != VT_CHAR || I32(ch, 0x3c4) <= 0) return;   /* ProjectileData UniqueProperty (getter 0xafab98) */
++    static uint8_t *nlast; static int nlast_start, nostun;   /* issue #46: the torpedo after a Reserve Buoy, hit or miss */
++    if (pr != nlast || I32(pr, 0x28) != nlast_start) { nlast = pr; nlast_start = I32(pr, 0x28); nostun = gadget_buoy_nostun && gadget_buoy_nostun(ch); }
++    if (reason < 2 || reason > 4) return;   /* 1: range end (a miss: no pull) */
+     static uint8_t *last; static int last_start;
+     if (pr == last && I32(pr, 0x28) == last_start) return;
+     last = pr; last_start = I32(pr, 0x28);
+@@ -360,7 +364,7 @@ void superfix_grapple_end(uint8_t *pr, int reason) {
+     if (len > 0) {
+         for (k = 0; k < g_ngr && g_gr[k].ch != ch; k++) {}
+         if (k == g_ngr && g_ngr < 16) g_ngr++;
+-        if (k < 16) g_gr[k] = (GrJob){ch, I32(ch, 8), x0, y0, now};
++        if (k < 16) g_gr[k] = (GrJob){ch, I32(ch, 8), x0, y0, now, nostun};
+     }
+     if (g_superfix_dbg) LOG("[superfix] grapple char %d: %s at %d,%d, pull %d u%s\n", I32(ch, 8), t ? "character" : "wall", tx, ty, len,
+                             !t && is_oc_proj(ch, d) ? ", super given back" : "");
+@@ -373,13 +377,14 @@ static int grapple_tick(GrJob *j) {   /* 0 = job over: the pull ended -> the lan
+     double dist = hypot(x - j->x0, y - j->y0); if (dist > GR_FULL) dist = GR_FULL;
+     int ticks = GR_STUN_MIN + (int)((GR_STUN_MAX - GR_STUN_MIN) * dist / GR_FULL);
+     void **v = objs(sim, &n);
+-    for (int i = 0; i < n; i++) {
++    for (int i = 0; i < n && !j->nostun; i++) {   /* nostun: the first super after a Reserve Buoy (gadget.c) */
+         uint8_t *c = v[i]; if (!enemy(ch, c) || I32(c, 0x84) == I32(ch, 0x84)) continue;
+         long dx = I32(c, 0x38) - x, dy = I32(c, 0x3c) - y; if (dx * dx + dy * dy > (long)GR_STUN_R * GR_STUN_R) continue;
+         superfix_cc_stun(c, ticks, "grapple landing"); hits++;
+     }
+     g_gr_land++; g_gr_stun += hits;
+-    if (g_superfix_dbg) LOG("[superfix] grapple landing char %d at %d,%d after %.0f u: %d stunned for %d ticks\n", j->id, x, y, dist, hits, ticks);
++    if (g_superfix_dbg) LOG("[superfix] grapple landing char %d at %d,%d after %.0f u: %d stunned for %d ticks%s\n", j->id, x, y, dist, hits, ticks,
++                            j->nostun ? " (Reserve Buoy: no stun)" : "");
+     return 0;
+ }
+ 
+diff --git a/native/loader/superfix_status.c b/native/loader/superfix_status.c
+index 15b552c..8b2d0c0 100644
+--- a/native/loader/superfix_status.c
++++ b/native/loader/superfix_status.c
+@@ -70,7 +70,7 @@ enum { SE_DUR = 0x98, SE_RATE = 0xa0, SE_SRCDEATH = 0xa8, SE_FIRST = 0xab, SE_ST
+        SE_SPD_BP = 0xf8, SE_SPD_BA = 0xfc, SE_SPD_RP = 0x100, SE_SPD_RA = 0x104, SE_DMG_BP = 0x108, SE_DMG_RP = 0x118,
+        SE_RECV_BP = 0x11c, SE_RECV_BA = 0x120,
+        /* issue #19 leftovers (stores at 0xba4198 / 0xba41c4 / 0xba42a0 / 0xba4478; Fear is a BooleanAttributes word, 0xba4bc8) */
+-       SE_LIFESTEAL = 0x10c, SE_SRC_LIFESTEAL = 0x110, SE_RELOAD = 0x124,
++       SE_LIFESTEAL = 0x10c, SE_SRC_LIFESTEAL = 0x110, SE_RELOAD = 0x124, SE_CHARGE = 0xc4 /* UltiChargeBoostPercent (#46) */,
+        /* DamageBoostTargetCurrentHealthPercent (store 0xba41f0), CancelOnChargeEnd (byte, store 0xba3ac0) */
+        SE_HPBOOST = 0x114, SE_CANCEL_CHARGE_END = 0xa6,
+        /* bytes */
+@@ -520,11 +520,15 @@ int superfix_status_taunt(uint8_t *ch, int *x, int *y) {
+ }
+ 
+ /* issue #19 final: Edgar's hypercharged super area (EnragerOverchargeSuper): extra percent on the super charge his hits
+- * give (env.c my_charge), 0 = none */
++ * give (env.c my_charge), 0 = none. Issue #46: plus the UltiChargeBoostPercent (+0xc4) of every status in the store, as the
++ * table gives it: Surge's PowerLevelerExtraUltiCharge 30 and Moe's gadget 50, and also two non-gadget rows that were stored
++ * with no effect before, RockWeaponDamageBoost 50 and DaredevilSpUltiChargeRate 30 */
+ int superfix_status_charge_pct(uint8_t *ch) {
+     if (!g_superfix || !mode() || !is_char(ch)) return 0;
+-    return zone_get(ch, ZN_CHARGE, now_tick(ch));
++    return zone_get(ch, ZN_CHARGE, now_tick(ch)) + st_field(ch, SE_CHARGE, NULL);
+ }
++static int g_st_on;
++int superfix_status_live(void) { return g_superfix && g_st_on; }   /* issue #46: gadget_self.c puts statuses in this store */
+ 
+ /* StatusEffect (type 36) areas, from superfix.c's area tick hook (0xb28c0c) */
+ typedef struct { void *a, *d; int start, end, next, n; } AreaRec;
+@@ -849,7 +853,7 @@ void superfix_status_install(void) {
+     hook_replace(g_libg, 0xba3230, (void *)my_status_add);
+     hook_replace(g_libg, 0xba3260, (void *)my_status_remove);
+     hook_replace(g_libg, 0xba3264, (void *)my_status_remove);
+-    hook_enter(g_libg, 0xb3941c, on_char_update);
++    hook_enter(g_libg, 0xb3941c, on_char_update); g_st_on = 1;
+     if (*(uint32_t *)B(0xba3274) == 0xd65f03c0 && *(uint32_t *)B(0xb3e16c) == 0x94019442)   /* ret; bl 0xba3274 */
+         hook_replace(g_libg, 0xba3274, (void *)my_charge_end);
+     else LOG("[superfix] status: charge-end notify 0xba3274 bytes differ, CancelOnChargeEnd left out\n");
+diff --git a/native/loader/gadget_self.c b/native/loader/gadget_self.c
+new file mode 100644
+index 0000000..0cd3617
+--- /dev/null
++++ b/native/loader/gadget_self.c
+@@ -0,0 +1,307 @@
++/* gadget_self.c (bsrl-sim issue #46): the gadgets that act on the brawler itself: statuses, shields, a sleep, a last stand,
++ * bush vision. gadget.c owns the per-player bookkeeping (uses, cooldown, readiness) and calls in here through its SELF
++ * entries (gself_kind / gself_fire / gself_ready); the effects are RE-IMPLEMENTED, the game's server code for them is not
++ * in this client build (the accessory activation 0xb27c58 is a bare ret).
++ *
++ * Statuses go into superfix_status.c's store through libg's own add wrapper 0xb35dd0(ch, data, player, team, ch, ch, 0, 0,
++ * -1, -1, 0) (the arguments of the area status path), so the store's aggregates apply them: ShieldPercent +0xf4 (char
++ * +0x954, the damage root's shield), Invisibility +0x12c (char +0x97c, the encoder's reveal distance), LosePlayerControl
++ * +0x131 (libg's "cannot act" 0xb38b54), speed (env.c's mover), DecreaseReloadTimePercent +0x124, and
++ * UltiChargeBoostPercent +0xc4 (superfix_status_charge_pct, env.c my_charge). A row the card names is used as it is; a
++ * card without a status row gets a synthetic StatusEffectData (one static 0x200-byte block per player: +0x20 the card id
++ * for the store's log, +0x98 duration, +0xad Refreshable, and only the fields below). Nothing in libg sees these blocks (the
++ * add is the store's and returns NULL). Status rows are removed through the store's remove 0xba3264(ch+0x890, data, -2).
++ *
++ * Kinds (SK_*), by accessories.csv Type (enum of the parser 0xb2731c):
++ *   ROW    empty Type, no AreaEffect / Skill, StatusEffectSelf (+0x68): Jacky's speed boost (published STATUS).
++ *   SHIELD empty Type, no AreaEffect / Skill, ShieldPercent / ShieldTicks (getters 0xa93368 / 0xa93378): Hank (40 % for 60
++ *          ticks), Lou (100 % for 20 ticks plus StopMovement 0xa932e8 -> LosePlayerControl): synthetic (published SHIELD).
++ *   SPEED  movement_speed 37 (Bonnie's Sugar Rush): StatusEffectSelf plus a synthetic reload of CustomValue1 % faster
++ *          ("movement and reload speed are increased by 30 %": r = 30 -> DecreaseReloadTimePercent 100 r / (100 + r) = 23)
++ *          for ActiveTicks. Only in the brawler's starting form (MissingTargetText REQUIRES_CANNON [?]).
++ *   DIVE   dive 46 (Willow): ShieldPercent 100 and LosePlayerControl for ActiveTicks [?] an approximation of the card's
++ *          "untargetable but unable to take any action": she takes no damage, but projectiles still stop on her and enemies
++ *          still see her (the card makes her untargetable, not invisible).
++ *   VOODOO voodoo_self_buff 60 (Juju): by the tile under her (env.c env_ground): water -> VoodooGadgetSpeedUp, bush ->
++ *          synthetic Invisibility 1 for ActiveTicks [? level], else -> VoodooGadgetShield. Both rows are looked up by name
++ *          (0xad3378, the StatusEffect table): no libg code or CSV names them, the server does.
++ *   BOX    invisible 49 (Kit's cardboard box): synthetic Invisibility 1 for ActiveTicks [? level]. The faster super charge
++ *          while standing still (CustomValue1) is not done: partial.
++ *   ALLY   give_status_effect 63 (Surge x2, Trunk): the StatusEffectAlly row (+0x58) on the brawler [? self only].
++ *          CancelOnDamage (+0xa4) is applied only to these gadget statuses (not to every row that has it): the first damage
++ *          that takes HP ends it (gself_root_post); Surge's shield row then gives COD_AMMO ammo. ReceiveDamageInversion
++ *          (BooleanAttributes +0x14b, Trunk): the first damage is healed instead of taken and ends the status
++ *          (gadget_root_pre).
++ *   CHARGE give_buff_to_self 54 with CustomValue1 17 (Moe): synthetic UltiChargeBoostPercent CustomValue2 (50) for
++ *          ActiveTicks; not in his drill form (MissingTargetText CANT_BE_DRILL: starting form only).
++ *   STAND  give_buff_to_self 54 with CustomValue1 21 (Draco's Last Stand): for ActiveTicks a hit cannot take him under 1 HP
++ *          (gadget_root_pre clamps the damage before libg's root and the knockout code).
++ *   SLEEP  heal 8 SubType 1 (Sandy's Sleep Stimulator; published STATUS: the heal comes after the sleep): LosePlayerControl
++ *          for ActivationDelay ticks, then full HP through libg's heal 0xb41554; damage during the sleep wakes her with no
++ *          heal (Interruptable).
++ *   VISION vision 12 (Tara SubType 0: her team sees every enemy in a bush; Buzz SubType 1: enemies in a bush within
++ *          BUZZ_VISION_R of him) for ActiveTicks: env.c's bush hiding (emulate_client_flags) asks gadget_vision. The
++ *          observation's shape is unchanged.
++ * Every status kind needs superfix's status store (superfix_status_live): without it they classify as not usable.
++ * NB_GAD_SELF=0 turns them all off (kind NONE). NB_GAD_DBG=1 logs the fires and their effects. */
++#include "nbhost.h"
++#include "nbenv_proto.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define I32(p, o) (*(volatile int32_t *)((uint8_t *)(p) + (o)))
++#define PTR(p, o) (*(void *volatile *)((uint8_t *)(p) + (o)))
++#define U8(p, o) (*(volatile uint8_t *)((uint8_t *)(p) + (o)))
++#define B(off) ((uint8_t *)g_libg->base + (off))
++#define VTOF(o) ((int)((uint8_t *)PTR(o, 0) - g_libg->base))
++enum { VT_CHAR = 0x1209020 };
++extern Module *g_libg;
++void *env_obj_by_id(void *sim, int id);         /* env.c */
++int env_ground(void *sim, int x, int y);        /* env.c: 1 bush, 2 water, 0 other ground under world (x, y) */
++int superfix_status_live(void) __attribute__((weak));   /* superfix_status.c: the store is installed and on */
++
++enum { SK_NONE, SK_ROW, SK_SHIELD, SK_SPEED, SK_DIVE, SK_VOODOO, SK_BOX, SK_ALLY, SK_CHARGE, SK_STAND, SK_SLEEP, SK_VISION, SK_N };
++static const char *const SK_NAME[SK_N] = {"none", "row", "shield", "speed", "dive", "voodoo", "box", "ally", "charge", "stand", "sleep", "vision"};
++enum { T_HEAL = 8, T_VISION = 12, T_SPEED = 37, T_DIVE = 46, T_INVISIBLE = 49, T_BUFF = 54, T_VOODOO = 60, T_GIVE_STATUS = 63 };
++enum { AD_SE_ALLY = 0x58, AD_SE_SELF = 0x68, AD_AREA = 0x70, AD_SKILL = 0x80 };                  /* AccessoryData (createReferences) */
++#define AD_SUBTYPE 0xa93258
++#define AD_ACTIVE_TICKS 0xa932c8
++#define AD_ACT_DELAY 0xa932b8
++#define AD_CV1 0xa933d0
++#define AD_CV2 0xa933e0
++#define AD_STOP_MOVE 0xa932e8   /* StopMovement (bool) */
++#define AD_SHIELD_PCT 0xa93368  /* ShieldPercent */
++#define AD_SHIELD_TICKS 0xa93378
++enum { SE_ID = 0x20, SE_DUR = 0x98, SE_COD = 0xa4, SE_REFRESH = 0xad, SE_CHARGE = 0xc4, SE_SHIELD = 0xf4, SE_RELOAD = 0x124,
++       SE_INVIS = 0x12c, SE_LOSECTL = 0x131, SE_INVERT = 0x14b };   /* StatusEffectData (loader 0xba3814) */
++#define BUFF_CHARGE 17          /* give_buff_to_self CustomValue1: the buff the row names (Moe 17, Draco 21; Clancy 22 and
++                                 * Kenji 26 are not done) */
++#define BUFF_STAND 21
++#define COD_AMMO 2              /* character_actions.csv PowerLevelerGadgetShieldGiveAmmo: GiveAmmoSource, Value 2 [?] 2 bars */
++#define BUZZ_VISION_R 1800      /* RopeDudeSuperChargeArea Radius (his super charging area; the Large row's 2400 is not used) */
++
++static int g_on = -1;
++static int dbg(void) { static int d = -1; if (d < 0) { const char *e = getenv("NB_GAD_DBG"); d = e && atoi(e) > 0; } return d; }
++static int ad_get(void *ad, uint64_t getter) { return ((int (*)(void *))B(getter))(ad); }
++static int now_tick(void *obj) { uint8_t *sim = ((void *(*)(void *))B(0xb6a378))(obj); return sim ? I32(sim, 0x10) : -1; }
++
++typedef struct {
++    int sk, start_data;                 /* kind; the brawler's CharacterData id at its first tick (form gate) */
++    int ch_id, until;                   /* the timed effect's brawler and end tick (0 = none running) */
++    void *data;                         /* ALLY: the status row put on (CancelOnDamage / inversion), SLEEP: the synthetic one */
++    int cod, invert, sub;               /* ALLY flags; VISION SubType */
++} Self;
++static Self g_self[NBE_MAXP];
++static uint8_t g_syn[NBE_MAXP][0x200] __attribute__((aligned(16)));
++static long g_fired[SK_N], g_clamps, g_inverts, g_cancels, g_ammo, g_sleeps, g_woken, g_vision_hits, g_named_miss;
++
++static void *status_by_name(const char *name) {   /* offline.c char_data's pattern with the StatusEffect lookup 0xad3378 */
++    uint8_t *s = ((void *(*)(unsigned long))B(0x11a4d90))(16); char *c = strdup(name);
++    ((void (*)(void *, const char *))B(0xe96e10))(s, c);
++    void *d = ((void *(*)(void *, void *))B(0xad3378))(s, NULL);
++    ((void (*)(void *))B(0xe96d00))(s); free(c);
++    LOG("[gadget] self: status row %s -> %p (id %d)\n", name, d, d ? I32(d, SE_ID) : -1);
++    return d;
++}
++static void *voodoo_row(int water) {
++    static void *speed, *shield; static int done;
++    if (!done) { speed = status_by_name("VoodooGadgetSpeedUp"); shield = status_by_name("VoodooGadgetShield"); done = 1; }
++    return water ? speed : shield;
++}
++static uint8_t *syn(int pid, int card, int dur) {
++    uint8_t *d = g_syn[pid]; memset(d, 0, sizeof g_syn[pid]);
++    I32(d, SE_ID) = card; I32(d, SE_DUR) = dur > 0 ? dur : 1; U8(d, SE_REFRESH) = 1;
++    return d;
++}
++static void st_apply(uint8_t *ch, void *data, int pid) {
++    int team = ((int (*)(void *))B(0xb6a820))(ch);
++    ((void (*)(void *, void *, int, int, void *, void *, int, int, int, int, int))B(0xb35dd0))(ch, data, pid, team, ch, ch, 0, 0, -1, -1, 0);
++    if (dbg()) LOG("[gadget] self: player %d status %d on ch %d (%d ticks, shield %d invis %d lose %d charge %d reload %d)\n", pid,
++                   I32(data, SE_ID), I32(ch, 8), I32(data, SE_DUR), I32(data, SE_SHIELD), I32(data, SE_INVIS), U8(data, SE_LOSECTL),
++                   I32(data, SE_CHARGE), I32(data, SE_RELOAD));
++}
++static void st_end(uint8_t *ch, void *data) { ((void (*)(void *, void *, void *))B(0xba3264))(ch + 0x890, data, (void *)(intptr_t)-2); }
++
++/* accessory -> SK_* (0 = not one of these) */
++int gself_kind(void *ad, int type) {
++    if (g_on < 0) { const char *e = getenv("NB_GAD_SELF"); g_on = !(e && !atoi(e)); if (!g_on) LOG("[gadget] self gadgets off (NB_GAD_SELF=0)\n"); }
++    if (!g_on || !ad) return SK_NONE;
++    int vision = type == T_VISION && ad_get(ad, AD_ACTIVE_TICKS) > 0;   /* no status: needs no store */
++    if (vision) return SK_VISION;
++    if (!superfix_status_live || !superfix_status_live()) return SK_NONE;
++    int sub = ad_get(ad, AD_SUBTYPE), at = ad_get(ad, AD_ACTIVE_TICKS);
++    switch (type) {
++    case 0:
++        if (PTR(ad, AD_AREA) || PTR(ad, AD_SKILL)) return SK_NONE;
++        if (PTR(ad, AD_SE_SELF)) return SK_ROW;
++        return ad_get(ad, AD_SHIELD_PCT) > 0 && ad_get(ad, AD_SHIELD_TICKS) > 0 ? SK_SHIELD : SK_NONE;
++    case T_SPEED: return PTR(ad, AD_SE_SELF) ? SK_SPEED : SK_NONE;
++    case T_DIVE: return at > 0 ? SK_DIVE : SK_NONE;
++    case T_VOODOO: return at > 0 ? SK_VOODOO : SK_NONE;
++    case T_INVISIBLE: return at > 0 ? SK_BOX : SK_NONE;
++    case T_GIVE_STATUS: return PTR(ad, AD_SE_ALLY) ? SK_ALLY : SK_NONE;
++    case T_BUFF: { int b = ad_get(ad, AD_CV1);
++        return at <= 0 ? SK_NONE : b == BUFF_CHARGE && ad_get(ad, AD_CV2) > 0 ? SK_CHARGE : b == BUFF_STAND ? SK_STAND : SK_NONE; }
++    case T_HEAL: return sub == 1 && ad_get(ad, AD_ACT_DELAY) > 0 ? SK_SLEEP : SK_NONE;
++    }
++    return SK_NONE;
++}
++int gself_published(int sk) { return sk == SK_SHIELD ? NBE_GAD_SHIELD : NBE_GAD_STATUS; }
++
++static int cur_data(uint8_t *ch) { void *cd = ((void *(*)(void *))B(0xb6a384))(ch); return cd ? I32(cd, SE_ID) : 0; }
++/* readiness: alive, not already running (the rows' TargetAlreadyActiveText), the form gate */
++int gself_ready(void *sim, int pid, uint8_t *ch, void *ad, int sk) {
++    (void)sim; (void)ad;
++    if (pid < 0 || pid >= NBE_MAXP || !ch || I32(ch, 0x3c4) <= 0) return 0;
++    Self *s = &g_self[pid]; int t = now_tick(ch);
++    if (!s->start_data) s->start_data = cur_data(ch);
++    if ((sk == SK_SPEED || sk == SK_CHARGE) && cur_data(ch) != s->start_data) return 0;
++    if ((sk == SK_STAND || sk == SK_SLEEP || sk == SK_VISION) && s->until > t) return 0;
++    return 1;
++}
++
++int gself_fire(void *sim, int pid, uint8_t *ch, void *ad, int card, int sk, int tick) {
++    if (!gself_ready(sim, pid, ch, ad, sk)) return 0;
++    Self *s = &g_self[pid]; int at = ad_get(ad, AD_ACTIVE_TICKS); uint8_t *d;
++    s->sk = sk;
++    switch (sk) {
++    case SK_ROW: st_apply(ch, PTR(ad, AD_SE_SELF), pid); break;
++    case SK_SHIELD:
++        d = syn(pid, card, ad_get(ad, AD_SHIELD_TICKS)); I32(d, SE_SHIELD) = ad_get(ad, AD_SHIELD_PCT);
++        U8(d, SE_LOSECTL) = ad_get(ad, AD_STOP_MOVE) != 0; st_apply(ch, d, pid); break;
++    case SK_SPEED: {
++        int r = ad_get(ad, AD_CV1);
++        st_apply(ch, PTR(ad, AD_SE_SELF), pid);
++        if (r > 0) { d = syn(pid, card, at); I32(d, SE_RELOAD) = 100 * r / (100 + r); st_apply(ch, d, pid); }
++        break; }
++    case SK_DIVE:
++        d = syn(pid, card, at); I32(d, SE_SHIELD) = 100; U8(d, SE_LOSECTL) = 1; st_apply(ch, d, pid); break;
++    case SK_BOX: d = syn(pid, card, at); I32(d, SE_INVIS) = 1; st_apply(ch, d, pid); break;
++    case SK_VOODOO: {
++        int g = env_ground(sim, I32(ch, 0x38), I32(ch, 0x3c));
++        if (g == 1) { d = syn(pid, card, at); I32(d, SE_INVIS) = 1; st_apply(ch, d, pid); }
++        else { void *row = voodoo_row(g == 2); if (!row) { g_named_miss++; return 0; } st_apply(ch, row, pid); }
++        if (dbg()) LOG("[gadget] self: player %d Juju on %s\n", pid, g == 1 ? "a bush" : g == 2 ? "water" : "ground");
++        break; }
++    case SK_ALLY: {
++        void *row = PTR(ad, AD_SE_ALLY);
++        st_apply(ch, row, pid);
++        s->data = row; s->ch_id = I32(ch, 8); s->until = tick + I32(row, SE_DUR); s->cod = U8(row, SE_COD); s->invert = U8(row, SE_INVERT);
++        break; }
++    case SK_CHARGE: d = syn(pid, card, at); I32(d, SE_CHARGE) = ad_get(ad, AD_CV2); st_apply(ch, d, pid); break;
++    case SK_STAND: s->ch_id = I32(ch, 8); s->until = tick + at; break;
++    case SK_SLEEP: {
++        int n = ad_get(ad, AD_ACT_DELAY);
++        d = syn(pid, card, n); U8(d, SE_LOSECTL) = 1; st_apply(ch, d, pid);
++        s->data = d; s->ch_id = I32(ch, 8); s->until = tick + n; g_sleeps++;
++        break; }
++    case SK_VISION: s->ch_id = I32(ch, 8); s->until = tick + at; s->sub = ad_get(ad, AD_SUBTYPE); break;
++    default: return 0;
++    }
++    g_fired[sk]++;
++    if (dbg()) LOG("[gadget] self: player %d card %d %s fired at tick %d\n", pid, card, SK_NAME[sk], tick);
++    return 1;
++}
++
++/* gadget.c's gadget_tick: Sandy's sleep ends with a full heal */
++void gself_tick(void *sim, int tick) {
++    for (int i = 0; i < NBE_MAXP; i++) {
++        Self *s = &g_self[i];
++        if (s->sk != SK_SLEEP || !s->until || tick < s->until) continue;
++        uint8_t *ch = env_obj_by_id(sim, s->ch_id); s->until = 0;
++        if (!ch || I32(ch, 0x3c4) <= 0) continue;
++        int hp = I32(ch, 0x3c4), mx = I32(ch, 0x3c8);
++        if (hp < mx) ((void (*)(void *, int, int, int, void *, int, int, int, long, long))B(0xb41554))(ch, i, mx - hp, 1, NULL, 0, 0, 0, 0, 0);
++        if (dbg()) LOG("[gadget] self: player %d woke at tick %d, hp %d -> %d\n", i, tick, hp, I32(ch, 0x3c4));
++    }
++}
++
++static Self *running(uint8_t *victim, int sk, int t) {
++    int id = I32(victim, 8);
++    for (int i = 0; i < NBE_MAXP; i++) if (g_self[i].sk == sk && g_self[i].until > t && g_self[i].ch_id == id) return &g_self[i];
++    return NULL;
++}
++/* env.c my_root, before libg's root (after the env's damage model): -> 1 = skip this hit. Trunk's inversion heals the hit
++ * and ends; Draco's last stand clamps the damage to hp - 1 */
++int gadget_root_pre(uint8_t *victim, uint8_t *attacker, int *dmg, int *a3) {
++    (void)attacker;
++    if (!victim || VTOF(victim) != VT_CHAR || *dmg <= 0 || I32(victim, 0x3c4) <= 0) return 0;
++    int t = now_tick(victim); Self *s;
++    if ((s = running(victim, SK_ALLY, t)) && s->invert) {
++        int pid = (int)(s - g_self);
++        ((void (*)(void *, int, int, int, void *, int, int, int, long, long))B(0xb41554))(victim, pid, *dmg, 1, NULL, 0, 0, 0, 0, 0);
++        st_end(victim, s->data); s->until = 0; g_inverts++;
++        if (dbg()) LOG("[gadget] self: player %d inverted %d damage at tick %d\n", pid, *dmg, t);
++        return 1;
++    }
++    if ((s = running(victim, SK_STAND, t))) {
++        int hp = I32(victim, 0x3c4);
++        if (*dmg >= hp) {
++            int nd = hp - 1; g_clamps++;
++            if (dbg()) LOG("[gadget] self: player %d last stand: %d damage -> %d at hp %d, tick %d\n", (int)(s - g_self), *dmg, nd, hp, t);
++            if (nd <= 0) return 1;
++            if (*a3 == *dmg) *a3 = nd;
++            *dmg = nd;
++        }
++    }
++    return 0;
++}
++static int max_ammo(uint8_t *ch, uint8_t **sk0) {   /* gadget.c's: weapon skill instance +0x18, full = 0xb7aea4 x 1000 */
++    uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464);
++    *sk0 = sk && n >= 1 && n <= 16 ? sk[0] : NULL; if (!*sk0) return 0;
++    int m = ((int (*)(void *, void *))B(0xb7aea4))(*sk0, ch) * 1000;
++    return m > 1000 ? m : 1000;
++}
++/* gadget.c's gadget_root_post, after libg's root: CancelOnDamage of the gadget statuses (Surge's shield gives its ammo),
++ * Sandy woken by damage */
++void gself_root_post(uint8_t *victim, int removed) {
++    if (!victim || removed <= 0) return;
++    int t = now_tick(victim); Self *s;
++    if ((s = running(victim, SK_ALLY, t)) && s->cod) {
++        st_end(victim, s->data); s->until = 0; g_cancels++;
++        uint8_t *sk0; int m = max_ammo(victim, &sk0);
++        if (sk0 && I32(s->data, SE_SHIELD) > 0) {
++            int a = I32(sk0, 0x18) + COD_AMMO * 1000; I32(sk0, 0x18) = a < m ? a : m; g_ammo++;
++        }
++        if (dbg()) LOG("[gadget] self: player %d status %d cancelled by %d damage at tick %d, ammo %d\n", (int)(s - g_self),
++                       I32(s->data, SE_ID), removed, t, sk0 ? I32(sk0, 0x18) : -1);
++    }
++    if ((s = running(victim, SK_SLEEP, t))) {
++        st_end(victim, s->data); s->until = 0; g_woken++;
++        if (dbg()) LOG("[gadget] self: player %d woken by %d damage at tick %d (no heal)\n", (int)(s - g_self), removed, t);
++    }
++}
++
++/* env.c's bush hiding: is an enemy at world (x, y) seen into its bush by player li's team (a Tara or Buzz vision running) */
++static void *g_sim; static int g_now;
++int gadget_vision(int li, int x, int y) {
++    if (!g_sim || li < 0 || li >= NBE_MAXP) return 0;
++    int np = I32(g_sim, 0x7c); void **ps = PTR(g_sim, 0x70);
++    if (!ps || li >= np || np > 64 || !ps[li]) return 0;
++    int team = I32(ps[li], 12);
++    for (int i = 0; i < NBE_MAXP && i < np; i++) {
++        Self *s = &g_self[i];
++        if (s->sk != SK_VISION || s->until <= g_now || !ps[i] || I32(ps[i], 12) != team) continue;
++        if (s->sub == 0) { g_vision_hits++; return 1; }
++        uint8_t *ch = env_obj_by_id(g_sim, s->ch_id);
++        if (!ch || I32(ch, 0x3c4) <= 0) continue;
++        long dx = x - I32(ch, 0x38), dy = y - I32(ch, 0x3c);
++        if (dx * dx + dy * dy <= (long)BUZZ_VISION_R * BUZZ_VISION_R) { g_vision_hits++; return 1; }
++    }
++    return 0;
++}
++void gself_note_tick(void *sim, int tick) { g_sim = sim; g_now = tick; gself_tick(sim, tick); }
++
++/* RESET: the last battle's counters (when any fired), then a clean table */
++void gself_clear(void) {
++    long n = 0; for (int k = 0; k < SK_N; k++) n += g_fired[k];
++    if (n) {
++        char b[256]; int o = 0;
++        for (int k = 1; k < SK_N; k++) if (g_fired[k]) o += snprintf(b + o, sizeof b - o, " %s %ld", SK_NAME[k], g_fired[k]);
++        LOG("[gadget] self:%s; last stand clamps %ld, inversions %ld, cancels %ld (ammo %ld), sleeps %ld (woken %ld), vision hits %ld, "
++            "missing rows %ld\n", b, g_clamps, g_inverts, g_cancels, g_ammo, g_sleeps, g_woken, g_vision_hits, g_named_miss);
++    }
++    memset(g_self, 0, sizeof g_self); memset(g_fired, 0, sizeof g_fired);
++    g_clamps = g_inverts = g_cancels = g_ammo = g_sleeps = g_woken = g_vision_hits = 0; g_sim = NULL;
++}

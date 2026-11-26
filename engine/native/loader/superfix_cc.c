@@ -61,8 +61,6 @@ static void stun(uint8_t *ch, int ticks, const char *why) {
     if (I32(ch, CH_STUN_TICKS) < ticks) I32(ch, CH_STUN_TICKS) = ticks;   /* the longer stun wins (no stacking) */
     if (g_superfix_dbg) LOG("[superfix] cc: stun ch %d for %d ticks (%s), tick %d\n", I32(ch, 8), ticks, why, now_tick(ch));
 }
-/* superfix_moves.c: Buzz's landing stun, Kit's hypercharged super */
-void superfix_cc_stun(uint8_t *ch, int ticks, const char *why) { if (on()) stun(ch, ticks, why); }
 typedef struct { uint8_t *ch; int id, until; } Sil;
 #define SIL_MAX 64
 static Sil g_sil[SIL_MAX]; static int g_nsilrec;
@@ -78,6 +76,13 @@ static void silence(uint8_t *ch, int ticks, const char *why) {
     }
     if (g_sil[k].until < t + ticks) g_sil[k].until = t + ticks;
     if (g_superfix_dbg) LOG("[superfix] cc: silence ch %d for %d ticks (%s), tick %d\n", I32(ch, 8), ticks, why, t);
+}
+/* superfix_moves.c (Buzz's landing stun, Kit's hypercharged super) and gadget.c (next-attack stuns and sleeps): -> 1 = the stun
+ * was applied (superfix on, a living character without CcImmunity) */
+int superfix_cc_stun(uint8_t *ch, int ticks, const char *why) {
+    if (!on() || !is_char(ch) || ticks <= 0 || I32(ch, 0x3c4) <= 0) return 0;
+    if (U8(ch, CH_CCIMM)) { g_nimm++; return 0; }
+    stun(ch, ticks, why); return 1;
 }
 /* superfix_status.c's aggregate asks every tick */
 int superfix_cc_silenced(uint8_t *ch, int t) {
