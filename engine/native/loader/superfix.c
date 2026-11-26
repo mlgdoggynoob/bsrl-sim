@@ -72,7 +72,9 @@ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind,
  * 0xb41554. DamageScaleType 2 (Pam's two turrets, the only summon heals): TURRET_HEAL_PCT % of the summoner's max HP (the
  * brawler of the summon's player; the wiki: "12% of Pam's maximum health each second"); the data's -Damage % of the turret's
  * own max HP gave 304 a second (10 % of 3040: summons keep their power-1 HP here). Without a living summoner, and for other
- * scale types, -Damage % of the summon's max HP or -Damage, x P11_SCALE (power-1 numbers, issue #22). */
+ * scale types, -Damage % of the summon's max HP or -Damage, x P11_SCALE (power-1 numbers, issue #22). An area with
+ * OverHealTicks (Pam's hypercharged turret, HotAndOverheals) heals allies at full HP too, and what goes past max HP becomes
+ * a decaying shield (hyper.c hyper_overheal). */
 typedef struct { int ch_id, area_id; uint8_t *a; int next; } SumArea;
 #define SA_MAX 32
 static SumArea g_sa[SA_MAX]; static int g_nsa; static long g_nsum_area, g_nsum_end;
@@ -105,6 +107,7 @@ void superfix_summon_area(uint8_t *ch) {
 #define TURRET_HEAL_PCT 14   /* the owner's clip (#22, training cave): Pam at power 11 (10000 HP) +1400 a tick (8000 -> 9400 ->
                               * 10000 capped, 1 s apart); the v68.279 row says -10 (wiki: 12 %), the live game heals 14 % */
 long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) __attribute__((weak));   /* superfix_cc.c: libg's target test */
+void hyper_overheal(uint8_t *ch, int over, uint8_t *ad) __attribute__((weak));   /* hyper.c: Pam's hypercharged turret */
 static long g_nsum_hot;
 static void summon_area_end(uint8_t *a, uint8_t *sim) {   /* from the area tick: the summon gone -> the area ends now */
     for (int i = 0; i < g_nsa; i++) if (g_sa[i].a == a && g_sa[i].area_id == I32(a, 8)) {
@@ -120,12 +123,15 @@ static void summon_area_end(uint8_t *a, uint8_t *sim) {   /* from the area tick:
             }
             int amt = I32(d, 0x138) == 2 && boss ? I32(boss, 0x3c8) * TURRET_HEAL_PCT / 100
                     : P11_SCALE * (I32(d, 0x138) == 2 ? -I32(own, 0x3c8) * I32(d, 0x134) / 100 : -I32(d, 0x134));
+            int over = I32(d, 0x1a4) > 0 && hyper_overheal;   /* OverHealTicks: the hypercharged turret's heal (HotAndOverheals) */
             for (int k = 0; amt > 0 && v && k < n && k < 4096; k++) {
                 uint8_t *c = v[k];
                 if (!c || (int)((uint8_t *)PTR(c, 0) - g_libg->base) != 0x1209020 || I32(c, 0x3c4) <= 0 || c == own) continue;
-                if (((geti_t)B(0xb6a820))(c) != team || I32(c, 0x3c4) >= I32(c, 0x3c8)) continue;
+                int hp = I32(c, 0x3c4), mx = I32(c, 0x3c8);
+                if (((geti_t)B(0xb6a820))(c) != team || (hp >= mx && !over)) continue;
                 if (!superfix_area_reach || superfix_area_reach(a, d, c) < 0) continue;
                 ((void (*)(void *, int, int, int, void *, int, int, int, long, long))B(0xb41554))(c, ((geti_t)B(0xb6a754))(a), amt, 1, NULL, 0, 0, 0, 0, 0);
+                if (over && hp + amt > mx) hyper_overheal(c, hp + amt - (hp > mx ? hp : mx), d);   /* the part past max HP: a shield */
                 g_nsum_hot++;
                 if (g_superfix_dbg) LOG("[superfix] summon Hot area %d heals ch %d by %d tick %d\n", I32(d, 0x20), I32(c, 8), amt, now);
             }
@@ -145,8 +151,8 @@ static long g_ndelayed, g_nslip;
 /* ---- Slippery (type 20; Lou's IceDudeUltiArea): the apply's type gate refuses 20 and the server's slippery logic is
  * compiled out, so the area spawns and hits no one. Its damage (area +0xe8: the projectile's scaled Damage, written by the
  * projectile area spawn at 0xb771ec) is dealt once a second while the area lives, by re-running the apply as a Damage
- * area, as for DelayedDamage. Areas with no damage (Lumi's ice gadget) are left alone. The slide and the freeze build-up
- * (CustomValue / CustomValue2) are not re-implemented. */
+ * area, as for DelayedDamage. Areas with no damage (Lumi's ice gadget) are left alone. The freeze build-up (CustomValue2)
+ * is superfix_cc.c's freeze meter; the slide (CustomValue) is not re-implemented. */
 #define SLIP_EVERY 20   /* [?] ticks between hits: the row has no interval; 1 s like the SameAreaEffectCanNotDamageMs 1000 of other lingering areas */
 static void slippery_tick(uint8_t *a, uint8_t *d, uint8_t *sim) {
     int now = I32(sim, 0x10), d0 = I32(a, 0xd0), d4 = I32(a, 0xd4), d8 = I32(a, 0xd8), el = now - d0;
