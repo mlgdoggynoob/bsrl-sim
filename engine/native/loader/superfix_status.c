@@ -70,7 +70,7 @@ enum { SE_DUR = 0x98, SE_RATE = 0xa0, SE_SRCDEATH = 0xa8, SE_FIRST = 0xab, SE_ST
        SE_SPD_BP = 0xf8, SE_SPD_BA = 0xfc, SE_SPD_RP = 0x100, SE_SPD_RA = 0x104, SE_DMG_BP = 0x108, SE_DMG_RP = 0x118,
        SE_RECV_BP = 0x11c, SE_RECV_BA = 0x120,
        /* issue #19 leftovers (stores at 0xba4198 / 0xba41c4 / 0xba42a0 / 0xba4478; Fear is a BooleanAttributes word, 0xba4bc8) */
-       SE_LIFESTEAL = 0x10c, SE_SRC_LIFESTEAL = 0x110, SE_RELOAD = 0x124,
+       SE_LIFESTEAL = 0x10c, SE_SRC_LIFESTEAL = 0x110, SE_RELOAD = 0x124, SE_CHARGE = 0xc4 /* UltiChargeBoostPercent (#46) */,
        /* DamageBoostTargetCurrentHealthPercent (store 0xba41f0), CancelOnChargeEnd (byte, store 0xba3ac0) */
        SE_HPBOOST = 0x114, SE_CANCEL_CHARGE_END = 0xa6,
        /* bytes */
@@ -520,11 +520,15 @@ int superfix_status_taunt(uint8_t *ch, int *x, int *y) {
 }
 
 /* issue #19 final: Edgar's hypercharged super area (EnragerOverchargeSuper): extra percent on the super charge his hits
- * give (env.c my_charge), 0 = none */
+ * give (env.c my_charge), 0 = none. Issue #46: plus the UltiChargeBoostPercent (+0xc4) of every status in the store, as the
+ * table gives it: Surge's PowerLevelerExtraUltiCharge 30 and Moe's gadget 50, and also two non-gadget rows that were stored
+ * with no effect before, RockWeaponDamageBoost 50 and DaredevilSpUltiChargeRate 30 */
 int superfix_status_charge_pct(uint8_t *ch) {
     if (!g_superfix || !mode() || !is_char(ch)) return 0;
-    return zone_get(ch, ZN_CHARGE, now_tick(ch));
+    return zone_get(ch, ZN_CHARGE, now_tick(ch)) + st_field(ch, SE_CHARGE, NULL);
 }
+static int g_st_on;
+int superfix_status_live(void) { return g_superfix && g_st_on; }   /* issue #46: gadget_self.c puts statuses in this store */
 
 /* StatusEffect (type 36) areas, from superfix.c's area tick hook (0xb28c0c) */
 typedef struct { void *a, *d; int start, end, next, n; } AreaRec;
@@ -849,7 +853,7 @@ void superfix_status_install(void) {
     hook_replace(g_libg, 0xba3230, (void *)my_status_add);
     hook_replace(g_libg, 0xba3260, (void *)my_status_remove);
     hook_replace(g_libg, 0xba3264, (void *)my_status_remove);
-    hook_enter(g_libg, 0xb3941c, on_char_update);
+    hook_enter(g_libg, 0xb3941c, on_char_update); g_st_on = 1;
     if (*(uint32_t *)B(0xba3274) == 0xd65f03c0 && *(uint32_t *)B(0xb3e16c) == 0x94019442)   /* ret; bl 0xba3274 */
         hook_replace(g_libg, 0xba3274, (void *)my_charge_end);
     else LOG("[superfix] status: charge-end notify 0xba3274 bytes differ, CancelOnChargeEnd left out\n");

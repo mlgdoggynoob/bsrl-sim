@@ -3,8 +3,13 @@
   2. for each gadget kind the host implements (gad_kind != NONE, nbhost gadget.c), fire it (NbeAction.fire 3) a few
      times and assert, on the next response, that a use was spent (gad_charges - 1, gad_used + 1, gad_cd > 0), and
      SETTLE ticks later that the kind's effect happened (EFFECT; a kind without an effect test fails, so a new kind comes
-     with its test). The effect has to show in at least EFFECT_SHARE of the activations of each kind: a dash aimed into
-     a wall stops short and enemy fire can outweigh a heal over time, and the check plays random agents in a real battle;
+     with its test). Only DASH, HEAL and SUPER effects are in the response; for SPAWN, PROJECTILE, STATUS and SHIELD the
+     test passes on the spent use alone, and their effects are checked by super_audit --gadget (areas, projectiles, next
+     attack) and status_check battles 5-8 (statuses, shields). A kind whose precondition does not hold (gadget.c
+     ready(): a NEXT modifier already pending, Meg out of her mech, Byron without ammo, Buzz's super full, a sleep / last
+     stand / vision still running, a form gate) reads as a cooldown of 1 tick, so it is not ready and a fire spends
+     nothing. The effect has to show in at least EFFECT_SHARE of the activations of each kind: a dash aimed into a wall
+     stops short and enemy fire can outweigh a heal over time, and the check plays random agents in a real battle;
   3. fire 3 on a gadget that is not ready (no use left / cooldown / kind not implemented) spends nothing; a ready gadget
      whose row has RequireEnemyInRange (`needs_enemy`) may refuse with no enemy in Range, which spends nothing either;
   4. env_v5.Env.gadget (obs_v5 self 3) agrees with the response;
@@ -59,7 +64,8 @@ AA_MAIN_SHARE = 0.25   # "far less than one main attack": the data gives 5 % of 
 AA_PUSH_MIN = 100.0    # units farther from the shooter, as super_audit.PUSH_MIN: above walk jitter and setup rounding
                        # (PushbackStrength 70, Shelly's super's knockback)
 AA_STILL = 50.0        # the unhit control's largest move: setup rounding only (AI off, told to stand)
-DESC_OPEN = {}   # desc_audit mismatches with an open fix (card -> issue); #54 closed Piper's and Leaper's
+DESC_OPEN = {"JetpackGirl_JumpAttack": 46}   # desc_audit mismatches with an open fix (card -> issue); #54 closed Piper's and
+# Leaper's. Janet's recoil (NEXT SubType 15) is libg's own knockback branch; "even over walls" is not checked yet
 
 
 def desc_mismatches():
@@ -94,8 +100,10 @@ def effect_spawn(a, b):   # an area / item (gadget.c AREA, SKILL AREA, ITEM): no
 def effect_projectile(a, b):   # projectiles (gadget.c SHOT, AUTO AIMER, REPEAT / SPIN): not in NbeResp; seen by `super_audit --gadget`, damage by 5
     return True, "use spent (projectiles: super_audit --gadget, damage: the volley scene)"
 def effect_super(a, b): return b["sc"] > a["sc"], "super %d -> %d of %d" % (a["sc"], b["sc"], b["sm"])
+def effect_status(a, b):   # STATUS / SHIELD (NEXT modifiers, gadget_self.c statuses): not in NbeResp; super_audit / status_check
+    return True, "use spent (see super_audit / status_check)"
 EFFECT = {"DASH": effect_dash, "HEAL": effect_heal, "SPAWN": effect_spawn, "PROJECTILE": effect_projectile,
-          "SUPER": effect_super}   # by GAD_* name; add one with each kind gadget.c implements
+          "SUPER": effect_super, "STATUS": effect_status, "SHIELD": effect_status}   # by GAD_* name; one per kind gadget.c implements
 WANT = {"HEAL": lambda s: s["hp"] < 0.9 * s["max_hp"],   # judged only when the effect can show (a heal needs missing hp,
         "SUPER": lambda s: s["sc"] < s["sm"]}             # a super charge a super that is not full)
 
@@ -324,7 +332,13 @@ def _check():
     assert effect(s(kind=P.GAD_HEAL), s(hp=3500))[0] and not effect(s(kind=P.GAD_HEAL), s(hp=2900))[0]
     assert not WANT["HEAL"](s(hp=4000)) and WANT["HEAL"](s(hp=3000))                    # fired at full hp: nothing to show
     assert judge(s(kind=P.GAD_SPAWN), s(kind=P.GAD_SPAWN, charges=2, used=1, cd=9)) == []
-    assert judge(s(kind=P.GAD_SHIELD), s(kind=P.GAD_SHIELD, charges=2, used=1, cd=9))[0].startswith("no effect test")
+    assert judge(s(kind=P.GAD_STATUS), s(kind=P.GAD_STATUS, charges=2, used=1, cd=9)) == [] and effect(s(kind=P.GAD_STATUS), s())[0]
+    assert judge(s(kind=P.GAD_SHIELD), s(kind=P.GAD_SHIELD, charges=2, used=1, cd=9)) == []
+    ef = EFFECT.pop("SHIELD")
+    try: assert judge(s(kind=P.GAD_SHIELD), s(kind=P.GAD_SHIELD, charges=2, used=1, cd=9))[0].startswith("no effect test")
+    finally: EFFECT["SHIELD"] = ef
+    # a kind whose precondition fails (gadget.c ready(): NEXT while a modifier is pending) is published with a 1-tick cooldown
+    assert not ready(s(kind=P.GAD_STATUS, cd=1)) and judge(s(kind=P.GAD_STATUS, cd=1), s(kind=P.GAD_STATUS, cd=1)) == []
     assert judge(s(kind=P.GAD_PROJECTILE), s(kind=P.GAD_PROJECTILE, charges=2, used=1, cd=9)) == []
     assert effect(s(kind=P.GAD_SUPER, sc=500), s(sc=3000))[0] and not effect(s(kind=P.GAD_SUPER, sc=500), s(sc=500))[0]
     assert WANT["SUPER"](s(sc=0)) and not WANT["SUPER"](s(sc=3000))
