@@ -141,6 +141,7 @@ static int zone_get(uint8_t *ch, int kind, int t) {
     return v;
 }
 
+static void pierce_mark(uint8_t *src, uint8_t *target, void *data);   /* Pierce's marked shots (below) */
 /* 0xba3230 */
 static void *my_status_add(void *cont, uint8_t *ch, void *data, int src_player, int team, void *src_obj, uint8_t *src_ch) {
     (void)cont; (void)team;
@@ -150,7 +151,7 @@ static void *my_status_add(void *cont, uint8_t *ch, void *data, int src_player, 
     if (!U8(data, SE_STACK))
         for (int i = 0; i < g_nst; i++) if (g_st[i].ch == ch && g_st[i].ch_id == I32(ch, 8) && g_st[i].data == data) {
             if (U8(data, SE_REFRESH) || g_st[i].until < t + dur) g_st[i].until = t + dur;   /* refresh: a new full duration */
-            g_nrefresh++; return NULL;
+            g_nrefresh++; pierce_mark(src_ch, ch, data); return NULL;
         }
     if (g_nst >= ST_MAX) { g_nfull++; return NULL; }
     int rate = I32(data, SE_RATE);
@@ -161,7 +162,56 @@ static void *my_status_add(void *cont, uint8_t *ch, void *data, int src_player, 
     if (g_superfix_dbg) LOG("[superfix] st: add %d to ch %d (hp %d) from ch %d player %d: %d ticks, tick %d, shield %d dmg %d heal %d invis %d, live %d\n",
                             data_id(data), I32(ch, 8), I32(ch, 0x3c4), s->src_id, src_player, dur, t, I32(data, SE_SHIELD),
                             I32(data, SE_DMG), I32(data, SE_HEAL), I32(data, SE_INVIS), g_nst);
+    pierce_mark(src_ch, ch, data);
     return NULL;
+}
+/* Pierce (Bulletstorm): his super's marked shots. The Brawler_Bulletstorm component (type 11, built by 0xb8e95c: vtable
+ * 0x1209910) registers a listener on its owner's status manager event (char +0x8b0, functor 0x12099b0 -> 0xb8f864) that the
+ * server's status add fires; with the add compiled out (above) it never runs, so his mark area marked enemies and nothing
+ * shot them (a host run: 0 damage to an enemy 700 u inside the r900 mark). The handler is in the client: 0xb8f864(component,
+ * event) with event +8 the marked character, +24 the StatusEffectData, +32 == 2. It fires the component's Projectiles[2]
+ * (BulletstormUltiMarkedProjectile; Projectiles[3] BulletstormUltiOverchargedMarkedProjectile, PiercesCharacters, when the
+ * status is StatusEffects[1] BulletstormUltiOverchargedMark) at that character through 0xb8f69c (spawn 0xb78190, homing on
+ * the target: projectile +0xe8) with Values[4] = 1400 damage; for the hypercharged mark it also queues {target, tick} at
+ * component +0x88 (count +0x94). The queue is drained by 0xb8f190 (the tail of the component tick 0xb8ef78, which libg never
+ * calls): Values[7] = 12 ticks later it fires Projectiles[3] again with Values[4] x Values[8] / 100 = 1400 x 50 % = 700, the
+ * second wave (the card text's "2nd wave deals <VALUE1>% less damage": the data says 50 %). Here: after a mark is stored,
+ * the source's type-11 component gets the event (only for its own two mark statuses, component data +0xb8 [0] / [1]), and
+ * once per character update its queue is drained through 0xb8f190 alone (the rest of the tick swaps his weapon and ammo,
+ * which the attack code already does), after dropping entries whose target left the object list (the queue keeps a raw
+ * pointer). The shells his hits drop (the other listener, char +0x280) are not done here. */
+static uint8_t *pierce_comp(uint8_t *ch) {
+    int nc = I32(ch, 0xa6c); void **c = PTR(ch, 0xa60);
+    for (int i = 0; c && i < nc && i < 64; i++)
+        if (c[i] && I32(c[i], 0x10) == 11 && PTR(c[i], 8) == ch && PTR(c[i], 0x30) &&
+            (*(void ***)c[i])[0x40 / 8] == (void *)B(0xb8ef78)) return c[i];
+    return NULL;
+}
+static long g_npierce_mark, g_npierce_wave2, g_npierce_drop;
+static void pierce_mark(uint8_t *src, uint8_t *target, void *data) {
+    if (!is_char(src) || I32(src, 0x3c4) <= 0 || !is_char(target)) return;
+    uint8_t *comp = pierce_comp(src); if (!comp) return;
+    void **marks = PTR(PTR(comp, 0x30), 0xb8);   /* component data StatusEffects: BulletstormUltiMark, ...OverchargedMark */
+    if (!marks || (data != marks[0] && data != marks[1])) return;
+    uint8_t ev[48] = {0};
+    *(void **)(ev + 8) = target; *(void **)(ev + 24) = data; *(int32_t *)(ev + 32) = 2;
+    ((void (*)(void *, void *))B(0xb8f864))(comp, ev);
+    g_npierce_mark++;
+    if (g_superfix_dbg) LOG("[superfix] pierce: mark %d on ch %d -> marked shot (queue %d)\n", data_id(data), I32(target, 8), I32(comp, 0x94));
+}
+static void pierce_tick(uint8_t *ch) {
+    uint8_t *comp = I32(ch, 0x3c4) > 0 ? pierce_comp(ch) : NULL;
+    if (!comp || I32(comp, 0x94) <= 0) return;
+    int n, k = 0, q = I32(comp, 0x94); void **v = objects(ch, &n), **e = PTR(comp, 0x88);
+    for (int i = 0; e && i < q; i++) {   /* entries {target, tick}, new'd by 0xb8f864, deleted by 0xb8f190 with 0x11a4d60 */
+        void *t = *(void **)e[i]; int ok = 0;
+        for (int j = 0; v && j < n && !ok; j++) ok = v[j] == t && is_char(t) && I32(t, 0x3c4) > 0;
+        if (ok) e[k++] = e[i]; else { ((void (*)(void *))B(0x11a4d60))(e[i]); g_npierce_drop++; }
+    }
+    I32(comp, 0x94) = k;
+    int before = k;
+    if (k > 0) ((void (*)(void *))B(0xb8f190))(comp);
+    g_npierce_wave2 += before - I32(comp, 0x94);
 }
 /* 0xba3264(cont, data, source) / 0xba3260(cont, data, -2 = any source) */
 static void my_status_remove(void *cont, void *data, void *src) {
@@ -220,6 +270,7 @@ static void on_char_update(uint64_t *ctx) {
             if (c[i] && I32(c[i], 0x10) == 21 && I32(c[i], 0x38) > 0 && PTR(c[i], 8) == ch &&
                 (*(void ***)c[i])[0x40 / 8] == (void *)B(0xba0048)) { ((void (*)(void *))B(0xba0048))(c[i]); g_nmount++; }
     }
+    pierce_tick(ch);   /* Pierce's second wave (above) */
     int shield = 0, invis = 0, any = 0, cc = 0, lose = 0, stasis = 0, silence = 0, full = 0, taunt = 0, fear = 0;
     for (int i = 0; i < g_nst; i++) {
         St *s = &g_st[i];
@@ -649,7 +700,7 @@ void superfix_status_status(void) {
     LOG("[superfix] status: added %ld, refreshed %ld, full %ld, ended %ld, removed %ld, live %d; damage %ld, heal %ld; "
         "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
         "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld "
-        "(same-area skips %ld), spin bullets %ld\n",
+        "(same-area skips %ld), spin bullets %ld; Pierce marked shots %ld, second-wave shots %ld (dropped %ld)\n",
         g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal, g_narea_apply, g_narea_hits, g_nmount, g_nstun,
-        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nimm_skip, g_nspin);
+        g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nimm_skip, g_nspin, g_npierce_mark, g_npierce_wave2, g_npierce_drop);
 }
