@@ -15,7 +15,9 @@
  *     column is empty in the tables and the client reads it only for the UI; the duration is CustomValue +0x13c (ticks).
  *     At the area's first tick (superfix_status_area), every enemy character that libg's own target test reaches gets it
  *     (superfix_area_reach: circle, InnerRadius ring, RequireLineOfSight: Fang's sweep); HpBasedStun (43, Meeple's
- *     RageQuit) too, for longer the less HP its owner has;
+ *     RageQuit) too, for longer the less HP its owner has; an area of another type with StunTicks (+0x160, stored by the table loader at 0xa959dc; only
+ *     LeaperOverchargedUltiAreaExplosion, Damage, 30: Mico's hypercharged landing; libg reads it only at the table load)
+ *     stuns the same way for StunTicks ticks, without the path stop below (its own knockback is that path);
  *   - a new stun or loss of control stops the character's current path (stop 0xb4103c), because the mover only refuses new
  *     moves (superfix_cc_tick from the character update hook);
  *   - CcImmunity statuses (superfix_status.c aggregate +0x982) keep stuns and silences off.
@@ -129,18 +131,21 @@ long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) {
     }
     return dx * dx + dy * dy;
 }
-/* Stun (16), Silence (24) and HpBasedStun (43) areas, from superfix_status_area at every tick of an area: once per area, at
+/* Stun (16), Silence (24) and HpBasedStun (43) areas, and other areas with StunTicks (+0x160, ticks; a stun), from
+ * superfix_status_area at every tick of an area: once per area, at
  * its first tick, every enemy character libg's target test above reaches. HpBasedStun (Meeple's RageQuit gadget: "the less
  * hitpoints Meeple has, the stun and knockback effects increase"): CustomValue2 + (CustomValue - CustomValue2) x the
  * owner's missing HP fraction ticks (5 .. 30) [?] the formula is server code, the two values read as the stun's bounds;
  * its knockback (PushbackStrength 120) is not applied. */
+static void blk_mark(uint8_t *ch);   /* below: a stun whose path is not stopped */
 typedef struct { void *a; int start; } CcArea;
 #define CA_MAX 64
 static CcArea g_ca[CA_MAX]; static int g_nca;
 void superfix_cc_area(uint8_t *a, uint8_t *d) {
     if (!on() || !a || !d) return;
-    int type = I32(d, 0x118), ticks = I32(d, 0x13c); uint8_t *owner = PTR(a, 0x108);
-    if ((type != 16 && type != 24 && type != 43) || ticks <= 0 || !owner) return;
+    int type = I32(d, 0x118), cc = type == 16 || type == 24 || type == 43, ticks = cc ? I32(d, 0x13c) : I32(d, 0x160);   /* StunTicks */
+    uint8_t *owner = PTR(a, 0x108);
+    if (ticks <= 0 || !owner) return;
     for (int i = 0; i < g_nca; i++) if (g_ca[i].a == a && g_ca[i].start == I32(a, 0xd0)) return;
     if (g_nca >= CA_MAX) g_nca = 0;
     g_ca[g_nca++] = (CcArea){a, I32(a, 0xd0)};
@@ -158,6 +163,8 @@ void superfix_cc_area(uint8_t *a, uint8_t *d) {
         if (!is_char(o) || I32(o, 0x3c4) <= 0 || ((int (*)(void *))B(0xb6a820))(o) == team) continue;
         if (superfix_area_reach(a, d, o) < 0) continue;
         if (type == 24) { silence(o, ticks, "area"); g_nsil_area++; } else { stun(o, ticks, type == 43 ? "hp area" : "area"); g_nstun_area++; }
+        if (!cc) blk_mark(o);   /* StunTicks of a Damage area: the area's own knockback (its apply runs after this hook) is the path
+                                 * the victim is on; stopping it (superfix_cc_tick) would cancel the push the landing also deals */
     }
 }
 
@@ -239,6 +246,10 @@ void superfix_cc_switch(uint8_t *ch, int inside) {
 typedef struct { uint8_t *ch; int id; } Blk;
 #define BLK_MAX 64
 static Blk g_blk[BLK_MAX]; static int g_nblk;
+static void blk_mark(uint8_t *ch) {
+    for (int k = 0; k < g_nblk; k++) if (g_blk[k].ch == ch && g_blk[k].id == I32(ch, 8)) return;
+    if (g_nblk < BLK_MAX) g_blk[g_nblk++] = (Blk){ch, I32(ch, 8)};
+}
 void superfix_cc_tick(uint8_t *ch) {
     if (!on() || !is_char(ch)) return;
     for (int i = 0; i < g_nsw; i++) if (g_sw[i].ch == ch && g_sw[i].want) do_swap(ch, &g_sw[i]);

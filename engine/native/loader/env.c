@@ -8,8 +8,8 @@
  *   - Showdown rules: storm damage (20 %/s of max HP, +5 %/s after 5 s, applied before the snapshot of the tick after
  *     the check, through the damage root 0xb422d0), no regen in gas, elimination tracker / Brawlers left / native
  *     end at <= 1 alive or one team left (duo / trio), power cubes (+400 HP, +10 % damage incl. the popup), damage model (P11 x2 + travel curve; heal areas x2, #22),
- *     super-charge fix, Piper's leap re-implementation + BoxOfBombs + bomb damage, skill block in the air, client
- *     guard, alive guard, bot 'hold'/native control, local_ai.
+ *     super-charge fix, Piper's leap re-implementation + BoxOfBombs + bomb damage (hypercharged: OverchargedBomb too),
+ *     skill block in the air, client guard, alive guard, bot 'hold'/native control, local_ai.
  *   - soft reset: StartLoading clone re-injected through 0x816ff8 with the seed (+ the B3 determinism patch).
  * Every agent mechanism keeps the agent's numbers; differences are listed in work/NOTES.md. */
 #include "nbhost.h"
@@ -47,7 +47,11 @@ enum { VT_CHAR = 0x1209020, VT_CHAR2 = 0x1208d58, VT_ITEM = 0x1209240, VT_ITEM2 
 #define VTOF(o) ((int)((uint8_t *)PTR(o, 0) - g_libg->base))
 #define BOX_ID 16000120
 #define CUBE_ITEM 18000009
-#define BOMB_ITEM 18000035
+#define BOMB_ITEM 18000035      /* PiperdefBomb (items.csv row 35): what BoxOfBombs drops for the default skin */
+#define OC_BOMB_ITEM 18000146   /* OverchargedBomb (row 146): what the hypercharged super's OverchargedBoxOfBombs drops */
+/* a leap bomb: libg's own item code (0xb6c1c8 / 0xb6c498) drops box Value bombs (BoxOfBombs 4, OverchargedBoxOfBombs 6)
+ * of the skin's item (skin_confs Items / OverchargedSpawnedItem) or else "Bomb" / "OverchargedBomb"; env.c explodes each */
+#define LEAP_BOMB(id) ((id) == BOMB_ITEM || (id) == OC_BOMB_ITEM)
 
 int g_env_on;                 /* --env PATH given */
 int g_env_spf = 4;            /* --steps-per-frame (client mode: state-only steps run per client frame) */
@@ -179,6 +183,8 @@ static int brawler_owner(void *sim, uint8_t *c) {   /* player index whose curren
 void hyper_clear(void); void hyper_reset_player(int i, void *p); int hyper_active(void *p); int hyper_use(int i, void *p, uint8_t *ch);
 int hyper_tick_player(int i, void *p, uint8_t *ch, int alive); int hyper_damage(void *pa, int ai, void *pv, int vi, int d);
 int hyper_speed(int i, void *p, uint8_t *ch); void hyper_publish(NbeResp *r, void **ps, int np);
+int hyper_pet_damage(void *attacker, int d); int hyper_pet_speed(uint8_t *ch);   /* hyper.c: pets of a hypercharged super */
+void hyper_pets_tick(void *sim); int hyper_spirit_damage(uint8_t *ch, int d);   /* hyper.c: Colette's spirit (overcharge_pet_charge) */
 /* gear round (bsrl-sim issue #51): gear.c */
 extern int32_t g_div_gear[NBE_MAXP][2]; void gear_clear(void); void gear_reset_player(int i, void *cfg); void gear_install(void);
 int gear_damage(uint8_t *ach, int ai, uint8_t *vch, int vi, int d, int storm); int gear_speed(int i, uint8_t *ch, int base, int bush);
@@ -202,6 +208,7 @@ static int taunt_target(uint8_t *ch, int *tx, int *ty) {
     return 2;
 }
 void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) __attribute__((weak));   /* superfix_cc.c: projectile stuns */
+void spawnfix_proj_hit(void *src, void *victim) __attribute__((weak));   /* spawnfix.c: chain of a reason-3 hit */
 void hyper_install(void); void *hyper_super_data(int i, uint8_t *ch, void *sd); void hyper_unswap(int i, uint8_t *ch);
 void hyper_char_changed(uint8_t *old, uint8_t *nc);
 static void *owner_player(void *sim, void *c, int *idx) {   /* the player whose current brawler c is (NULL: none) */
@@ -411,6 +418,7 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
     int mode3 = I32(g_libg->base, 0x12eefb4) == 3;
     E.root_calls++;
     if (superfix_cc_hit) superfix_cc_hit(victim, attacker, src, (uint64_t)__builtin_return_address(0));
+    if (spawnfix_proj_hit && dmg > 0) spawnfix_proj_hit(src, victim);
     int saved_level = E.charge_level; E.charge_level = 0;
     if (mode3 && !E.in_own_call && attacker) {   /* agent: entryScale (attackerArg 5) + dmgModelApply */
         int raw = dmg, d = raw, aid = I32(attacker, 8), cubes = cubes_of(aid), lvl = 0;
@@ -433,6 +441,8 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
             int nd = hyper_damage(pa, ai, pv, vi, dmg);
             if (nd != dmg) { if (a3 == dmg) a3 = nd; dmg = nd; E.hyper_dmg++; }
         }
+        int pd = hyper_pet_damage(attacker, dmg);   /* a pet of a hypercharged super (overcharge_pet_buff_stats) */
+        if (pd != dmg) { if (a3 == dmg) a3 = pd; dmg = pd; E.hyper_dmg++; }
     }
     if (dmg > 0 && superfix_status_mods && E.sim && victim) {   /* issue #19: damage boost / reduce of the attacker's statuses,
                                                                * damage received boost of the victim's (superfix_status_mods) */
@@ -601,7 +611,8 @@ int g_native_charge = 1; static long g_native_charges;
 /* env charge contact (RE-IMPLEMENTED, not the game's code): the native start state for the charge's own hit processing is not
  * known, so env applies the charge skill's Damage once to every living enemy character (brawlers, summons, boxes) the charger
  * passes within CHARGE_HIT_R, through the damage root like the leap bombs (x2 power level, +10 % per cube), then the skill's
- * ChargePushback with the game's knockback; Berry (type 21) heals a teammate he passes by the same amount instead. The
+ * ChargePushback with the game's knockback (a negative one pulls the hit enemies to the landing point, charge_end) and its
+ * OnChargeHitStatusEffect (hypercharged Trunk's ants, DomainOverchargedUltiDamage); Berry (type 21) heals a teammate he passes by the same amount instead. The
  * charge's areas and Bull's wall breaking are env's too (charge_end, below).
  * --native-charge 2 = movement only (no env contact damage, pushback, areas or wall breaking). */
 #define CHARGE_HIT_R 250
@@ -610,7 +621,7 @@ int g_native_charge = 1; static long g_native_charges;
 #define CHARGE_LAND_WALL_R 300   /* El Primo: tiles around the landing point ([?] radius unknown: LuchadorUlti has no area, the
                                   * wiki only says "in a radius around him"; one tile ring) */
 #define CHARGE_LAND_R 200        /* Bonnie (type 16): her landing hit, CannonGirlExplosion's Radius ([?] the server's rule is compiled out) */
-typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; } ChargeJob;
+typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; void *hit_st; int dx, dy; } ChargeJob;
 static ChargeJob g_cj[NBE_MAXP]; static int g_ncj; static long g_charge_hits, g_charge_pushes, g_charge_areas, g_charge_walls, g_charge_heals;
 /* knockback 0xb49834(victim, srcX, srcY, strength, a4..a7, 10 stack slots, the last = pusher's owner index): pushes the victim
  * 6 * strength u away from (srcX, srcY) over 10 ticks (half for CollisionRadius >= 150), the call the game's own charge sweep
@@ -750,12 +761,18 @@ static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type
     { uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464);
       for (int k = 1; k >= 0; k--) if (sk && k < n && sk[k]) { uint8_t *d = ((uint8_t *(*)(void *, int))B(0xb7adfc))(sk[k], 0);
           if (d && I32(d, 0x1a8) == 2) { I32(ch, 0x6d8) = k + 1; break; } } }
+    /* OnChargeHitStatusEffect (SkillData +0x1f0, the resolved StatusEffectData: loader 0xb0b410; no libg reader in this build):
+     * the active skill's data as the skill code sees it (+49 = overcharged: Trunk's DomainOverchargedUlti, DomainOverchargedUltiDamage) */
+    void *hit_st = NULL;
+    { uint8_t **sk = PTR(ch, 0x458); int n = I32(ch, 0x464), k = I32(ch, 0x6d8) - 1;
+      if (sk && k >= 0 && k < n && sk[k]) { uint8_t *d = ((uint8_t *(*)(void *, int))B(0xb7adfc))(sk[k], U8(sk[k], 49) & 1);
+          if (d) hit_st = PTR(d, 0x1f0); } }
     if (full && g_ncj < NBE_MAXP) {
         int id = I32(ch, 8), k; for (k = 0; k < g_ncj && g_cj[k].id != id; k++) {}
         if (k == g_ncj) g_ncj++; else if (g_cj[k].type) PTR(ch, 0x550) = g_cj[k].old550;   /* a charge restarted mid-charge */
         /* Bonnie's launch (type 16) changes her into CannonGirlSmall before the start (0xb7bb58): no Charge skill, +0x6d8 stays 0 */
         g_cj[k] = (ChargeJob){id, I32(ch, 0x80), dmg, I32(sim, 0x10), 0, I32(ch, 0x6d8) == 2 || type == 16, type, push, -1000000, -1000000,
-                              area1, area_end, PTR(ch, 0x550), area2, {0}};
+                              area1, area_end, PTR(ch, 0x550), area2, {0}, hit_st, tx - x0, ty - y0};
         /* trail (Stu's fire, Berry's paint, Trunk's ants): while +0x490 is set and +0x550 holds area data, the character tick
          * spawns it through 0xb47360 each time the charger is farther than the area's Radius (+0x12c) from the last spawn point
          * (+0xc98/+0xc9c); the far point makes the first one land at the start. Only the client constructor writes +0x550. */
@@ -804,8 +821,32 @@ static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge f
     if (j->area1 && j->type == 2) charge_area(sim, ch, j->area1, x, y);
     if (j->area_end) charge_area(sim, ch, j->area_end, x, y);   /* AreaEffect2AtEndOfCharge: Bull's slow, Nori, Ollie, Damian */
     if (j->type == 16) charge_land(sim, j, ch, x, y);
+    /* a negative ChargePushback pulls (LuchadorUlti's OverchargedChargePushback -100, the hypercharged super the game passes
+     * as the start's x5): every enemy the charge hit is drawn to the landing point by the game's knockback, which for a
+     * negative strength moves the victim min(6 * |strength|, its distance) u toward the source (0xb49ba8..0xb49bc8, 0xb49cd0) */
+    if (j->push < 0 && g_native_charge == 1)
+        for (int h = 0; h < j->nhit; h++) { uint8_t *c = obj_by_id(sim, j->hit[h]);
+            if (!c || c == ch || VTOF(c) != VT_CHAR || I32(c, 0x3c4) <= 0 || I32(c, 0x84) == I32(ch, 0x84)) continue;
+            static int npl; if (npl++ < 10) LOG("[env] charge pull: %d at %d,%d, %d u from the landing point %d,%d\n", I32(c, 8),
+                I32(c, 0x38), I32(c, 0x3c), (int)hypot(I32(c, 0x38) - x, I32(c, 0x3c) - y), x, y);
+            KNOCKBACK(c, x, y, j->push, j->owner); g_charge_pushes++; }
     static int nlog; if (nlog++ < 20) LOG("[env] charge end type %d at %d,%d: hits %ld, ally heals %ld, pushes %ld, areas %ld, wall calls %ld, zones %d (zone hits %ld, heals %ld, pushes %ld) (totals)\n",
         j->type, x, y, g_charge_hits, g_charge_heals, g_charge_pushes, g_charge_areas, g_charge_walls, g_nzone, g_zone_hits, g_zone_heals, g_zone_pushes);
+}
+/* Berry's hypercharge (overcharge_painter, Painter_overcharge 1 / 90 / 400: "Sweet Swirl drops double the scoops of ice
+ * cream"; RE-IMPLEMENTED: no libg call site reads this card type): with each trail scoop the game drops, Value more of the
+ * same area, the e-th Value3 u from it at e x Value2 degrees from the dash direction (one more scoop 400 u to the dash's left).
+ * [?] the server's placement: compiled out; Value2 read as an angle, Value3 as a distance. */
+int hyper_card_live(void *ch, int type, int idx);   /* hyper.c: Value<idx> of ch's hypercharge card of that type, -1 if none */
+#define CT_PAINTER 273   /* overcharge_painter (the card Type enum) */
+static void painter_scoops(void *sim, ChargeJob *j, uint8_t *ch) {
+    int n = hyper_card_live(ch, CT_PAINTER, 1), deg = hyper_card_live(ch, CT_PAINTER, 2), off = hyper_card_live(ch, CT_PAINTER, 3);
+    double L = hypot(j->dx, j->dy);
+    if (n <= 0 || n > 4 || off <= 0 || L < 1) return;
+    for (int e = 1; e <= n; e++) {
+        double a = e * deg * M_PI / 180.0, ux = j->dx / L, uy = j->dy / L;
+        charge_area(sim, ch, j->area1, jround(j->tx + off * (ux * cos(a) - uy * sin(a))), jround(j->ty + off * (ux * sin(a) + uy * cos(a))));
+    }
 }
 static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
     for (int k = 0; k < g_ncj; k++) {
@@ -815,7 +856,8 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
         int x = I32(ch, 0x38), y = I32(ch, 0x3c), n; void **v = objvec(sim, &n);
         if (j->type == 1) charge_break(sim, ch, x, y, CHARGE_WALL_R);   /* Bull breaks the walls and bushes of his lane */
         if (j->area1 && PTR(ch, 0x550) == j->area1 && (I32(ch, 0xc98) != j->tx || I32(ch, 0xc9c) != j->ty) && I32(ch, 0xc98) > -1000000) {
-            j->tx = I32(ch, 0xc98); j->ty = I32(ch, 0xc9c); zone_add(sim, ch, j->area1, j->tx, j->ty); }   /* the game spawned a trail area */
+            j->tx = I32(ch, 0xc98); j->ty = I32(ch, 0xc9c); zone_add(sim, ch, j->area1, j->tx, j->ty);   /* the game spawned a trail area */
+            if (j->type == 21) painter_scoops(sim, j, ch); }
         if (j->dmg <= 0 && j->push <= 0) continue;
         if (j->type == 16) continue;   /* Bonnie is in the air: she hits where she lands (charge_end) */
         if (j->type == 22) continue;   /* Moe is underground (0xb5033c: untouchable while +0x490 and type 22): he hits when he surfaces (dig_change) */
@@ -840,11 +882,21 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
             int np_; void **ps_ = players(sim, &np_); uint8_t *pl_ = j->owner >= 0 && j->owner < np_ ? ps_[j->owner] : NULL;
             int charge0 = pl_ ? I32(pl_, 0x54) : 0;
             if (j->dmg > 0) o_root(c, j->owner, d, d, 0, ch, NULL, 1, x, y, NULL, 0, 0, 0, 1, 0, 0, 0);
+            /* Colette's hypercharged dash: her spirit's hit follows on the same enemy (hyper.c hyper_spirit_damage) */
+            int sp = j->dmg > 0 && j->ulti && I32(c, 0x3c4) > 0 && I32(c, 0x84) != I32(ch, 0x84) ? hyper_spirit_damage(ch, d) : 0;
+            if (sp > 0) o_root(c, j->owner, sp, sp, 0, ch, NULL, 1, x, y, NULL, 0, 0, 0, 1, 0, 0, 0);
             if (pl_ && j->ulti) I32(pl_, 0x54) = charge0;
             int pc = mech_pop(sim, c, hp0);
+            /* the skill's OnChargeHitStatusEffect on the hit enemy, through the status store (superfix_status.c) with the
+             * arguments of the area enemy call 0xb2a71c (source player, team, source object, source character, kind 2 = super) */
+            if (j->hit_st && !pc && I32(c, 0x3c4) > 0 && I32(c, 0x84) != I32(ch, 0x84))
+                ((void (*)(void *, void *, int, int, void *, void *, int, int, int, int, int))B(0xb35dd0))(c, j->hit_st, j->owner,
+                    I32(ch, 0x84), ch, ch, 2, 0, -1, -1, 0);
             /* ChargePushback (Bull / El Primo 130 -> 780 u, Darryl 70, Surge / Stu 100), away from the charger as at 0xb5afd4;
              * not after a knock-out (the victim is parked or gone) */
             if (j->push > 0 && I32(c, 0x3c4) > 0) { KNOCKBACK(c, x, y, j->push, j->owner); g_charge_pushes++; }
+            /* a negative ChargePushback (El Primo's hypercharged OverchargedChargePushback -100, "brings enemies to the
+             * Epicenter") pulls: charge_end draws the hit enemies to the landing point */
             E.in_own_call = 0; record_event(c, ch, pc ? hp0 + 1 : hp0, pc ? 1 : I32(c, 0x3c4)); g_charge_hits++;
             v = objvec(sim, &n);
         }
@@ -994,13 +1046,13 @@ static void sf_explode(void *sim, Bomb *b) {
     if (pl) I32(pl, 0x54) = charge0;
     E.sf_pops++;
 }
-static void sf_bomb_state(void *sim) {   /* afterState: detect popped bombs */
+static void sf_bomb_state(void *sim) {   /* afterState: detect popped bombs (LEAP_BOMB: normal and hypercharged) */
     int tick = I32(sim, 0x10);
     if (tick - E.last_bomb_tick > 200) { E.nbombs = 0; return; }
     Bomb now[64]; int nn = 0, n; void **v = objvec(sim, &n);
     for (int i = 0; i < n && nn < 64; i++) {
         uint8_t *o = v[i]; if (!o) continue; int vo = VTOF(o); if (vo != VT_ITEM) continue;
-        uint8_t *d = PTR(o, 0x10); if (!d || I32(d, 0x20) != BOMB_ITEM) continue;
+        uint8_t *d = PTR(o, 0x10); if (!d || !LEAP_BOMB(I32(d, 0x20))) continue;
         int id = I32(o, 8), x = I32(o, 0x38), y = I32(o, 0x3c), owner = -1, known = 0;
         for (int k = 0; k < E.nbombs; k++) if (E.bombs[k].id == id) { owner = E.bombs[k].owner; known = 1; }
         if (!known) {
@@ -1044,7 +1096,7 @@ static void rec_move(uint64_t *ctx) {
     rec_put(0, (uint8_t *)ctx[0], (int)ctx[1], (int)ctx[2], (int)ctx[6], 0);
     if ((int)ctx[3] == 0 && E.sim) {
         uint8_t *ch = (uint8_t *)ctx[0];
-        int i; void *p = owner_player(E.sim, ch, &i); int sp = p ? hyper_speed(i, p, ch) : 0;
+        int i; void *p = owner_player(E.sim, ch, &i); int sp = p ? hyper_speed(i, p, ch) : hyper_pet_speed(ch);
         if (sp > 0) { ctx[3] = 1; ctx[4] = (uint64_t)(uint32_t)sp; E.hyper_moves++; }
         if (p && VTOF(ch) == VT_CHAR && gear_has(i, 0)) {   /* gear round: ForestSpeed (LogicType 0) on a bush tile */
             int gs = gear_speed(i, ch, sp > 0 ? sp : base_speed(ch), bush_at(E.sim, I32(ch, 0x38), I32(ch, 0x3c)));
@@ -1316,6 +1368,7 @@ static void pre_snapshot(void *sim) {   /* 0xb63b0c, once per tick: storm hits, 
     if (g_ncj) charge_contact_tick(sim);   /* diversity round: env charge contact (only after a native charge start) */
     gadget_tick(sim, I32(sim, 0x10));      /* gadget round: heals over time */
     if (g_nzone) zone_tick(sim);
+    hyper_pets_tick(sim);                  /* hypercharge round: last positions of pets with an overcharged death area */
     int ntj = E.ntj; TickJob tj[64]; memcpy(tj, E.tj, ntj * sizeof *tj); E.ntj = 0;
     for (int i = 0; i < ntj; i++) {
         if (tj[i].kind == 1) sf_spawn_box(sim, tj[i].p, tj[i].a, tj[i].b, tj[i].c);
