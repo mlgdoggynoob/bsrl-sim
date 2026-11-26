@@ -1537,7 +1537,7 @@ static void fire_input(void *sim, int pidx, uint8_t *ch, int super, double deg, 
 /* diversity round: gadget input (kind 8 -> 0xc2cef4 -> 0xb27c58(player+0x190, char, x, y, 0)); the aim as a displacement of
  * 1000 u (like a relative attack input). NOTE: 0xb27c58 is a bare ret in this libg: the input reaches the game, nothing happens.
  * gadget round: a gadget with a host implementation (gadget.c) is activated there instead. */
-int gadget_use(void *sim, int i, uint8_t *ch, double deg, int tick); void gadget_publish(NbeResp *r, int tick);
+int gadget_use(void *sim, int i, uint8_t *ch, double deg, double dist, int tick); void gadget_publish(NbeResp *r, int tick);
 void gadget_clear(void); void gadget_reset_player(int i, void *acc); void gadget_tick(void *sim, int tick);
 void *env_obj_by_id(void *sim, int id) { return obj_by_id(sim, id); }   /* for gadget.c */
 /* gadget.c's dash: the native charge mover (as native_charge_start) with charge type 1, but no active-skill slot (+0x6d8 = 0)
@@ -1550,8 +1550,8 @@ int env_dash_start(uint8_t *ch, int tx, int ty, int speed) {
     U8(ch, 0x490) = 1; I32(ch, 0x508) = 1; I32(ch, 0x6d8) = 0;
     return I32(ch, 0x41c);
 }
-static void gadget_input(void *sim, int pidx, uint8_t *ch, double deg) {
-    if (gadget_use(sim, pidx, ch, deg, I32(sim, 0x10))) return;
+static void gadget_input(void *sim, int pidx, uint8_t *ch, double deg, double dist) {   /* dist: super_dist (0 = full range) */
+    if (gadget_use(sim, pidx, ch, deg, dist, I32(sim, 0x10))) return;
     double r = deg * M_PI / 180; apply_input(sim, pidx, 8, jround(1000 * cos(r)), jround(1000 * sin(r)), NULL);
 }
 /* hypercharge round: NbeAction.fire 4 -> libg's activation 0xc42584 (hyper.c); the move is re-sent at the hypercharged speed */
@@ -1600,7 +1600,7 @@ static int client_intents(void *sim, int i, uint8_t *ch, const NbeAction *a) {
     }
     if (a->fire == 1) { fire_input_at(sim, i, ch, 0, a->aim_deg, 1, cx, cy); E.cl_attacks++; }
     else if (a->fire == 2) { fire_input_at(sim, i, ch, 1, a->aim_deg, a->super_dist > 0 && a->super_dist <= 1 ? a->super_dist : 1, cx, cy); E.cl_attacks++; }
-    else if (a->fire == 3) gadget_input(sim, i, ch, a->aim_deg);   /* diversity round */
+    else if (a->fire == 3) gadget_input(sim, i, ch, a->aim_deg, a->super_dist);   /* diversity round */
     else if (a->fire == 4) hyper_input(sim, i, ch);                /* hypercharge round */
     else if (a->fire >= 200) skill_idx_input(sim, i, ch, a->fire - 200, a->aim_deg);   /* rl round (tests) */
         else if (a->fire >= 100) apply_input(sim, i, a->fire - 100, 1, 1, NULL);   /* rl round: raw input kind (tests) */
@@ -1647,7 +1647,7 @@ static void apply_actions(void *sim, const NbeCmd *c) {
             apply_input(sim, i, 2, cx, cy, NULL);
             E.moving[i] = 0; E.last_dir[i] = -1; E.sent_valid[i] = 0;
         }
-        if (a->fire == 3) gadget_input(sim, i, ch, a->aim_deg);   /* diversity round */
+        if (a->fire == 3) gadget_input(sim, i, ch, a->aim_deg, a->super_dist);   /* diversity round */
         else if (a->fire == 4) hyper_input(sim, i, ch);                /* hypercharge round */
         else if (a->fire >= 200) skill_idx_input(sim, i, ch, a->fire - 200, a->aim_deg);   /* rl round (tests) */
         else if (a->fire >= 100) apply_input(sim, i, a->fire - 100, 1, 1, NULL);   /* rl round: raw input kind (tests) */
