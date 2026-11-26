@@ -237,7 +237,17 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   their aim / walking direction in rendered frames (`env.c` `facing_sync` copies the simulation's facing +0x324 and walking
   direction +0x320 into the client's characters, which the offline snapshot never sends). Rendering only; off unless
   `NBHOST_FACING=1`, which `policy_video.py` sets (docs/RECORDING.md).
-- `star_powers2.patch` (issue #47, a diff on top of `facing_sync.patch`; first recorded on top of `gears.patch`, re-recorded on main): `native/loader/starfx.c` re-implements star power cards
+- `repeat_masked.patch` (issue #63, a diff on top of `facing_sync.patch`): the four REPEAT gadgets that stayed in
+  `g_masked` work and are unmasked. Darryl's spin recharges his super by CustomValue6 / 4000 of it per enemy hit
+  (`gadget.c` `gadget_root_post`); Bea's bees and Amber's flames (TravelType 8 projectiles) get the circling angle (+0x454)
+  and flag (+0x415) that libg's own circling spawn sets, so `hyper.c` `circle_travel` spaces Amber's flames on their ring;
+  Bea's bees, which have no ring radius, spiral out from her (`circle_travel`, radius Speed x time, one turn per
+  SteerLifeTime [?]; only for REPEAT gadget shots, so R-T's radius-less hypercharge lasers keep their old path);
+  `superfix_items.c`'s FUSE_TYPES mask had a wrong constant that left out item type 25, so Fang's popcorn mines (and
+  Tick's ClusterMine) now pop when their fuse runs out. `NB_REP_DBG=1` logs the path and hits of each REPEAT shot fired
+  one at a time (not Mico's volley). `gadget.c` `targets()` no longer reads an unset distance (it crashed Mico's gadget
+  and could drop Gene's nearest target). Notes: `notes/issue63.md`. `python -m super_audit --gadget`, `python -m gadget_check`.
+- `star_powers2.patch` (issue #47, a diff on top of `repeat_masked.patch`; first recorded on top of `gears.patch`, re-recorded on main): `native/loader/starfx.c` re-implements star power cards
   whose reader is compiled out of libg, from the card's own Value columns (`cards.csv`, read from the card at +0x110):
   damage taken (-V1 %, below an hp line, at full hp) and damage dealt (to a target at low hp, after a kill) in the damage
   root `env.c` my_root (before the gear shield), a kill hook in `record_event` (every damage path ends there), double

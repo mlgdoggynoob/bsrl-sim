@@ -1,4 +1,4 @@
-# issue #47 star powers (bsrl-sim), a diff on top of the other patches (after facing_sync.patch; first recorded on top of gears.patch, re-recorded on main 19793bf).
+# issue #47 star powers (bsrl-sim), a diff on top of the other patches (after repeat_masked.patch; first recorded on top of gears.patch, re-recorded on main b80459a).
 # native/loader/starfx.c re-implements star power cards whose reader is compiled out of libg, from the card's own Value
 # columns (card +0x110, Type enum card +0x100): damage taken (-V1 %, below an hp line, at full hp) and damage dealt (to a
 # target at low hp, after a kill) in env.c my_root (before the gear shield), a kill hook in env.c record_event (R-T's linked hit too; every

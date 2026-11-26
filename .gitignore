@@ -13,4 +13,5 @@ work/
 
 # built by setup.sh
 engine/native/loader/nbhost_rl
+engine/native/loader/nbhost_facing
 engine/native/loader/nbhost_rl.src

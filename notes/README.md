@@ -26,3 +26,4 @@ docstrings and comments are the spec.
 | `issue46.md` | #46 gadgets: the next-attack modifiers (arming, consume, hit fields), readiness, skill cooldowns, the self statuses / shields / last stand / sleep / vision, heals, not doable | this branch |
 | `issue49.md` | #49 Brawl TV imitation rows, step 4 (trainer side) | this branch |
 | `issue47.md` | #47 star powers: what the host re-implements (`starfx.c`), the vtable hypothesis, per card what was done or why not, `star_check` results | this branch |
+| `issue63.md` | #63 the four masked REPEAT gadgets (Darryl, Fang, Bea, Amber): causes, fixes, live numbers | this branch |
