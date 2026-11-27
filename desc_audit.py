@@ -45,10 +45,25 @@ CustomObject projectile / area / item rows it uses.
     terrain the text says destroys / breaks / goes through walls, terrain, obstacles (TERRAIN_TXT) and no projectile / area / skill
             has PiercesEnvironment, PassesEnvironment, IgnoreCloseWalls, DestroysEnvironment or MeleeAttackPiercesEnvironment
     The four behaviour flags read host_traits() (text with <placeholders> stripped) and, like the others, apply to rows with a kind.
+    number  a count the text gives as a number (desc_values: "<VALUE1> bees", "<!...chainbullets> smaller bullets") next to a
+            shot noun (COUNT_NOUNS) differs from the shots the kind fires (host_count). Only shot / repeat / auto_aim rows; a
+            SubType 1 repeat row (one shot per target) is not compared.
   Star powers: the host runs the game's own reader, so there is nothing of ours to compare; they are never flagged.
+  numbers every placeholder of the text with the number the game shows at power 11 (desc_values: <!path> from the data, a
+          gadget's <VALUEn> code from libg's description builder; None = not decoded). The table's text has them filled in.
+
+Live numbers (--live DIR: super_audit_gadget.json / super_audit_gadget_2.json from `python -m super_audit --gadget
+[--gadget-slot 1]`): each resolved number the text ties to something the audit measures (`claims`) against that row's best
+attempt. damage "<n> damage" -> the target's HP lost, within TOL; "each" or a kind that fires several -> from n to
+count x n; "up to <n>" -> more than 0 and at most count x n; "per second" -> at most n x the watched seconds (the
+attempt's watch_ticks, else super_audit.WATCH) and at least one second's worth. heal "heals <n>" -> the shooter's HP gain (the same bounds); a heal can't exceed the pre-hit (the
+target's shot before the fire), so with pre_hit < n it is "capped": the amount itself is not confirmed. count "<n> spiders /
+sandbags / shadows" -> the summons seen; "<n> bullets / bees" -> at least n projectiles. Seconds and percents are not
+measured. Result per claim: ok, low, high, capped or unchecked (with why); low / high rows exit 1.
 
 python -m desc_audit            summary and flagged rows; writes notes/desc_audit.md
 python -m desc_audit --check    flag rules on made-up rows, plus sanity asserts on the real data when the game data is there
+python -m desc_audit --live DIR the numbers against the live gadget audits in DIR; writes DIR/desc_numbers.md / .json
 flagged(live_only=True) returns the flagged rows (dicts, "flags" a list) for gadget_check."""
 import argparse, os, re, sys
 
@@ -76,7 +91,12 @@ WILD = {"status", "item"}                        # host data whose effects the g
 AIM_KINDS = ("shot", "repeat")                   # fire along the policy's aim (gadget.c shot_fire / rep_fire), but REP_TARGETED
 REP_TARGETED = ("1", "5")                        # repeat_shot SubTypes that aim at targets within Range themselves (gadget.c rep_fire)
 REPEL = {"Blower_Stopper"}                       # item gadgets with gadget.c's repel zone around the item (env_repel_zone): push
-FLAGS = ("effect", "aim", "range", "count", "split", "homing", "speed", "terrain")
+FLAGS = ("effect", "aim", "range", "count", "split", "homing", "speed", "terrain", "number")
+TOL = (0.8, 1.25)                                # live numbers: measured / card within this is ok (falloff, rounding, a missed tick)
+COUNT_NOUNS = {   # "<n> <noun>": what the live audit counts
+    "summon": r"spiders?|sandbags?|shadows?|hatchlings?|turrets?|totems?|clones?|minions?",
+    "shot": r"shots?|bullets?|bees|flames|darts|missiles?|projectiles?|sticks|needles|rockets?|bombs?|kunais?|arrows?|blades?|buds",
+}
 
 
 def _num(x):
@@ -208,6 +228,107 @@ def flags_for(kind, text, acc=None, skill=None, hfx=None, aimable=False, traits=
     return fl
 
 
+# ------------------------------------------------------------------ numbers (desc_values)
+_TAG = re.compile(r"</?c[0-9a-f]*>", re.I)
+
+
+def claims(text, nums):
+    """the resolved numbers the text ties to something measurable: [{"what": damage / damage_rate / heal / heal_rate /
+    count_summon / count_shot, "value", "ph", "each"}]. A number followed by % or given in seconds is not a claim."""
+    out = []
+    for x in nums:
+        v = x.get("value")
+        if v is None or x.get("unit") == "s": continue
+        aft = _TAG.sub("", text[x["at"] + len(x["ph"]):x["at"] + len(x["ph"]) + 60]).lower()
+        bef = _TAG.sub("", text[max(0, x["at"] - 60):x["at"]]).lower()
+        if re.match(r"\s*%", aft) or re.match(r"\s*(?:seconds?|secs?)\b", aft): continue
+        rate = bool(re.match(r"[^.,]{0,25}?\b(?:per|a|every) second", aft))
+        each = bool(re.search(r"\beach\b[^.]*$", bef) or re.match(r"[^.]{0,25}\beach\b", aft))
+        upto = bool(re.search(r"\bup to\W*$", bef))   # "dealing up to <n> damage": a maximum (falloff by distance)
+        if re.match(r"\s*(?:extra\s+|more\s+|bonus\s+)?damage\b", aft):
+            out.append({"what": "damage_rate" if rate else "damage", "value": v, "ph": x["ph"], "each": each, **({"upto": True} if upto else {})}); continue
+        if re.search(r"\b(?:heal(?!th)\w*|recover\w*|restor\w*|regain\w*|regenerat\w*)\b(?:\W+\w+){0,4}\W*$", bef) and not re.match(r"\s*(?:%|times)", aft):   # not "health by <n>"
+            out.append({"what": "heal_rate" if rate else "heal", "value": v, "ph": x["ph"], "each": each}); continue
+        if re.search(r"\b(?:splits?|breaks?|bursts?)\s+into\s*$", bef): continue   # "splits into <n> smaller bullets": one shot that splits
+        for what, rx in COUNT_NOUNS.items():
+            if re.match(r"\s*(?:\w+\s+){0,2}?(?:%s)\b" % rx, aft):
+                out.append({"what": "count_" + what, "value": v, "ph": x["ph"], "each": False}); break
+    return out
+
+
+def number_flag(kind, text, nums, acc=None, skill=None):
+    """the text's shot count (a count_shot claim) differs from host_count (shot / repeat / auto_aim; not a SubType 1 repeat row)"""
+    a = acc or {}
+    if kind not in ("shot", "repeat", "auto_aim") or kind == "repeat" and a.get("Type") == "repeat_shot" and a.get("SubType") == "1": return False
+    n = host_count(kind, a, skill)
+    return any(c["what"] == "count_shot" and n is not None and int(c["value"]) != n for c in claims(text, nums))
+
+
+def judge(c, m, n_shots=None, watch=None):
+    """one claim against one attempt's measurements m -> (status, measured, why)"""
+    import super_audit as S
+    lo, hi = TOL; v = float(c["value"]); w = c["what"]
+    ws = (m.get("watch_ticks") or watch or S.WATCH) / 20.0
+    if w in ("damage", "damage_rate"):
+        got = float(m.get("damage") or 0)
+        if m.get("foreign_near"): return "unchecked", got, "a foreign summon was near: its damage may count"
+        if w == "damage_rate":
+            if got > hi * v * ws: return "high", got, f"{got:g} in {ws:g} s is more than {v:g}/s for the whole watch"
+            if got < lo * v * min(1.0, ws): return "low", got, f"{got:g} is less than one second's {v:g}"
+            return "ok", got, f"{got:g} in {ws:g} s, at most {v:g}/s"
+        top = v * (n_shots or 1) if (c.get("each") or c.get("upto") or (n_shots or 1) > 1) else v
+        if c.get("upto") and 0 < got <= hi * top: return "ok", got, f"{got:g}, at most {top:g}"
+        if got < lo * v: return "low", got, f"{got:g} < {lo:g} x {v:g}"
+        if got > hi * top: return "high", got, f"{got:g} > {hi:g} x {top:g}"
+        return "ok", got, f"{got:g} for {v:g}" + (f" (up to {top:g})" if top != v else "")
+    if w in ("heal", "heal_rate"):
+        got = float(m.get("heal") or 0); pre = float(m.get("pre_hit") or 0); top = v * ws if w == "heal_rate" else v
+        if got > hi * top: return "high", got, f"healed {got:g} > {hi:g} x {top:g}"
+        if pre < lo * v: return ("capped" if got >= lo * pre and pre > 0 else "unchecked"), got, \
+            f"healed {got:g}, but the pre-hit was only {pre:g}: the {v:g} is not confirmed"
+        if got < lo * v: return "low", got, f"healed {got:g} < {lo:g} x {v:g} (pre-hit {pre:g})"
+        return "ok", got, f"healed {got:g} for {v:g}"
+    if w == "count_summon":
+        got = len(m.get("summons") or [])
+        return ("ok" if got == int(v) else "low" if got < v else "high"), got, f"{got} summons for {int(v)}"
+    if w == "count_shot":
+        got = len(m.get("projectiles") or [])
+        return ("ok" if got >= int(v) else "low"), got, f"{got} projectiles for {int(v)}"
+    return "unchecked", None, "not measured"
+
+
+def live_numbers(d):
+    """every gadget row's claims against super_audit_gadget(_2).json in folder d -> list of result dicts"""
+    import json
+    rs = {(r["brawler"], r["card"]): r for r in rows() if r["type"] == "gadget"}; out = []
+    for stem in ("super_audit_gadget", "super_audit_gadget_2"):
+        p = os.path.join(d, stem + ".json")
+        if not os.path.exists(p): continue
+        for b in json.load(open(p)).get("brawlers", []):
+            r = rs.get((b["name"], b.get("skill"))); at = b.get("attempts") or []
+            if not r: continue
+            cl = claims(r["text"], r["numbers"])
+            if not cl: continue
+            best = next((a for a in at if a.get("class") == b.get("class")), at[0] if at else None)
+            m = (best or {}).get("m") or {}
+            for c in cl:
+                if not best or b.get("class") in ("not_fired", "crash", "not_run"):
+                    st, got, why = "unchecked", None, f"class {b.get('class')}"
+                else:
+                    st, got, why = judge(c, m, r["host_count"], b.get("watch"))
+                out.append({"brawler": r["brawler"], "card": r["card"], "file": stem, "class": b.get("class"), **c, "status": st, "measured": got, "why": why})
+    return out
+
+
+def live_markdown(res, d):
+    L = ["# desc_audit --live: card numbers vs the live gadget audits", "", f"Generated by `python -m desc_audit --live {d}`. Numbers at power 11 (desc_values); "
+         f"tolerance {TOL[0]:g}..{TOL[1]:g}.", "", "| brawler | card | audit | claim | card number | measured | result | why |", "|---|---|---|---|---|---|---|---|"]
+    for x in sorted(res, key=lambda x: (x["status"] not in ("low", "high"), x["brawler"])):
+        L.append(f"| {x['brawler']} | {x['card']} | {x['file']} ({x['class']}) | {x['what']}{' each' if x['each'] else ''} | {x['value']:g} | "
+                 f"{'' if x['measured'] is None else format(x['measured'], 'g')} | {x['status']} | {x['why']} |")
+    return "\n".join(L) + "\n"
+
+
 def _rows(f):
     from nbpc import diversity as D
     return [r for r in D._rows(f) if r.get(next(iter(r)))]
@@ -219,7 +340,7 @@ def _pick(d, **kw):
 
 def rows():
     """all card rows (dicts), gadgets then star powers"""
-    import super_audit as S, star_audit as SA
+    import super_audit as S, star_audit as SA, desc_values as V
     T = S._tables(); tx = S._texts()
     acc = {r["Name"]: r for r in _rows("accessories.csv")}
     cards = {}; k = 0; out = []
@@ -268,7 +389,10 @@ def rows():
                     ao = p.get(k) or ""
                     if ao: tr |= host_traits(kind, T["alog"].get(T["askin"].get(ao, {}).get("Logic") or ao, {}))
             fl = flags_for(kind, text, a, sk, hfx, sk.get("BehaviorType") == "AimableArea", tr) if kind else []
+            nums = V.values(an, text)
+            if kind and number_flag(kind, text, nums, a, sk): fl.append("number")
             out.append({"type": "gadget", "brawler": b, "card": an, "id": cid, "kind": kind, "masked": masked, "tid": tid, "text": text,
+                        "numbers": nums, "filled": V.fill(an, text),
                         "values": [r.get("Value", ""), r.get("Value2", ""), r.get("Value3", "")], "accessory": _pick(a),
                         "data": {"projectile": _pick(projs[0]) if projs else {}, "area": _pick(area), "item": _pick(it), "skill": _pick(sk)},
                         "host_effects": sorted(hfx or ()), "host_count": host_count(kind, a, sk) if kind else None, "flags": fl})
@@ -278,7 +402,7 @@ def rows():
         if r.get("MetaType") == "4" and r.get("Target") and (r.get("Disabled") or "").lower() != "true":
             tid, text = desc(r); live = r["Name"] in SA.LIVE
             out.append({"type": "star", "brawler": r["Target"], "card": r["Name"], "id": 23 * 1000000 + k, "kind": "live" if live else "off", "masked": False,
-                        "tid": tid, "text": text, "values": [r.get("Value", ""), r.get("Value2", ""), r.get("Value3", "")],
+                        "tid": tid, "text": text, "numbers": V.values(r["Name"], text), "filled": V.fill(r["Name"], text), "values": [r.get("Value", ""), r.get("Value2", ""), r.get("Value3", "")],
                         "accessory": {}, "data": {"type": r.get("Type", ""), "projectiles": r.get("Projectiles", "")}, "host_effects": [], "host_count": None, "flags": []})
         k += 1
     return out
@@ -290,14 +414,17 @@ def flagged(live_only=True):
 
 
 def markdown(rs):
+    import desc_values as V
     L = ["# desc_audit: card descriptions vs the host", "", "Generated by `python -m desc_audit` (do not edit by hand). Flags: " + ", ".join(FLAGS) + ".", "",
-         "| brawler | card | kind | flags | text | Value / 2 / 3 | host effects | host count | accessory | data |", "|---|---|---|---|---|---|---|---|---|---|"]
+         "Text: the EN description with the numbers the game shows at power %d filled in (desc_values; a placeholder left in the text is not decoded). Numbers: each placeholder's value and source." % V.LEVEL, "",
+         "| brawler | card | kind | flags | text | numbers | Value / 2 / 3 | host effects | host count | accessory | data |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     cell = lambda x: str(x).replace("|", "\\|").replace("\n", " ")
     for r in rs:
         acc = ", ".join(f"{k}={v}" for k, v in r["accessory"].items() if k in ("Type", "SubType", "Range", "RequireEnemyInRange", "CustomObject", "CustomValue1", "CustomValue2", "CustomValue3", "CustomValue4", "AreaEffect", "Skill", "ActiveTicks"))
         d = "; ".join(f"{k}: " + ", ".join(f"{a}={b}" for a, b in v.items() if a in ("Type", "Damage", "Radius", "PushbackStrength", "StunLengthMS", "StunTicks", "HealOwnPercent", "NumBulletsInOneAttack", "BehaviorType", "Projectiles", "AreaEffectObject")) if isinstance(v, dict) and v else f"{k}: {v}" for k, v in r["data"].items() if v)
-        L.append("| " + " | ".join(cell(x) for x in (r["brawler"], f"{r['card']} ({r['id']})", r["kind"] + (" (masked)" if r["masked"] else "") if r["kind"] else r["kind"], " ".join(r["flags"]), f"{r['tid']}: {r['text']}",
-                 "/".join(v or "-" for v in r["values"]), " ".join(r["host_effects"]), r["host_count"] if r["host_count"] is not None else "", acc, d)) + " |")
+        nums = "; ".join(f"{V.fmt(x['value'])}{x['unit']} ({x['src'] if x['value'] is not None else x['why']})" for x in r.get("numbers", []))
+        L.append("| " + " | ".join(cell(x) for x in (r["brawler"], f"{r['card']} ({r['id']})", r["kind"] + (" (masked)" if r["masked"] else "") if r["kind"] else r["kind"], " ".join(r["flags"]), f"{r['tid']}: {r.get('filled', r['text'])}",
+                 nums, "/".join(v or "-" for v in r["values"]), " ".join(r["host_effects"]), r["host_count"] if r["host_count"] is not None else "", acc, d)) + " |")
     return "\n".join(L) + "\n"
 
 
@@ -350,6 +477,27 @@ def _check():
     assert "terrain" in host_traits("shot", projs=[{"PassesEnvironment": "true"}]) and "speed" in host_traits("repeat", acc={"StatusEffectSelf": "Boost"})
     assert "homing" in host_traits("repeat", projs=[{"SteerStrength": "4"}])
     assert "split" in ok("shot", "Splits into bullets", hfx=set(), traits=set()) and "split" not in ok("shot", "Splits into bullets", hfx=set())
+    # numbers: which placeholders are claims, and the live judgement
+    ph = lambda t, *vals: [{"ph": m.group(0), "at": m.start(), "value": v, "unit": u} for m, (v, u) in zip(re.finditer(r"<VALUE\d>", t), vals)]
+    t = "Janet deploys a speaker that deals <c00cc00><VALUE1></c> damage per second to all enemies"
+    assert claims(t, ph(t, (200, ""))) == [{"what": "damage_rate", "value": 200, "ph": "<VALUE1>", "each": False}]
+    t = "Ruffs throws down <VALUE1> sandbags as cover. Each one has <VALUE2>% of Ruffs' max health."
+    assert [c["what"] for c in claims(t, ph(t, (3, ""), (40, "")))] == ["count_summon"]
+    t = "Each dynamite deals <VALUE1> damage. Lasts <VALUE2> seconds and heals <VALUE3> health"
+    cl = claims(t, ph(t, (2400, ""), (3, "s"), (1600, "")))
+    assert [(c["what"], c["each"]) for c in cl] == [("damage", True), ("heal", False)], cl
+    t = "Bea unleashes <VALUE1> angry bees"; assert claims(t, ph(t, (4, "")))[0]["what"] == "count_shot"
+    assert number_flag("repeat", t, ph(t, (4, "")), {"CustomValue1": "4", "ActiveTicks": "16"}) is False
+    assert number_flag("repeat", t, ph(t, (4, "")), {"CustomValue1": "4", "ActiveTicks": "8"}) is True    # the host fires 2
+    dmg = {"what": "damage", "value": 2480, "each": False}
+    assert judge(dmg, {"damage": 2480})[0] == "ok" and judge(dmg, {"damage": 1240})[0] == "low" and judge(dmg, {"damage": 4000})[0] == "high"
+    assert judge({**dmg, "each": True}, {"damage": 4000}, n_shots=2)[0] == "ok"
+    rate = {"what": "damage_rate", "value": 200, "each": False}
+    assert judge(rate, {"damage": 1220, "watch_ticks": 80})[0] == "high" and judge(rate, {"damage": 700, "watch_ticks": 80})[0] == "ok"
+    heal = {"what": "heal", "value": 3200, "each": False}
+    assert judge(heal, {"heal": 600, "pre_hit": 600})[0] == "capped" and judge(heal, {"heal": 3200, "pre_hit": 4000})[0] == "ok"
+    assert judge(heal, {"heal": 1000, "pre_hit": 4000})[0] == "low" and judge(heal, {"heal": 0, "pre_hit": 0})[0] == "unchecked"
+    assert judge({"what": "count_summon", "value": 3}, {"summons": ["a", "b", "c"]})[0] == "ok"
     try:
         rs = rows()
     except Exception as e:
@@ -381,12 +529,33 @@ def _check():
     for c in ("KickerDude_Sweep", "BarrelBot_Spin", "TrickshotDude_BounceHeal"):   # rules that once flagged them wrongly
         assert not next(r for r in g if r["card"] == c)["flags"], c
     assert all(not r["flags"] for r in rs if r["kind"] in (None, "off"))
-    print(f"desc_audit: ok ({len(rs)} rows, {len(flagged())} flagged)")
+    by = {r["card"]: r for r in g}
+    for c, want in (("Sniper_HandGun", [("damage", 180)]), ("BeeSniper_ExtraBee", [("count_shot", 4), ("damage", 1200)]), ("HammerDude_Pull", [("damage", 2480)]),
+                    ("JetpackGirl_DamageTower", [("damage_rate", 200)]), ("Ruffs_Cover", [("count_summon", 3)]), ("Gladiator_Amp", [("heal", 3200)]),
+                    ("Barkeep_HealPotion", [("heal_rate", 810)])):
+        got = [(x["what"], x["value"]) for x in claims(by[c]["text"], by[c]["numbers"])]
+        assert got == want, (c, got)
+    assert "<VALUE" not in by["JetpackGirl_DamageTower"]["filled"] and "200 damage per second" in by["JetpackGirl_DamageTower"]["filled"]
+    print(f"desc_audit: ok ({len(rs)} rows, {len(flagged())} flagged, "
+          f"{sum(x['value'] is not None for r in g for x in r['numbers'])} of {sum(len(r['numbers']) for r in g)} gadget numbers resolved)")
 
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("--check", action="store_true"); a = ap.parse_args()
+    ap = argparse.ArgumentParser(); ap.add_argument("--check", action="store_true")
+    ap.add_argument("--live", default="", help="folder of super_audit_gadget.json / super_audit_gadget_2.json: the card numbers against them")
+    a = ap.parse_args()
     if a.check: return _check()
+    if a.live:
+        import json
+        res = live_numbers(a.live); bad = [x for x in res if x["status"] in ("low", "high")]
+        if not res: print(f"no gadget audit json with numbered claims in {a.live}"); return 1
+        cnt = {k: sum(x["status"] == k for x in res) for k in ("ok", "low", "high", "capped", "unchecked")}
+        print(f"{len(res)} claims: " + ", ".join(f"{v} {k}" for k, v in cnt.items()))
+        for x in bad: print(f"  {x['brawler']:15} {x['card']:28} {x['what']:12} card {x['value']:g}  measured {x['measured']:g}  {x['status']}: {x['why']}")
+        open(os.path.join(a.live, "desc_numbers.md"), "w").write(live_markdown(res, a.live))
+        json.dump(res, open(os.path.join(a.live, "desc_numbers.json"), "w"), indent=1)
+        print("wrote", os.path.join(a.live, "desc_numbers.md"))
+        return 1 if bad else 0
     rs = rows(); fl = [r for r in rs if r["flags"]]
     gd = [r for r in rs if r["type"] == "gadget"]; st = [r for r in rs if r["type"] == "star"]
     print(f"{len(gd)} gadget rows ({sum(r['kind'] is not None for r in gd)} implemented), {len(st)} star rows ({sum(r['kind'] == 'live' for r in st)} live); {len(fl)} flagged")
@@ -396,4 +565,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

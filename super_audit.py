@@ -43,7 +43,7 @@ wall breaking, effects that start after WATCH ticks, effects on allies (every pl
 re-implementation is to the real game.
 Every non-works brawler is retried once (other corridor direction, d from a smaller fraction of its range); the best
 attempt counts. A host crash requeues that phase's shooters one at a time (a reboot each) to find the brawler.
-Output: $SIM_WORK/super_audit.json (per brawler: name, super, type, class, attempts with measurements) and
+Output: $SIM_WORK/super_audit.json (per brawler: name, super, type, class, attempts with measurements, watch_ticks) and
 $SIM_WORK/super_audit.md (also stdout): a checklist grouped by class then super type. The default list is env_v5.heroes()
 (the playable brawlers) then env_v5.forms() (the other forms and event transforms, spawned directly as shooters). With --only the brawlers are
 merged into an existing super_audit.json.
@@ -1380,6 +1380,7 @@ class Auditor:
             if self.attack: m.update(consumed=m["ammo_min"] < m["ammo0"] or m.get("dd", 0) > 0, filled=True, attack=True)   # ammo spent
             m["damage"] = max(m["thp0"] - m["thp_min"], m.get("dd", 0))
             m["heal"] = m["hp_max"] - m["hp0"]
+            m["watch_ticks"] = n   # the phase's watch (the longest of its shooters'): desc_audit --live bounds "per second" numbers by it
             if self.info[j.name].get("recharge_hit"):   # Darryl: one enemy hit's charge (capped at the full super), 10 % slack
                 m["recharge"] = m["sc_max"] - m["sc0"]
                 m["recharge_need"] = max(1, min(int(0.9 * m["super_max"] * self.info[j.name]["recharge_hit"]), m["super_max"] - m["sc0"]))
