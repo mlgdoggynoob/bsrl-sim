@@ -33,7 +33,7 @@
  *   drops (area_extra: SmokeScreen, DamageBoost, Heal, HealRegen, Cleanse, super charge areas; issue #19 final: ChargeSuper,
  *   GiveUlti, EnragerOverchargeSuper, SwitchSkill, BulletSpin, HotAndOverheals).
  * DamageBoostTargetCurrentHealthPercent +0x114 (Alli's super): env.c's damage root (superfix_status_hp_boost), CancelOnChargeEnd
- *   +0xa6 at the charge end (my_charge_end).
+ *   +0xa6 at the charge end (my_charge_end; env.c's gadget charge end, superfix_status_charge_end).
  * Not modelled: boolean attributes other than Fear (Kaze's HasStormVision),
  *   the other CancelOn* conditions. Those statuses are stored (so their duration and target are right) but change nothing.
  *   0xba3274 (called at stop / charge end / respawn) and the other manager stubs are left alone.
@@ -463,14 +463,21 @@ typedef struct { int spd_bp, spd_ba, spd_rp, spd_ra, dmg_bp, dmg_rp, recv_bp, re
 static int st_field(uint8_t *ch, int off, uint8_t *src);
 int superfix_status_hp_boost(uint8_t *ch) { return st_field(ch, SE_HPBOOST, NULL); }
 static long g_ncharge_end;
-static void my_charge_end(void *cont) {
-    if (!g_superfix || !cont || (uint64_t)__builtin_return_address(0) != (uint64_t)B(0xb3e170)) return;
-    uint8_t *ch = (uint8_t *)cont - 0x890; int t = now_tick(ch), id = I32(ch, 8);
+/* ch's charge ended: its CancelOnChargeEnd statuses end with this tick. Also env.c's charge_end for a gadget's charge
+ * (issue #46 batch 4, Max's SpeedyGadgetDashShield), so the shield ends with the dash whichever end path libg took; a
+ * second call in the same tick leaves the statuses as the first one set them. */
+void superfix_status_charge_end(uint8_t *ch) {
+    if (!g_superfix || !ch) return;
+    int t = now_tick(ch), id = I32(ch, 8);
     for (int i = 0; i < g_nst; i++) { St *s = &g_st[i];
         if (s->ch == ch && s->ch_id == id && t < s->until && U8(s->data, SE_CANCEL_CHARGE_END)) {
             s->until = t + 1; g_ncharge_end++;   /* through this tick: the charge's last hit comes after this call */
             if (g_superfix_dbg) LOG("[superfix] st: %d on ch %d ends with the charge, tick %d\n", data_id(s->data), id, t);
         } }
+}
+static void my_charge_end(void *cont) {
+    if (!g_superfix || !cont || (uint64_t)__builtin_return_address(0) != (uint64_t)B(0xb3e170)) return;
+    superfix_status_charge_end((uint8_t *)cont - 0x890);
 }
 int superfix_status_mods(uint8_t *ch, StMods *m) {
     memset(m, 0, sizeof *m);

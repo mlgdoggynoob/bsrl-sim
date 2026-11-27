@@ -4,10 +4,11 @@
      times and assert, on the next response, that a use was spent (gad_charges - 1, gad_used + 1, gad_cd > 0), and
      SETTLE ticks later that the kind's effect happened (EFFECT; a kind without an effect test fails, so a new kind comes
      with its test). Only DASH, HEAL and SUPER effects are in the response; for SPAWN, PROJECTILE, STATUS and SHIELD the
-     test passes on the spent use alone, and their effects are checked by super_audit --gadget (areas, projectiles, next
-     attack) and status_check battles 5-8 (statuses, shields). A kind whose precondition does not hold (gadget.c
+     test passes on the spent use alone, and their effects are checked by super_audit --gadget (areas, projectiles, summons,
+     next attack) and status_check battles 5-8 (statuses, shields). A kind whose precondition does not hold (gadget.c
      ready(): a NEXT modifier already pending, Meg out of her mech, Byron or a UseWeaponAmmo SHOT skill without an ammo
-     bar, Buzz's super full, a sleep / last stand / vision still running, a form gate) reads as a cooldown of 1 tick, so
+     bar, Buzz's super full, a sleep / last stand / vision still running, a form gate, a DASH or CHARGE gadget while the
+     brawler is already charging: dash_ready) reads as a cooldown of 1 tick, so
      it is not ready and a fire spends nothing. Max's Speedy_Rewind (gadget.c REWIND, REWIND_CARD; `judge_rewind`): the
      throw spends a use and starts no cooldown (the gadget stays ready while the rewind is pending), a fire while it is
      pending is the reactivation, which spends nothing and starts the cooldown (the rewind happened); random play fires
@@ -70,8 +71,13 @@ AA_STILL = 50.0        # the unhit control's largest move: setup rounding only (
 REWIND_CARD = 23000311   # cards.csv Speedy_Rewind (gadget.c CARD_REWIND)
 REWIND_TICKS = 60        # the rewind's own end (SpeedyRewindArea TimeMs 3000): a pending rewind is older than this never
 REWIND_P = 0.3           # chance per step that random play reactivates a pending rewind
-DESC_OPEN = {"JetpackGirl_JumpAttack": 46}   # desc_audit mismatches with an open fix (card -> issue); #54 closed Piper's and
-# Leaper's. Janet's recoil (NEXT SubType 15) is libg's own knockback branch; "even over walls" is not checked yet
+DESC_OPEN = {"JetpackGirl_JumpAttack": 46, "CannonGirl_Dash": 46, "Twins_Dash": 46, "Digger_Dash": 46, "Rock_Jump": 46,
+             "Skater_Jump": 46, "InsectMan_Fly": 46}   # desc_audit
+# mismatches with an open fix (card -> issue); #54 closed Piper's and Leaper's. Janet's recoil (NEXT SubType 15) is libg's own
+# knockback branch; "even over walls" is not checked yet. The dashes move only (gadget.c DASH): Bonnie's and Moe's knockback /
+# damage, Moe's wall breaking, the Twins' heal and Ollie's landing taunt (SkaterGadgetTaunt) are not done; Bolt's jump does
+# not lose its speed on landing, Angelo's drain does not heal him back (gadget.c CHARGE). Skater_Jump and InsectMan_Fly are
+# not flagged by desc_audit (their move and damage match its keywords): listed so the gap is on record
 
 
 def desc_mismatches():
@@ -99,10 +105,11 @@ def ready(s):
     return bool(s["valid"] and s["kind"] != P.GAD_NONE and s["charges"] > 0 and s["cd"] <= 0 and s["alive"] and not s["out"])
 
 
-def effect_dash(a, b): d = float(np.hypot(b["x"] - a["x"], b["y"] - a["y"])); return d >= DASH_MIN, "moved %.0f" % d
+def effect_dash(a, b):   # gadget.c DASH and CHARGE (both published DASH); a charge's areas / shield / reload: super_audit --gadget
+    d = float(np.hypot(b["x"] - a["x"], b["y"] - a["y"])); return d >= DASH_MIN, "moved %.0f" % d
 def effect_heal(a, b): return b["hp"] > a["hp"], "hp %d -> %d" % (a["hp"], b["hp"])
-def effect_spawn(a, b):   # an area / item (gadget.c AREA, SKILL AREA, ITEM): not in NbeResp; its effects: `super_audit --gadget`
-    return True, "use spent (area / item: super_audit --gadget)"
+def effect_spawn(a, b):   # an area / item / summon (gadget.c AREA, SKILL AREA, ITEM, SUMMON): not in NbeResp; its effects: `super_audit --gadget`
+    return True, "use spent (area / item / summon: super_audit --gadget)"
 def effect_projectile(a, b):   # projectiles (gadget.c SHOT, AUTO AIMER, REPEAT / SPIN): not in NbeResp; seen by `super_audit --gadget`, damage by 5
     return True, "use spent (projectiles: super_audit --gadget, damage: the volley scene)"
 def effect_super(a, b): return b["sc"] > a["sc"], "super %d -> %d of %d" % (a["sc"], b["sc"], b["sm"])
@@ -354,7 +361,8 @@ def _check():
     ef = EFFECT.pop("SHIELD")
     try: assert judge(s(kind=P.GAD_SHIELD), s(kind=P.GAD_SHIELD, charges=2, used=1, cd=9))[0].startswith("no effect test")
     finally: EFFECT["SHIELD"] = ef
-    # a kind whose precondition fails (gadget.c ready(): NEXT while a modifier is pending) is published with a 1-tick cooldown
+    # a kind whose precondition fails (gadget.c ready(): NEXT while a modifier is pending, DASH / CHARGE while charging:
+    # dash_ready) is published with a 1-tick cooldown
     assert not ready(s(kind=P.GAD_STATUS, cd=1)) and judge(s(kind=P.GAD_STATUS, cd=1), s(kind=P.GAD_STATUS, cd=1)) == []
     assert judge(s(kind=P.GAD_PROJECTILE), s(kind=P.GAD_PROJECTILE, charges=2, used=1, cd=9)) == []
     assert effect(s(kind=P.GAD_SUPER, sc=500), s(sc=3000))[0] and not effect(s(kind=P.GAD_SUPER, sc=500), s(sc=500))[0]
