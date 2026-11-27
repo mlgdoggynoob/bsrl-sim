@@ -142,3 +142,67 @@ Sources (2026-11-27 searches; community guides): [pocketgamer showdown](https://
 [esportstales Crow](https://www.esportstales.com/brawl-stars/crow-guide-abilities-strategies-tips),
 [mobalytics dueling](https://mobalytics.gg/blog/lol-5-dueling-tips/), [game8](https://game8.co/games/Brawl-Stars/archives/316954),
 [timesaver](https://timesaver.gg/blog/brawl-stars-best-brawlers-showdown-september-2026).
+
+## As-built notes for PR A (planner only; OBS stays v5.9)
+
+**Files.** `planner.py` (rules, strength model, wall-aware targets, `steps` / `path`, self-check, fine-tune command in
+the docstring), `README.md` (rule table, file row). No change to the observation, `intent.py`, `env_v5`, the trainers,
+`scorecard`, `viz.html` or `scenarios`: they take the rule names from `planner.RULES` (`train_ppo.intent_stats`, episode
+`plan_rules`, scorecard's census, replay reasons), so the three new names flow through. `env_v5 --check`'s planner case
+still passes unchanged (`synth` gained `ammo=1.0` and `mycubes=0`, defaults that keep its picks).
+
+**HP fraction (2.1 check).** The entity HP column (and self 0) is `hp / maxHp` of the character (`encode.c`: `r[6] /
+r[7]`; state2 chars cols 6 / 7 = libg +0x3c4 / +0x3c8, env.c's snap2 dump). The host raises +0x3c8 by 400 per cube held
+(env.c: pickup, character change, knock-out loss; `live_check` item 10 checks max HP = 2 x Hitpoints + 400 x
+cubes_total), so the denominator already holds the cube HP. Live, the HP bar is drawn against the same max. So
+`hp_frac x (base + 400 c)` is the hit points now, and the formula needs no change, with one correction: base is the
+power-11 max, 2 x characters.csv Hitpoints (`planner.POWER = 2`, the sim's level; live opponents below power 11 read
+as slightly stronger than they are). cond 8 and ent ID0 + 8 carry the table value (/ 10000).
+
+**Built (thresholds as in section 2 unless noted).**
+- Strength `S = hp x (2 base + 400 c) x (1 + 0.1 c)`, `R = S_enemy / S_me`; enemy cubes `View.ecubes` = my count (one
+  line in `View.__init__`; `decide(..., ecubes=)` overrides it: the self-check uses that, OBS v5.10 will fill it).
+- Engage test (rule engage, team focus, fight's third party): <= 12 tiles; a finish (< 25 % and in my range) passes
+  alone; else ammo >= 2/3, not healing (hp < 0.8 with no enemy in my range), and R < 0.7, or R < 1.0 in my range with
+  aggressive >= 1.2. Solo order: finishes first, then the nearest. Team focus: my nearest mate within 12 tiles -> the
+  enemy nearest to it when that one passes. An even fight (R = 1.0) is no longer an aggressive engage.
+- `outclassed` (after `keep_away`): R >= 1.5 within its reach + 2 (reach: known max(range, super range) cap 12, unknown
+  my range), not a finish -> away. With the prior it fires on HP alone (me at 60 % vs a full same brawler: x1.7) and on
+  known tanks (Bull vs Piper, both full: 10000 / 5600 = x1.8, reach 11 + 2).
+- `fight`: the weaker of the two by strength; third party needs the ammo gate (or a finish) and R < 1.5.
+- `rotate` (after `gas`): poison within 5 tiles and not 2 teams left (else it would undo endgame's hold) -> a reachable
+  walkable tile 5-7 tiles from the poison, away from its centroid, outside reach + 1 of every enemy with R >= 1 (dropped
+  if that leaves nothing). Endgame hold band is now 3-4 tiles from the poison (was 2.5-3.5), within 6 steps.
+- `pin` (after `engage`): R < 0.8, <= 8 tiles from me, <= 2 from the poison -> hold the reachable tile nearest to
+  its position + 2 tiles away from the poison centroid. It fires when engage does not: 0.7 <= R < 0.8, or the ammo /
+  heal gates block engage.
+- Farm: score = distance + 3 x enemies within 6 tiles of the target - 2 if the target is nearer a seen map edge
+  (solid out_of_bounds) than I am and >= 6 teams left; ties to the nearer one. Cubes before boxes. Skipped: within 1.5
+  tiles of poison, or its nearest enemy is nearer to it than I am with R >= 1. Reason gets "(safer than the nearest)"
+  when the score passed over a nearer target.
+- Wall-aware targets: `View.steps` (numpy BFS, 8 neighbours, no corner cutting, over walkable + poison + UNKNOWN; a
+  blocking tile counts only next to another, seg noise) is computed on first use. move_to / hold / hide tiles are
+  picked among reachable tiles (gas / rotate by steps + 0.01 x distance), else the old straight pick. avoid: unchanged
+  target; its reason names the escape direction around walls. `planner.path` = overlay.path's A*, so the drawn path and
+  the planner agree (checked on 200 random grids against the overlay branch's copy: equal paths).
+- Cost: 0.24 ms per call without a move target, ~1.1 ms with gas in view (BFS 0.4 ms; `dist_to` now uses the mask's
+  rim only, same values, was 2.5 ms with a 9-column gas band).
+- Fine-tune launch: `work/runs/` is gitignored, so the command (4-core r51 settings + `--intent-scale 0.25 --p-plan 0.5
+  --p-rand-intent 0.3 --vlive 1 --eval-plan 1`, `--resume` the chosen checkpoint, scorecard after) sits at the end of
+  the planner docstring; its flags parse with `train_fast.parse`.
+
+**Self-check (`python -m planner`).** Every existing case, plus: strength numbers, `path` / `steps` (around a wall, no
+corner cutting, unreachable, the two agree), gas exit around a wall, rotate direction / band / not at 2 left / away from
+a stronger enemy, outclassed (Shelly 6 cubes vs my 1 = x2.5 with an `ecubes` override; the prior cancels; HP-only),
+fight by strength and its ammo gate, cube-rich finish (Shelly 10 cubes at 20 %, me at 1 of 3 ammo), ammo gate, heal
+reset, team focus, pin tile, farm weighting (enemy near / stronger enemy nearer / edge early), a walled-off bush, the
+low-HP escape bending around a wall, and the priority order over 14 overlapping states. Also ok: `intent`, `obs_v5`,
+`env_v5 --check`, `train_ppo --check`, `scenarios --check`, `scorecard.py --check`, `policy_video --check`.
+
+**Changed picks to watch in the first census / fine-tune.** `outclassed` and the heal reset make the planner more
+passive at mid HP; `rotate` sits above `low_hp` (as planned), so near the gas it moves inward before disengaging; the
+thrower_wall engage has no ammo gate (not in the plan). Live census not run (no host boots in this PR).
+
+**Deferred.** check_bush before farming a box next to a bush (3.2); the enemy cubes column (3.1: replace the one
+`ecubes` line); duo / trio drop caps in the finish value; `resolve` still snaps world targets without a true-map path
+check (overlay draws its own path on the true walk grid).
