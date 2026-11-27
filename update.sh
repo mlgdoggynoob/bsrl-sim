@@ -51,7 +51,9 @@ main() {
     fail=0
     for m in "-m obs_v5" "-m intent" "-m planner" "-m model" "-m fast_obs" "-m env_v5 --check" "scorecard.py --check" \
              "apply_noise.py --test" "-m super_audit --check" "-m star_check --check" "-m gadget_check --check" "-m hyper_check --check" \
-             "-m charge_check --check" "-m export_policy --check" "-m train_ppo --check" "-m scenarios --check" "-m showdown_check --check" "-m status_check --check"; do
+             "-m charge_check --check" "-m export_policy --check" "-m train_ppo --check" "-m scenarios --check" "-m showdown_check --check" "-m status_check --check" \
+             "-m star_audit --check" "-m gear_check --check" "-m imitation" "-m desc_audit --check" "-m desc_values --check" "-m overlay"; do
+      # policy_video --check is left out: it needs ffmpeg, which setup.sh does not install (docs/RECORDING.md)
       if out=$(python $m 2>&1); then echo "ok    python $m"; else echo "FAIL  python $m"; echo "$out" | tail -5; fail=1; fi
     done
     [ $fail = 0 ] || exit 1

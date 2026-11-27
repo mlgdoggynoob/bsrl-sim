@@ -255,6 +255,32 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   (`env.c` rec_move; an hp-line change re-sends the move). `NB_STAR_FX=0` turns them off; `NB_STAR_VT=1` logs the calls of
   libg's lazy init 0xb2fe44 (notes/issue47.md). `NbeResp` star_* fields (card, effect, counts). `python -m star_check`.
   Notes: `notes/issue47.md`.
+- `masked_seven.patch` (issue #64, a diff on top of `star_powers2.patch`): the last seven masked gadgets work and are
+  unmasked. `gadget.c`: a SHOT gadget's projectiles carry the skill's summon or item the way libg's attack path arms them
+  (`arm_shot`: 0xb703c8 / 0xb79130, which the plain spawn 0xb78190 skips), so Bo's totem, Leon's smoke, Starr Nova's fly
+  area, Spike's cactus and Damian's microphone appear where the shot ends; a skill with UseWeaponAmmo (Frank's pull,
+  Shelly's Clay Pigeons, ...) needs and spends one ammo bar; the REWIND kind throws Max's bolt (whose end spawns its
+  SpeedyRewindArea) and, when the area runs out or at a second fire (the reactivation; no cooldown while the rewind is
+  pending), teleports her back to it and restores her HP at the throw. `superfix_moves.c`: `superfix_teleport` and
+  `superfix_valid_spot` (a walkable spot). `superfix_status.c`: a Levitation status from an area sets libg's levitating byte (+0x9b0), so
+  enemy shots pass through Starr Nova's floating teammates; a summon's area with a Refreshable ally status re-applies every
+  tick; Bo's ExtraSuperCharge area adds +CustomValue % to the charge of each hit while inside. `superfix_items.c`: a pick-up heal item (type 72)
+  gives its StatusEffectAlly to whoever picks it up. `superfix.c` / `env.c`: the summon-area table is emptied when a new
+  battle is built (character ids restart; an old entry kept a new summon from getting its area). Frank's and Griff's masks were
+  stale (both already worked). Notes:
+  `notes/issue64.md`. `python -m super_audit --gadget`, `python -m gadget_check`.
+- `summons_dashes.patch` (issue #46 batches 3b and 4, a diff on top of `masked_seven.patch`): `gadget.c`'s SUMMON kind
+  places a spawn row's characters.csv summon with libg's summon factory 0xb56e00 (Penny's barrel, Bea's honey pot, Grom's
+  watchtower, Janet's speaker, Stu's booster and Leon's clone at the brawler; Tara's shadows, Charlie's spiders and Ruffs'
+  sandbags CustomValue1 of them CustomValue2 out; Tara's go after CustomValue3 ticks, Ruffs' get CustomValue4 % of his max
+  HP; Grom's tower answers the bush hiding through `gadget_summon_vision`), and Rico's Type 76 row is a SHOT (libg bursts
+  the container). The CHARGE kind runs a gadget's Charge skill (Wendy, Glowy, Bolt, Brock, Max, Shelly; Angelo's
+  activate_skill) through `env.c`'s new `env_charge_start`: the native charge with the skill's ChargeType (jumps and
+  flights straight over walls), no super slot or contact damage, the skill's areas at take-off / landing, its
+  ActivationSelfStatusEffects (Max's shield) and Reload flag (Shelly). DASH rows get their AreaEffect at the start (Maisie's
+  stun) and SubType 3's ammo (Clancy), and DASH / CHARGE are not ready mid-charge. `superfix.c`: a summon's damage area
+  takes the summoner's weapon Damage and its Dot area hits every 20 ticks (Janet). Notes: `notes/issue46_b34.md`.
+  `python -m super_audit --gadget`, `python -m gadget_check`.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
@@ -275,9 +301,10 @@ downloaded game build, default `work/`), `SIM_VENV`.
 - **Variables come out empty.** `env.sh` must have LF line endings (CRLF breaks every variable). From Windows, pass
   scripts to `wsl.exe ... bash -s` on stdin.
 - **Slow start.** One boot takes 60-90 s. Batch your checks into one run.
-- **The fire head never uses most gadgets.** The game build compiles gadget activation out, and the
-  host activates only the kinds `native/loader/gadget.c` implements (dash, heal over time, area at the brawler), so for every other
-  gadget the class stays masked. `python -m gadget_check` shows which kinds the built host publishes.
+- **The fire head never uses some gadgets.** The game build compiles gadget activation out, and the
+  host activates only the kinds `native/loader/gadget.c` implements (117 of the 213 gadgets, README "Notes"; the rows in
+  `g_masked` stay off), so for every other gadget the class stays masked. Training also needs `--gadgets 1`.
+  `python -m gadget_check` shows which kinds the built host publishes.
 - **The fire head never uses hypercharge.** It needs `--hyper 1` (players get their card) and a host built with
   `native/loader/hyper.c`. `python -m hyper_check` checks the built host.
 - **Every boot crashes at "loading 45%".** A game file is a Git LFS pointer, not the file (seen with `assets/sc/ui.sc`

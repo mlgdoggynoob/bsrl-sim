@@ -251,7 +251,27 @@ static void stop_mover(void *ch) {   /* env.c sf_stop: not charging, can stop, m
 }
 typedef struct { uint8_t *ch; int x, y; } BlinkHome;
 static BlinkHome g_home[16]; static int g_nhome;
-static long g_blink, g_blink_back, g_blink_hits;
+static long g_blink, g_blink_back, g_blink_hits, g_rewind_tp;
+/* ForceValidTile: (tx, ty) pulled back along the line towards (x0, y0), 50 u at a time, to the first walkable tile (at worst
+ * (x0, y0) itself). Also gadget.c's (issue #64: Max's bolt lands on a walkable tile) */
+void superfix_valid_spot(void *sim, int x0, int y0, int *tx, int *ty) {
+    double L = hypot(*tx - x0, *ty - y0), back = 0; int lx = *tx, ly = *ty;
+    while (sim && !walkable(sim, lx, ly) && back < L) {
+        back += 50; double f = (L - back) / (L > 1 ? L : 1); if (f < 0) f = 0;
+        lx = (int)floor(x0 + (*tx - x0) * f + 0.5); ly = (int)floor(y0 + (*ty - y0) * f + 0.5);
+    }
+    *tx = lx; *ty = ly;
+}
+/* a plain teleport of a living brawler to (tx, ty) (pulled back to a walkable tile from where it stands): the stop, then libg's
+ * position set. gadget.c's REWIND (issue #64: Max back to her bolt) */
+int superfix_teleport(uint8_t *ch, int tx, int ty) {
+    void *sim = ch ? sim_of(ch) : NULL; if (!sim || I32(ch, 0x3c4) <= 0) return 0;
+    superfix_valid_spot(sim, I32(ch, 0x38), I32(ch, 0x3c), &tx, &ty);
+    stop_mover(ch);
+    ((void (*)(void *, int, int, int))B(0xb6a61c))(ch, tx, ty, 0);
+    g_rewind_tp++;
+    return 1;
+}
 static void blink_start(uint64_t *ctx) {   /* enter 0xb4ffe0(char, tx, ty, areaLeave, areaEnter, scaled damage, Damage, ...) */
     uint64_t lr = ctx[9] - (uint64_t)g_libg->base;
     if (!mode() || (lr != 0xb804a8 && lr != 0xb80334)) return;   /* the two calls in the Blink handler 0xb80110 */
@@ -267,11 +287,7 @@ static void blink_start(uint64_t *ctx) {   /* enter 0xb4ffe0(char, tx, ty, areaL
         if (k == g_nhome) { if (g_nhome >= 16) return; g_nhome++; }
         g_home[k] = (BlinkHome){ch, x0, y0};
     }
-    double L = hypot(tx - x0, ty - y0), back = 0; int lx = tx, ly = ty;   /* ForceValidTile: back along the line */
-    while (!walkable(sim, lx, ly) && back < L) {
-        back += 50; double f = (L - back) / (L > 1 ? L : 1); if (f < 0) f = 0;
-        lx = (int)floor(x0 + (tx - x0) * f + 0.5); ly = (int)floor(y0 + (ty - y0) * f + 0.5);
-    }
+    int lx = tx, ly = ty; superfix_valid_spot(sim, x0, y0, &lx, &ly);   /* ForceValidTile: back along the line */
     if (aLeave) spawn_area(ch, aLeave, x0, y0, 0, 2);
     stop_mover(ch);
     ((void (*)(void *, int, int, int))B(0xb6a61c))(ch, lx, ly, 0);
@@ -916,12 +932,12 @@ void superfix_moves_install(void) {
         n & 8 ? " change-area" : "", n & 16 ? " split" : "", n & 32 ? " split-water" : "", n & 64 ? " (character hits)" : "");
 }
 void superfix_moves_status(void) {
-    LOG("[superfix] moves: flyjump %ld starts, %ld landings (%ld fallback); ww %ld starts, %ld hits; blink %ld (%ld back), %ld hits; "
+    LOG("[superfix] moves: flyjump %ld starts, %ld landings (%ld fallback); ww %ld starts, %ld hits; blink %ld (%ld back), %ld hits, rewind teleports %ld; "
         "change character %ld (%ld left to battle_fix), with area %ld (%ld hits); cross slash %ld (%ld hits); split: rejoins %ld, "
         "component ticks %ld, speed ticks %ld, legs retired without a head %ld, water walks %ld, put on land %ld; portals: %ld links, "
         "%ld teleports (%ld shields); grapple: %ld character / %ld wall pulls, %ld landings (%ld stuns), %ld supers given back; "
         "kit: %ld jumps, %ld on teammates (%ld heals), %ld on enemies (%ld stuns)\n", g_fj_start, g_fj_land,
-        g_fj_fallback, g_ww_start, g_ww_hits, g_blink, g_blink_back, g_blink_hits, g_change, g_change_skip, g_change_area, g_change_hits,
+        g_fj_fallback, g_ww_start, g_ww_hits, g_blink, g_blink_back, g_blink_hits, g_rewind_tp, g_change, g_change_skip, g_change_area, g_change_hits,
         g_slash_n, g_slash_hits, g_split_rejoin, g_split_comp, g_split_spd, g_split_orphan, g_split_wow, g_split_land, g_portal_links, g_portal_tp,
         g_portal_shields, g_gr_char, g_gr_wall, g_gr_land, g_gr_stun, g_gr_reload, g_kit_jumps,
         g_kit_ally, g_kit_heal, g_kit_enemy, g_kit_stun);

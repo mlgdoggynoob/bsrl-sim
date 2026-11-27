@@ -38,11 +38,12 @@ invisibility, status buff, a heal when the pre-damage missed); no_effect = consu
 consumed (or the brawler was not spawned); crash = the host died with this brawler as the only shooter; no_hyper (--hyper
 only) = consumed, but neither the brawler nor the brawler it is a form of has a hypercharge card (`hyper_owner`: Wendy, Nori,
 the SuperNova forms), so there is nothing hypercharged to judge.
-Not detectable: stuns / slows / silences, shields, damage boosts, invisibility, wall breaking, effects that start after
-WATCH ticks, effects on allies (every player is solo), how close a re-implementation is to the real game.
+Not detectable: stuns / slows / silences, shields, damage boosts and invisibility (outside --gadget's hide / boost rows),
+wall breaking, effects that start after WATCH ticks, effects on allies (every player is solo), how close a
+re-implementation is to the real game.
 Every non-works brawler is retried once (other corridor direction, d from a smaller fraction of its range); the best
 attempt counts. A host crash requeues that phase's shooters one at a time (a reboot each) to find the brawler.
-Output: $SIM_WORK/super_audit.json (per brawler: name, super, type, class, attempts with measurements) and
+Output: $SIM_WORK/super_audit.json (per brawler: name, super, type, class, attempts with measurements, watch_ticks) and
 $SIM_WORK/super_audit.md (also stdout): a checklist grouped by class then super type. The default list is env_v5.heroes()
 (the playable brawlers) then env_v5.forms() (the other forms and event transforms, spawned directly as shooters). With --only the brawlers are
 merged into an existing super_audit.json.
@@ -63,9 +64,10 @@ no_data (not in the tables, or only in a brawler-specific card type's own code: 
 the live audits record (objects / projectiles count, damage, push, heal, move): super_audit_hyper.json vs super_audit.json ->
 live_ok / live_wrong, else live_unchecked. Output: super_audit_hyper_desc.json / .md (--live: folder of the two audits).
 --gadget (gadget round, issue #3): the brawlers with a gadget the host implements and this audit can see (`audit_gadgets`,
-`gadget_kind` mirrors nbhost gadget.c's and gadget_self.c's classify functions: area at the brawler, the gadget's own skill
-shot or area, items, instant heals, Piper's Auto Aimer, the other repeat_shot / spin_shoot volleys ("repeat", issue #54 redo),
-the next-attack modifiers ("next", issue #46); the super charges (R-T, Buzz's buoy) are gadget_check's, the statuses and
+`gadget_kind` mirrors nbhost gadget.c's and gadget_self.c's classify functions: the dashes and the Charge-skill gadgets
+("dash", "charge", issue #46 batch 4: `move_expect`), area at the brawler, the gadget's own skill
+shot or area, items, summons ("summon", issue #46 batch 3b: `summon_expect`), instant heals, Piper's Auto Aimer, the other
+repeat_shot / spin_shoot volleys ("repeat", issue #54 redo), the next-attack modifiers ("next", issue #46); the super charges (R-T, Buzz's buoy) are gadget_check's, the statuses and
 shields on the brawler (gadget_self.c: "status", "shield") status_check's). Each shooter gets that gadget card and fires it (fire 3, aimed at the target, super_dist = d / CastingRange as
 for a super: a thrown gadget lands there) in place of the super; consumed = the host counted a use (NbeResp gad_used). An
 item gadget (a trap, a tornado) acts on an enemy that comes to it, so its target walks to the shooter's spot after the fire
@@ -77,7 +79,26 @@ hits enemies", code 10 = CustomValue6 / 40) expects recharge: the shooter's supe
 (Damian's wall, Wendy's grenade, Spike's cactus) does not expect its skill's Damage (`thrown_harms`). A row may carry a
 `prep` (fill the super and / or fire 1 or 2, then wait some ticks, before the gadget), `follow` (ticks after the gadget at
 which the shooter fires its main attack: the next-attack rows fire twice, the first attack must be modified and the second
-plain) and its own `watch` length. --gadget-slot 1 audits each brawler's second such gadget. Output: super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*).
+plain) and its own `watch` length. A shot whose skill summons or drops an item, and Max's rewind, get effects of their
+own (`shot_effects`, issue #64): decay (the summon's HP drops), hide (a SmokeScreen summon: the far target, d_fix away,
+sees the shooter before the fire and not after; `obs_step` / `sees`), boost (an ExtraSuperCharge summon: charge per
+damage of a main attack from inside its area vs one before the gadget, both thrown to the aimed range, atk_sd; not
+testable, `boost_capped`, when the super is full before the second attack deals damage), float (a Levitation area: the
+target's second shot takes no HP; thrown off the target's line, aim_off), the pick-up heal (the shooter walks to its item;
+one step's HP rise near the target's hit, at least heal_min) and Max's move + heal + reactivate (a second fire 3
+REWIND_AGAIN ticks after the throw must bring her back within REWIND_EARLY ticks, before the 3 s end). These summons land
+near the shooter (`land`); rewind and pick-up rows get no pre-damage (their hit comes after the fire). Rico's Multiball
+Launcher (BURST_CARD) also expects burst: from BURST_FROM ticks the target shoots his container every BURST_EVERY ticks, and
+once it is destroyed its explosion's CustomValue bullets (BulletExplosionBullet) must show up as the shooter's projectiles.
+A summon row (gadget.c SUMMON) measures what `summon_expect` lists: placed, decay, damage, slow / speed (a walker's speed
+inside the summon's area against its characters.csv Speed), reveal (Grom: the target in a bush), block (Penny's barrel loses
+HP to the target's shot), expire (Tara's shadows), cover_hp (Ruffs' sandbags).
+A dash / charge row (gadget.c DASH, CHARGE) measures what `move_expect` lists: move and reach (the farthest the shooter got
+against the distance gadget.c gives it), the damage / push / heal of the areas it spawns (the target stands where a jump
+lands, or inside a take-off area), stun (Maisie: the target walks during the stun and must stay slow), reload (Shelly,
+Clancy: the ammo after one main attack rises by a bar within a few ticks) and immune (Max: the target's shot during the
+dash takes no HP).
+--gadget-slot 1 audits each brawler's second such gadget. Output: super_audit_gadget.json / .md (slot 1: super_audit_gadget_2.*).
 --attack (main attack round): the same scene, but each shooter fires its main attack (fire 1, aimed at the target; the host
 always throws it at full range) in place of the super, with no super fill. Expected effects come from the brawler's
 characters.csv WeaponSkill row read as a super's (`expected(attack=True)`, Meg: her mech's weapon); consumed = the attack's
@@ -269,6 +290,7 @@ def expected_skill(sk_name, s):
     if _num(s, "ChargePushback") > 0 or any(_num(r, "PushbackStrength") > 0 and r.get("Type") != "EdgeCrossing" for r in pl + alog):
         ex.append("push")
     if _num(s, "ChargePushback") < 0: ex.append("pull")   # El Primo hypercharged (OverchargedChargePushback -100): hit enemies pulled to the landing point
+    elif any(_num(r, "PushbackStrength") < 0 for r in pl): ex.append("pull")   # Frank's Pull gadget (-150): the target ends nearer
     if any(r.get("Type") == "EdgeCrossing" for r in alog): notes.append("EdgeCrossing push: only at the arena edge, checked by charge_check")
     if (_num(s, "HealSelfOnActivationPower") > 0 or any(_num(r, "HealOwnPercent") > 0 for r in pl)
             or any(r.get("Type") in ("Heal", "Hot", "HealRegen", "HealAndDamage", "HotAndDot") for r in alog)): ex.append("heal")
@@ -312,12 +334,11 @@ NO_DAMAGE_AREAS = ("WallSpawn", "StatusEffect", "ChargeSuper", "EnragerOvercharg
 HEAL_TYPES = ("Heal", "Hot", "HealRegen", "HealAndDamage", "HotAndDot")
 
 
-MASKED = {"BowDude_Totem", "Speedy_Rewind", "HammerDude_Pull", "AssaultShotgun_Bomb", "Ninja_InvisibleArea",
-          "Gladiator_Amp", "MagicalGirl_FlyArea",   # gadget.c g_masked: classified, but no effect in this audit
-          "TntDude_Stun", "ShieldTank_Pull", "Beamer_Pierce", "InsectMan_Pierce", "Stalker_Lifesteal",
+MASKED = {"TntDude_Stun", "ShieldTank_Pull", "Beamer_Pierce", "InsectMan_Pierce", "Stalker_Lifesteal",
           "FishTank_Slow"}   # issue #46 NEXT rows with no effect seen
 # -> not usable
-GADGET_KINDS = ("area", "shot", "skill_area", "item", "heal_now", "super", "auto_aim", "repeat", "next", "status", "shield")
+GADGET_KINDS = ("dash", "charge", "area", "shot", "skill_area", "item", "summon", "heal_now", "super", "auto_aim", "repeat", "next",
+                "status", "shield")
 # next_attack_change SubTypes gadget.c's NEXT kind takes (next_classify): libg's own branches once the accessory is armed (7, 14,
 # 15, 16, 21, 23, 24, 32), the hit fields the host applies (3, 10, 11, 29), the status on hit (33); 2 needs a CustomObject
 # projectile or a range (CustomValue1)
@@ -334,10 +355,12 @@ def gadget_kind(a, masked=True):
     obj = (a.get("CustomObject") or "").split(";")[0]
     is_proj = obj in T["pskin"] or obj in T["plog"]
     st = int(num("SubType"))
+    if t == "dash": return "dash" if num("CustomValue1") > 0 and num("CustomValue2") > 0 else None   # gadget.c DASH
+    if charge_skill(a): return "charge"   # gadget.c CHARGE (issue #46 batch 4; published DASH)
     # AREA: the area at the brawler (Fang's sweep, Buster's heal too), Rosa's WallSpawn left out
     if (not t or (t == "spin_shoot" and not is_proj) or (t == "heal" and st == 6)) and a.get("AreaEffect"):
         return "area" if T["alog"].get(a["AreaEffect"], {}).get("Type") != "WallSpawn" else None
-    if not t and a.get("Skill"):
+    if t in ("", "aim_with_gadget_collision") and a.get("Skill"):   # Type 76 (Rico) only bends the client's aim line: a SHOT
         sk = T["skill"].get(a["Skill"], {}); bt = sk.get("BehaviorType") or "Attack"   # an empty BehaviorType parses as Attack
         if bt == "Attack" and sk.get("Projectiles"): return "shot"
         if bt in ("Attack", "AimableArea") and not sk.get("Projectiles") and sk.get("AreaEffectObject"): return "skill_area"
@@ -351,6 +374,8 @@ def gadget_kind(a, masked=True):
     if t in ("repeat_shot", "spin_shoot"):   # gadget.c REPEAT / SPIN (#54 redo): ActiveTicks // CustomValue1 shots of the CustomObject
         return "repeat" if is_proj and num("CustomValue1") > 0 and num("ActiveTicks") > 0 and a.get("Name") != "Sniper_HandGun" else None
     if t == "spawn" and obj in T["item"]: return "item"
+    if t == "spawn" and obj in T["char"] and (st in (1, 2) or st == 5 and num("CustomValue1") > 0 and num("CustomValue2") > 0):
+        return "summon"   # gadget.c SUMMON (issue #46 batch 3b)
     if t in ("heal_attached_and_self", "heal_damage_taken") and num("CustomValue1") > 0: return "heal_now"
     if t == "charge_ulti" and num("CustomValue1") > 0: return "super"
     if t == "ulti_change" and st == 1 and num("CustomValue5") > 0: return "super"   # gadget.c BUOY (Buzz)
@@ -362,6 +387,15 @@ def gadget_kind(a, masked=True):
         return "status"
     if t == "heal" and st == 1 and num("ActivationDelay") > 0: return "status"
     return None
+
+
+def charge_skill(a):
+    """gadget.c charge_skill: the skills.csv row of an empty-Type row's Skill, or of an activate_skill row's CustomObject, when its
+    BehaviorType is Charge with a ChargeSpeed (else None)"""
+    t = a.get("Type") or ""
+    nm = a.get("Skill") if not t else (a.get("CustomObject") or "").split(";")[0] if t == "activate_skill" else ""
+    sk = _tables()["skill"].get(nm or "", {})
+    return sk if sk.get("BehaviorType") == "Charge" and _num(sk, "ChargeSpeed") > 0 else None
 
 
 @functools.lru_cache(None)
@@ -380,7 +414,8 @@ def all_gadgets():
     return out
 
 
-AUDIT_KINDS = ("area", "shot", "skill_area", "item", "heal_now", "auto_aim", "repeat", "next")   # "super" (R-T, Buzz): gadget_check's
+AUDIT_KINDS = ("dash", "charge", "area", "shot", "skill_area", "item", "summon", "heal_now", "auto_aim", "repeat", "next")   # "super"
+# (R-T, Buzz): gadget_check's
 NEXT_T1, NEXT_T2, NEXT_WATCH = 2, 30, 60   # next: ticks after the gadget of the first / second main attack, ticks watched
 NEXT_DIST_F = (0.95, 0.8)   # next: target distance per attempt as a fraction of the main attack's range (lobs land at full range)
 RECOIL_MIN = 150            # next SubType 15 (Janet's self knockback, CustomValue1 300): units she moves
@@ -410,7 +445,8 @@ def thrown_harms(T, e):
     pl = [T["plog"].get(T["pskin"].get(p, {}).get("Logic") or p, {}) for p in e["projectiles"]]
     if not pl or not all(r.get("Indirect") == "true" and _num(r, "Radius") == 0 for r in pl): return True
     al = [T["alog"].get(T["askin"].get(a, {}).get("Logic") or a, {}) for a in e["areas"]]
-    return any(_num(r, "Damage") > 0 or r.get("Type") in ("Dot", "HotAndDot") for r in al)
+    return any((_num(r, "Damage") > 0 and r.get("Type") != "Effect") or r.get("Type") in ("Dot", "HotAndDot") for r in al)   # an Effect
+    # area (Max's SpeedyRewindArea, a marker) is outside the area apply's type mask: its Damage column hits no one
 
 
 def fuse_watch(T, proj):
@@ -456,7 +492,8 @@ def _expected_gadget(name, slot=0):
         if kind == "shot" and "damage" in e["expect"] and not thrown_harms(T, e):   # Damian's wall, Wendy's grenade, Spike's cactus
             e = {**e, "expect": [x for x in e["expect"] if x != "damage"],
                  "notes": e["notes"] + ["thrown, lands on nothing that deals damage: the skill's Damage is not expected"]}
-        return {**e, "skill": acc, "type": "Gadget", "kind": "Gadget: " + kind, "card": card, "delay": 0.0, "gadget_kind": kind}
+        out = {**e, "skill": acc, "type": "Gadget", "kind": "Gadget: " + kind, "card": card, "delay": 0.0, "gadget_kind": kind}
+        return shot_effects(T, out, a) if kind == "shot" else out
     if kind == "next":
         att = T["skill"].get(T["char"].get(name, {}).get("WeaponSkill", ""), {})
         ex, notes, nx = next_expect(a)
@@ -494,10 +531,217 @@ def _expected_gadget(name, slot=0):
             out["notes"] = out["notes"] + ["recharge: the super charge rises by CustomValue6 / 4000 (%g %%) of the full super per enemy hit"
                                            % (_num(a, "CustomValue6") / 40)]
         return out
+    if kind == "summon": return summon_expect(T, base, a)
+    if kind in ("dash", "charge"): return move_expect(T, base, a, kind)
     if kind == "item":
         return {**base, "kind": "Gadget: item", "range": 600.0, "expect": ["item"], "items": [a["CustomObject"].split(";")[0]],
                 "walk_in": True}   # a trap / tornado acts on an enemy that comes to it: the target walks to the shooter
     return {**base, "kind": "Gadget: heal_now", "range": 600.0, "expect": ["heal"]}
+
+
+LAND_NEAR = 450      # issue #64: a summon whose area acts on the shooter's team is thrown this far, so the shooter stands in it
+HIDE_D, HIDE_T = 1800.0, 30   # SmokeScreen summon (Leon): the target this far away (outside the area: an invisible brawler is seen
+                              # from ~1200 u, status_check), looked at HIDE_T ticks after the fire (the summon's area is up)
+BOOST_PREP, BOOST_T = 30, 20  # ExtraSuperCharge summon (Bo): a plain attack BOOST_PREP ticks before the gadget (the charge per
+                              # damage without the totem), a second one BOOST_T ticks after it, from inside the totem's area
+BOOST_D = 800.0      # the target this far from Bo (at 1320 u his arrows missed it on the first try)
+BOOST_MIN = 1.3      # the second attack's charge per damage at least this many times the first (the card: +50 %)
+FLOAT_T = 30         # Levitation area (Starr Nova): the target shoots the shooter again this many ticks after the fire
+                     # (the device lands and starts the levitation ~19 ticks after it)
+BURST_CARD, BURST_AREA = "TrickshotDude_ShootAround", "TrickshotDudeAccessoryExplosion"   # Rico's card, its container's burst
+BURST_LAND, BURST_WATCH = 900, 120   # Rico: the container lands this far out (the target, further, shoots it), ticks watched
+REWIND_CARD = "Speedy_Rewind"   # gadget.c REWIND (CARD_REWIND): the bolt, and the rewind 3 s later (60 ticks + the area tick)
+REWIND_HIT, REWIND_WATCH = 6, 70   # the target hits Max after the throw, the rewind heals that hit back
+REWIND_AGAIN, REWIND_EARLY = 16, 10   # the reactivation (fire 3) this many ticks after the throw (the target's hit has landed);
+                                      # Max must be back within REWIND_EARLY ticks of it, long before the 3 s (60 ticks) end
+REWIND_HEAL = 0.8   # at least this share of that hit healed back (regen adds, the hit sits inside the 3 s window)
+PICKUP_HIT, REGEN_T = 2, 55   # a pick-up heal (Damian's microphone): the target hits the shooter PICKUP_HIT ticks after the
+                              # fire; HP rises count only REGEN_T ticks from that hit (regen waits 3 s = 60 ticks after damage
+                              # and then gives ~600 in one step, which a full-HP pick-up would be mistaken for)
+
+
+SUM_PLACE_R = 400    # summon: SubType 1 / 2 summons stand this near the shooter (libg moves one off a blocked spot by itself)
+SUM_PLACE_SLACK = 250   # SubType 5: within CustomValue2 +- this of the shooter (a spot pulled back off a wall is nearer;
+                        # the spots are clear corridors, so a ring placed at the shooter, 0 u, fails)
+SUM_BEAR_TOL = 45.0     # Ruffs (CustomValue4 arc): the sandbags' mean bearing from the shooter within this of the aim (SUM_ARC
+                        # 35 degrees apart: the outer ones are 35 off it)
+SUM_EXPIRE_SLACK = 12   # Tara: every shadow gone by CustomValue3 + this many ticks after the fire (the fire lands a step late)
+SUM_HP_TOL = 0.02       # Ruffs: a sandbag's HP within 2 % of CustomValue4 % of the shooter's max HP
+SUM_SPEED_MIN = 120     # u/s: Stu's booster (SpeedBoostAbsolute 200) makes him at least this much faster than his table Speed
+SUM_SLOW_MIN = 150      # u/s: Bea's honey (SpeedReduceAbsolute 350) makes the target at least this much slower (status_check SLOW_MIN)
+SUM_WALK = (6, 22)      # ticks after the fire between which the walker's speed is measured (the summon's area is up by then)
+REVEAL_T = 10           # Grom: ticks after the fire at which the shooter must see the target in its bush
+BLOCK_T = 10            # Penny: ticks after the fire at which the target shoots the shooter through the barrel
+BURST_FROM, BURST_EVERY = 16, 8   # Rico: the target shoots the container from this tick on, this often (it has 2000 HP)
+
+
+REACH_TOL, REACH_TOL_U = 0.2, 200   # dash / charge: the farthest the shooter got within 20 % (at least 200 u) of the distance
+                                    # gadget.c gives it (a jump's landing is pulled back onto walkable ground)
+STUN_WALK = (3, 11)  # Maisie: ticks after the fire between which the target walks to the shooter's start (the stun area spawns at
+                     # the fire, a step late, and stuns for its CustomValue 10 ticks)
+STUN_V = 200         # u/s: a stunned walker covers less (status_check STUN_MOVE: a free one walks ~720 u/s, ~600 measured)
+RELOAD_PREP, RELOAD_T = 4, 6   # reload: the shooter fires one main attack RELOAD_PREP ticks before the gadget (one bar spent); the
+                               # ammo must rise within RELOAD_T ticks after the fire (natural reload gives < 200 there)
+RELOAD_MIN = 700     # ammo (1000 a bar) that the gadget must give back in that time
+IMMUNE_T = 2         # Max: the target shoots her this many ticks after the fire (her dash lasts ~9 ticks)
+HEAL_BY = 30         # Glowy: his heal counted up to this tick (the pre-damage hit lands ~26 ticks before the fire; regen
+                     # starts 60 ticks after a hit)
+DRAIN_D = 450.0      # Angelo: the target this far away, inside his take-off area (Radius 700)
+
+
+def move_expect(T, base, a, kind):
+    """--gadget kinds "dash" / "charge" (gadget.c DASH and CHARGE): move, and reach: the farthest the shooter gets is within
+    REACH_TOL of the distance gadget.c gives it (a dash row's CustomValue1; a charge skill's CastingRange x 100, or for a
+    jump (ChargeType 11) without AlwaysCastAtMaxRange the aimed distance, super_dist of it). The areas the skill spawns
+    (AreaEffectObject at take-off, AreaEffectObject2 at the landing with AreaEffect2AtEndOfCharge; a dash row's AreaEffect at the
+    start) give damage / push (Damage, DamageDrain with Damage; PushbackStrength: the target stands where the jump lands, or
+    within the take-off area, DRAIN_D), heal (a StatusEffect area whose Self status heals: counted up to HEAL_BY) and stun (a Stun
+    area, Maisie: she dashes at right angles to the target, aim_off, which walks to her start STUN_WALK ticks and must stay
+    under STUN_V u/s). Plus: reload (the skill's Reload flag, Shelly; dash SubType 3, Clancy: after one main attack, the ammo
+    rises by RELOAD_MIN within RELOAD_T ticks), immune (an ActivationSelfStatusEffects status with ShieldPercent 100, Max: the
+    target's shot IMMUNE_T ticks after the fire takes no HP, against the pre-damage shot as a baseline, as "float"; that
+    baseline only shows the aim works on a standing shooter: a shot that misses her during the dash would also read 0)."""
+    sk = charge_skill(a) if kind == "charge" else {}
+    srow = lambda nm: {r[next(iter(r))]: r for r in _status_rows()}.get(nm or "", {})
+    alog = lambda nm: T["alog"].get(T["askin"].get(nm, {}).get("Logic") or nm, {})
+    ex, notes = ["move", "reach"], []
+    if kind == "dash":
+        rng = _num(a, "CustomValue1"); reach = rng
+        start, end = a.get("AreaEffect") or "", ""
+    else:
+        rng = _num(sk, "CastingRange") * 100
+        aimed = sk.get("ChargeType") == "11" and (sk.get("AlwaysCastAtMaxRange") or "").lower() != "true"
+        reach = "aim" if aimed else rng
+        start = sk.get("AreaEffectObject") or ""
+        end = sk.get("AreaEffectObject2") or "" if (sk.get("AreaEffect2AtEndOfCharge") or "").lower() == "true" else ""
+        if sk.get("ChargeType") in ("11", "20"): notes.append("airborne (ChargeType %s): a straight path over walls [?]" % sk["ChargeType"])
+    out = {**base, "kind": "Gadget: %s%s" % (kind, " ChargeType " + sk["ChargeType"] if sk else ""), "range": rng, "reach": reach,
+           "areas": [x for x in (start, end) if x]}
+    if out["areas"]: ex.append("area")
+    for nm, where in ((start, "start"), (end, "end")):
+        if not nm: continue
+        al = alog(nm); ty = al.get("Type") or ""
+        if _num(al, "Damage") > 0 and ty in ("Damage", "DamageDrain") and "damage" not in ex: ex.append("damage")
+        if _num(al, "PushbackStrength") > 0 and "push" not in ex: ex.append("push")
+        if ty == "StatusEffect" and _num(srow(al.get("StatusEffectSelf")), "Healing") > 0: ex.append("heal"); out["heal_by"] = HEAL_BY
+        if ty == "Stun": ex.append("stun"); out.update(aim_off=90.0, d_fix=DRAIN_D, walk="t", walk_win=STUN_WALK, stun=True)
+        if where == "start" and ty != "Stun" and ("damage" in ex or "push" in ex): out["d_fix"] = DRAIN_D   # in the take-off area
+        if ty == "DamageDrain": notes.append("not modelled: the drain's heal-back to the shooter (server code)")
+    if "reload" in (sk.get("BooleanAttributes") or "").lower().split(";") or kind == "dash" and int(_num(a, "SubType")) == 3 and _num(a, "CustomValue3") > 0:
+        ex.append("reload"); out.update(prep={"fire": 1, "wait": RELOAD_PREP})
+    if any(_num(srow(x), "ShieldPercent") >= 100 for x in (sk.get("ActivationSelfStatusEffects") or "").split(";") if x):
+        ex.append("immune"); out.update(post_hit=IMMUNE_T)
+    return {**out, "expect": ex, "notes": base["notes"] + notes}
+
+
+def move_measures(m, inf, names, t):
+    """dash / charge: move_expect's measures (reach from the farthest move; stun from the target's walk; reload from the
+    ammo in the first RELOAD_T ticks; heal up to HEAL_BY; immune from the target's shot after the fire)"""
+    want = max(300.0, inf["range"] * m["super_dist"]) if inf["reach"] == "aim" else float(inf["reach"])   # gadget.c AIM_MIN 300
+    m["reach_want"] = int(want); m["reach"] = abs(m["move"] - want) <= max(REACH_TOL_U, REACH_TOL * want)
+    if inf.get("stun"):
+        tr = m.get("walk_tr", [])
+        m["stun_v"] = (sum(float(np.hypot(b[1] - a[1], b[2] - a[2])) for a, b in zip(tr, tr[1:])) * 20.0 / (tr[-1][0] - tr[0][0])
+                       if len(tr) >= 2 and tr[-1][0] > tr[0][0] else None)
+    if "reload" in inf["expect"]: m["reload_got"] = m.get("ammo_early", m["ammo0"]) - m["ammo0"]
+    if inf.get("heal_by"): m["heal"] = m.get("hp_max_by", m["hp0"]) - m["hp0"]
+    if "immune" in inf["expect"]: m["immune_hit"] = m.get("post_hit", -1)
+
+
+def summon_expect(T, base, a):
+    """--gadget kind "summon" (gadget.c SUMMON): the CustomObject summon(s) of the shooter's player, placed as the SubType says
+    ("placed": CustomValue1 of them for SubType 5, else one; each within SUM_PLACE_R of the shooter, or CustomValue2 +-
+    SUM_PLACE_SLACK for SubType 5, and for a CustomValue4 arc, Ruffs, their mean bearing within SUM_BEAR_TOL of the aim);
+    the summon's area when it has one, and its effect, measured here:
+      decay (HealthPromilleLostPerSecond: its HP drops); damage (an attacking summon, a damaging area: Janet's speaker, Leon's
+      clone, Tara's shadows, Charlie's spiders); slow (an enemy StatusEffect area with a speed reduction, Bea's honey: the target
+      walks to the shooter's spot inside it, SUM_WALK ticks, at least SUM_SLOW_MIN u/s under its table Speed); speed (a Self /
+      Ally speed area, Stu's booster: the shooter walks towards the target inside it, at least SUM_SPEED_MIN over his table
+      Speed); reveal (a Vision area, Grom's tower: the target stands in a bush 5-6 tiles away, status_check.bush_spot; the
+      target is not visible to the shooter before the fire and is REVEAL_T ticks after, by state2's visible flag: the shooter
+      is player 0, the local player, the only one env.c's bush hiding is for); block (UniqueProperty 8, Penny's
+      barrel: the target shoots the shooter BLOCK_T ticks after the fire and the barrel loses HP); expire (CustomValue3, Tara:
+      every shadow gone within CustomValue3 + SUM_EXPIRE_SLACK ticks); cover_hp (CustomValue4, Ruffs: each sandbag's HP is
+      CustomValue4 % of the shooter's max HP, within SUM_HP_TOL)."""
+    obj = a["CustomObject"].split(";")[0]; c = T["char"].get(obj, {}); st_ = int(_num(a, "SubType"))
+    n = int(_num(a, "CustomValue1")) if st_ == 5 else 1; R = _num(a, "CustomValue2") if st_ == 5 else 0.0
+    ar = c.get("AreaEffect") or ""; al = T["alog"].get(T["askin"].get(ar, {}).get("Logic") or ar, {})
+    srow = lambda nm: {r[next(iter(r))]: r for r in _status_rows()}.get(nm or "", {})
+    ex = ["summon", "placed"]; notes = []
+    out = {**base, "kind": "Gadget: summon SubType %d" % st_, "summons": [obj] * n, "sum_obj": obj, "sum_n": n,
+           "place_r": R + SUM_PLACE_SLACK if st_ == 5 else SUM_PLACE_R, "place_min": max(0.0, R - SUM_PLACE_SLACK) if st_ == 5 else 0.0,
+           "place_arc": st_ == 5 and _num(a, "CustomValue4") > 0, "range": _num(al, "Radius") or 1200.0}
+    if ar: ex.append("area"); out["areas"] = [ar]
+    if _num(c, "HealthPromilleLostPerSecond") > 0: ex.append("decay")
+    ty = al.get("Type") or ""
+    attacks = c.get("Type") in ("Minion_FindEnemies", "Minion_Mirage") and (_num(c, "AutoAttackDamage") > 0 or bool(c.get("WeaponSkill")))
+    if attacks or (ty in ("Dot", "Damage") and _num(al, "Damage") > 0):
+        ex.append("damage"); out["watch"] = 80
+        if attacks: out["range"] = 1000.0   # the target within reach of a walking pet (a clone's AutoAttackRange 5 tiles)
+    if ty == "StatusEffect" and _num(srow(al.get("StatusEffectEnemy")), "SpeedReduceAbsolute") > 0:
+        ex.append("slow"); out.update(walk="t", walk_need=-SUM_SLOW_MIN, d_fix=min(_num(al, "Radius") - 150, DIST_MAX))
+    if ty == "StatusEffect" and _num(srow(al.get("StatusEffectAlly") or al.get("StatusEffectSelf")), "SpeedBoostAbsolute") > 0:
+        ex.append("speed"); out.update(walk="s", walk_need=SUM_SPEED_MIN, d_fix=min(_num(al, "Radius"), DIST_MAX))
+    if ty == "Vision": ex.append("reveal"); out.update(bush=True, reveal_t=REVEAL_T)
+    if c.get("UniqueProperty") == "8": ex.append("block"); out.update(post_hit=BLOCK_T)
+    if st_ == 5 and _num(a, "CustomValue3") > 0:
+        out["life"] = int(_num(a, "CustomValue3")); ex.append("expire"); out["watch"] = out["life"] + 2 * SUM_EXPIRE_SLACK
+    if st_ == 5 and _num(a, "CustomValue4") > 0: out["cover_pct"] = _num(a, "CustomValue4"); ex.append("cover_hp")
+    if c.get("Type") == "Minion_Mirage":
+        notes.append("the clone is a summon in the observation (encode.c: not a brawler row), unlike the real client")
+    return {**out, "expect": ex, "notes": base["notes"] + notes}
+
+
+def shot_effects(T, out, a):
+    """issue #64: what a SHOT gadget's summon / item / rewind does, as effects this audit measures:
+      summon whose characters.csv HealthPromilleLostPerSecond > 0: decay (its HP drops during the watch, "slowly loses its
+        health"); its AreaEffect SmokeScreen: hide (the shooter, standing in it, is not in the far target's observation HIDE_T
+        ticks after the fire, but was before it); ExtraSuperCharge: boost (charge per damage of a main attack from inside the
+        area >= BOOST_MIN x that of one before the gadget; both attacks aimed at full range, atk_sd: Bo's arrows land at
+        the aimed distance); StatusEffect whose Ally status has Levitation: float (the
+        target's second shot, FLOAT_T ticks after the fire, takes no HP: libg's hit test skips a levitating character; the
+        device is thrown at right angles to the target, aim_off, so the target's shots do not destroy it first). These
+        summons land LAND_NEAR from the shooter.
+      item with a StatusEffectAlly that heals (Damian's microphone): heal, the shooter (hit before the fire) walks to it and
+        picks it up after the target's hit (pickup: one step's HP rise within REGEN_T ticks of that hit, at least REWIND_HEAL
+        x the hit).
+      REWIND_CARD (Max): no pre-damage; move (back to the bolt) and heal (the target's hit after the throw, REWIND_HIT ticks in, healed back:
+        HP after the rewind - the lowest HP after that hit, at least REWIND_HEAL x that hit), and reactivate (a second fire 3
+        REWIND_AGAIN ticks after the throw; the move comes after it and within REWIND_EARLY ticks), watched REWIND_WATCH ticks."""
+    ex, notes = list(out["expect"]), list(out["notes"])
+    st = lambda n: {r[next(iter(r))]: r for r in _status_rows()}.get(n or "", {})
+    for sm in out["summons"]:
+        c = T["char"].get(sm, {}); ar = c.get("AreaEffect") or ""
+        al = T["alog"].get(T["askin"].get(ar, {}).get("Logic") or ar, {})
+        if _num(c, "HealthPromilleLostPerSecond") > 0 and "decay" not in ex: ex.append("decay")
+        ty = al.get("Type")
+        if ty == "SmokeScreen": ex.append("hide"); out.update(land=LAND_NEAR, hide_t=HIDE_T, d_fix=HIDE_D)
+        elif ty == "ExtraSuperCharge":
+            ex.append("boost"); out.update(land=LAND_NEAR, prep={"fire": 1, "wait": BOOST_PREP}, follow=[BOOST_T], boost=True, atk_sd=1.0,
+                       d_fix=BOOST_D)
+        elif ty == "StatusEffect" and "levitation" in (st(al.get("StatusEffectAlly")).get("BooleanAttributes") or "").lower():
+            ex.append("float"); out.update(land=LAND_NEAR, post_hit=FLOAT_T, float=True, aim_off=90.0)
+    for it in out["items"]:
+        se = st(T["item"].get(it, {}).get("StatusEffectAlly"))
+        if _num(se, "Healing") > 0:
+            if "heal" not in ex: ex.append("heal")
+            out.update(pickup=True, post_hit=PICKUP_HIT, watch=80)
+            notes.append("heal: the shooter picks up its own %s (libg's pick-up scan does not leave the thrower out; the text says "
+                         "\"teammate\": every player is solo here)" % it)
+    if a.get("Name") == BURST_CARD:   # Rico: the container bursts into bouncing bullets once destroyed (libg; spawnfix.c BulletExplosion)
+        al = T["alog"].get(BURST_AREA, {})
+        ex.append("burst"); out.update(burst=(al.get("BulletExplosionBullet") or "?", int(_num(al, "CustomValue"))), land=BURST_LAND,
+                                     shoot_box=True, watch=BURST_WATCH)
+    if a.get("Name") == REWIND_CARD:
+        ex = [x for x in ex if x != "damage"] + [x for x in ("move", "heal", "reactivate") if x not in ex]
+        out.update(post_hit=REWIND_HIT, watch=REWIND_WATCH, rewind=True, again=REWIND_AGAIN)
+    return {**out, "expect": ex, "notes": notes}
+
+
+@functools.lru_cache(None)
+def _status_rows():
+    from nbpc import diversity as D
+    return [r for r in D._rows("status_effects_logic.csv") if r[next(iter(r))]]
 
 
 TEXT_OBSERVABLE = ("damage", "push", "heal")     # text_effects names this audit measures (observed()): the rest is "not checked live"
@@ -589,8 +833,22 @@ def observed(m):
     if m.get("move", 0) >= MOVE_MIN or m.get("leaping"): o.add("move")
     if m.get("push", 0) >= PUSH_MIN: o.add("push")
     if m.get("pull", 0) >= PUSH_MIN: o.add("pull")
-    if m.get("heal", 0) >= HEAL_MIN: o.add("heal")
+    if m.get("heal", 0) >= m.get("heal_min", HEAL_MIN): o.add("heal")
     if m.get("recharge_need", 0) > 0 and m.get("recharge", 0) >= m["recharge_need"]: o.add("recharge")
+    if m.get("decay"): o.add("decay")   # issue #64 (shot_effects)
+    for k in ("placed", "expire", "cover_hp", "block", "burst", "reach"):   # issue #46 batch 3b (summon_expect, Rico's burst), batch 4
+        if m.get(k): o.add(k)
+    if m.get("stun_v") is not None and m["stun_v"] <= STUN_V: o.add("stun")   # issue #46 batch 4 (move_expect)
+    if m.get("reload_got", 0) >= RELOAD_MIN: o.add("reload")
+    if m.get("pre_hit", 0) > 0 and m.get("immune_hit") == 0: o.add("immune")
+    if m.get("walk_v") is not None and m.get("walk_need"):
+        if m["walk_need"] < 0 and m["walk_v"] <= m["walk_v0"] + m["walk_need"]: o.add("slow")
+        if m["walk_need"] > 0 and m["walk_v"] >= m["walk_v0"] + m["walk_need"]: o.add("speed")
+    if m.get("rseen0") is False and m.get("rseen1"): o.add("reveal")
+    if m.get("seen0") and m.get("seen1") is False: o.add("hide")
+    if m.get("boost_base", 0) > 0 and m.get("boost_ratio", 0) >= BOOST_MIN: o.add("boost")
+    if m.get("pre_hit", 0) > 0 and m.get("float_hit") == 0: o.add("float")
+    if "again_n" in m and m["again_n"] <= m.get("move_n", -1) <= m["again_n"] + REWIND_EARLY: o.add("reactivate")
     for k, e in (("projectiles", "projectile"), ("summons", "summon"), ("areas", "area"), ("items", "item")):
         if m.get(k): o.add(e)
     if m.get("changed"): o.add("change")
@@ -606,7 +864,7 @@ def classify(m, expect, no_hyper=False):
     if m.get("crashed"): return "crash", [], set()
     if not m.get("spawned", True) or not m.get("consumed"): return "not_fired", [], set()
     if no_hyper: return "no_hyper", [], observed(m)
-    ex = [e for e in expect if e != "heal" or m.get("pre_damaged")]
+    ex = [e for e in expect if (e != "heal" or m.get("pre_damaged")) and (e != "boost" or not m.get("boost_capped"))]
     seen = observed(m); missing = [e for e in ex if e not in seen]
     if not ex: return "unverified", [], seen
     if not missing: return "works", [], seen
@@ -626,6 +884,23 @@ def describe(m, missing=()):
     elif m.get("push", 0) >= PUSH_MIN: p.append("target pushed %d u" % m["push"])
     if m.get("heal", 0) >= HEAL_MIN: p.append("healed %d" % m["heal"])
     if m.get("recharge", 0) > 0: p.append("super charge +%d" % m["recharge"])
+    if "decay" in m: p.append("summon HP %s" % ("dropping (%d -> %d)" % tuple(m["decay_hp"]) if m["decay"] else "not dropping"))
+    if "seen1" in m: p.append("seen by the far target before / after: %s / %s" % (m.get("seen0"), m["seen1"]))
+    if "placed_n" in m: p.append("%d summon(s) placed, %d..%d u from the shooter%s" % (m["placed_n"], m["placed_near"], m["placed_far"],
+                                 ", %+d deg off the aim" % m["placed_bear"] if "placed_bear" in m else ""))
+    if "expire_last" in m: p.append("last summon seen at tick %s" % m["expire_last"])
+    if "cover_hps" in m: p.append("summon HP %s (want %d)" % (m["cover_hps"], m["cover_want"]))
+    if "walk_v" in m: p.append("walker %s u/s (table %d)" % ("%.0f" % m["walk_v"] if m["walk_v"] is not None else "?", m["walk_v0"]))
+    if "rseen1" in m: p.append("the bushed target seen by the shooter before / after: %s / %s" % (m.get("rseen0"), m["rseen1"]))
+    if "block_hp" in m: p.append("barrel HP %d -> %d" % tuple(m["block_hp"]))
+    if "burst_n" in m: p.append("%d burst bullets" % m["burst_n"])
+    if "reach_want" in m: p.append("farthest %d u (want %d)" % (m.get("move", 0), m["reach_want"]))
+    if "stun_v" in m: p.append("target walked %s u/s (stun: <= %d)" % ("%.0f" % m["stun_v"] if m["stun_v"] is not None else "?", STUN_V))
+    if "reload_got" in m: p.append("ammo +%d in %d ticks" % (m["reload_got"], RELOAD_T))
+    if "immune_hit" in m: p.append("target's hit before / during the dash: -%d / -%d HP" % (m.get("pre_hit", 0), m["immune_hit"]))
+    if "boost_ratio" in m: p.append("charge per damage %.3f -> %.3f (x%.2f)" % (m.get("boost_base", 0), m.get("boost_fol", 0), m["boost_ratio"]))
+    if "float_hit" in m: p.append("target's hit before / after: -%d / -%d HP" % (m.get("pre_hit", 0), m["float_hit"]))
+    if "again_n" in m: p.append("reactivated at tick %d, moved at tick %s" % (m["again_n"], m.get("move_n", "never")))
     cnt = lambda xs: ", ".join("%s x%d" % (k, v) if v > 1 else k for k, v in collections.Counter(xs).items())
     if m.get("projectiles"): p.append("projectiles: " + cnt(m["projectiles"]))
     if m.get("summons"): p.append("summons: " + cnt(m["summons"]))
@@ -641,11 +916,45 @@ def describe(m, missing=()):
     s = "; ".join(p) if p else "nothing seen"
     if missing: s += "; missing: " + ", ".join(missing)
     if "heal" in m.get("expect", []) and not m.get("pre_damaged"): s += "; heal not testable (pre-damage missed)"
+    if m.get("boost_capped") and "boost" not in observed(m): s += "; boost not testable (super charge full)"
     return s
 
 
 def best(attempts):
     return min(attempts, key=lambda a: CLASSES.index(a["class"]))
+
+
+def burst_measures(m, inf):
+    """Rico's burst: the container's bullets (inf["burst"]: the explosion's bullet name, its count) among the shooter's new
+    projectiles (m["projectiles"]: id -> name)"""
+    m["burst_n"] = sum(1 for v in m["projectiles"].values() if v == inf["burst"][0]); m["burst"] = m["burst_n"] >= inf["burst"][1]
+
+
+def summon_measures(m, inf, n_end, names, t):
+    """issue #46 batch 3b: summon_expect's measures from the watch's records (m["sum"]: summon id -> [name, first x, first y,
+    first HP, last HP, first tick, last tick]; m["walk_tr"]: the walker's (tick, x, y))"""
+    ss = [v for v in m.get("sum", {}).values() if v[0] == inf["sum_obj"]]
+    d = [float(np.hypot(v[1] - m["x0"], v[2] - m["y0"])) for v in ss]
+    m["placed_n"] = len(ss); m["placed_far"] = int(max(d, default=0)); m["placed_near"] = int(min(d, default=0))
+    m["placed"] = len(ss) >= inf["sum_n"] and m["placed_far"] <= inf["place_r"] and m["placed_near"] >= inf.get("place_min", 0.0)
+    if inf.get("place_arc") and ss:   # Ruffs: the arc points along the aim (m["aim"]: the fire's aim, the phase's geo)
+        b = np.degrees(np.arctan2(sum(v[2] - m["y0"] for v in ss), sum(v[1] - m["x0"] for v in ss)))
+        m["placed_bear"] = int(round((b - m.get("aim", 0.0) + 180.0) % 360.0 - 180.0))
+        m["placed"] = m["placed"] and abs(m["placed_bear"]) <= SUM_BEAR_TOL
+    if inf.get("life"):
+        m["expire_last"] = max((v[6] for v in ss), default=None)
+        m["expire"] = bool(ss) and n_end >= inf["life"] + SUM_EXPIRE_SLACK and m["expire_last"] <= inf["life"] + SUM_EXPIRE_SLACK
+    if inf.get("cover_pct"):
+        m["cover_want"] = int(round(m["max_hp"] * inf["cover_pct"] / 100)); m["cover_hps"] = [v[3] for v in ss]
+        m["cover_hp"] = len(ss) >= inf["sum_n"] and all(abs(h - m["cover_want"]) <= SUM_HP_TOL * m["cover_want"] for h in m["cover_hps"])
+    if "block" in inf["expect"] and ss:
+        b = max(ss, key=lambda v: v[3]); m["block_hp"] = [b[3], b[4]]; m["block"] = b[4] < b[3] and m.get("post_hit") is not None
+    if inf.get("walk"):
+        nm = (names[m["s"]] if inf["walk"] == "s" else names[t]) if names else FILLER
+        m["walk_v0"] = int(_num(_tables()["char"].get(nm, {}), "Speed")); m["walk_need"] = inf["walk_need"]
+        tr = m.get("walk_tr", [])
+        m["walk_v"] = (sum(float(np.hypot(b[1] - a[1], b[2] - a[2])) for a, b in zip(tr, tr[1:])) * 20.0 / (tr[-1][0] - tr[0][0])
+                       if len(tr) >= 2 and tr[-1][0] > tr[0][0] else None)
 
 
 # ------------------------------------------------------------------ map spots
@@ -815,10 +1124,11 @@ class Auditor:
 
     def battle(self, inst, jobs):
         from nbpc import proto as P
-        th = threading.current_thread(); th.phase_jobs = list(jobs)   # a crash in reset: every brawler is a suspect
+        jobs = sorted(jobs, key=lambda j: not self.info[j.name].get("bush"))   # Grom's tower: env.c hides bushed enemies only from
+        th = threading.current_thread(); th.phase_jobs = list(jobs)   # the local player (index 0), so a "bush" row shoots first
         A = jobs[:self.npair]; B = jobs[self.npair:2 * self.npair]
         names = [j.name for j in A] + [FILLER] * (self.npair - len(A)) + [j.name for j in B]
-        names += [FILLER] * (10 - len(names))
+        names += [FILLER] * (10 - len(names)); th.names = names
         self.seed += 1
         div = self.D.make_div(location=MAP, chr=names)
         if self.hyper: div["hyper"] = list(range(10))   # every player's hypercharge card (only the shooters activate)
@@ -865,11 +1175,18 @@ class Auditor:
             if j.attempt and len(dirs) == 1 and not inf.get("on_ring"): d = float(np.clip(d * 0.6, DIST_MIN, DIST_MAX))   # (Amber: on her ring)
             if inf["type"] == "ProjectileShield": d = SHIELD_D   # the target shoots from beyond the shield line
             if self.attack and inf.get("throw"): d = float(min(inf["range"], DIST_MAX))   # fire 1 throws at full range
+            if inf.get("d_fix"): d = float(inf["d_fix"])   # issue #64: Leon's target outside the area, beyond the invisible reach; Bo's in arrow reach
             tx, ty = x + dx * d, y + dy * d
             if inf.get("ring") and inf["range"] > inf["ring"]:   # no damage inside InnerRadius (Kaze): land past the target
                 d = float(np.clip(inf["range"] - inf["ring"], DIST_MIN, DIST_MAX))
             sd = super_dist(inf, d)
+            if inf.get("land"): sd = round(min(1.0, inf["land"] / inf["range"]), 3)   # issue #64: the summon lands near the shooter
             aim = float(np.degrees(np.arctan2(dy, dx)))
+            if inf.get("bush"):   # issue #46 batch 3b (Grom's tower): the target in a bush 5-6 tiles from the shooter
+                import status_check as SC
+                bs = SC.bush_spot(MAP)
+                if bs is not None:
+                    (x, y), (tx, ty) = bs; d = float(np.hypot(tx - x, ty - y)); aim = float(np.degrees(np.arctan2(ty - y, tx - x)))
             geo[j] = dict(d=round(d), aim=aim, super_dist=round(sd, 3), spot=[round(x), round(y)])
             pos[s] = (int(x), int(y)); pos[t] = (int(tx), int(ty))
         allp = list(range(10)); idle = {i: (-1, 0, 0.0, 0.0) for i in allp}
@@ -877,20 +1194,28 @@ class Auditor:
         inst.setup(positions=pos, ai_off=allp, unprotect=allp)
         for _ in range(4): stp()
         acts = dict(idle)
-        for j, s, t in run: acts[t] = (-1, 1, (geo[j]["aim"] + 180.0) % 360, 0.0)   # pre-damage: the target shoots the shooter once
+        for j, s, t in run:   # pre-damage: the target shoots the shooter once (not a rewind or pick-up row: their hit comes
+            inf = self.info[j.name]   # after the fire; Max did not survive both, and Damian's regen looked like a pick-up)
+            if not (inf.get("rewind") or inf.get("pickup")): acts[t] = (-1, 1, (geo[j]["aim"] + 180.0) % 360, 0.0)
         stp(acts, 1)
         for _ in range(12): stp()
         sh = [s for _, s, _ in run]
         if self.gadget:   # no super: the gadget is fired below, after its row's prep (a super cast or an attack first)
             pre = [(s, self.info[j.name]["prep"]) for j, s, _ in run if self.info[j.name].get("prep")]
+            prep_m = {}   # issue #64 boost rows: shooter -> [super charge before the prep attack, after, damage it dealt]
             if pre:
                 if any(p.get("super") for _, p in pre): inst.setup(super_fill=[s for s, p in pre if p.get("super")]); stp(ticks=1)
+                r = stp(ticks=1); prep_m = {s: [int(r.pl[s].super_charge), 0, 0] for s, _ in pre}
                 acts = dict(idle)
                 for j, s, _ in run:
                     p = self.info[j.name].get("prep") or {}
-                    if p.get("fire"): acts[s] = (-1, p["fire"], geo[j]["aim"], geo[j]["super_dist"])
-                stp(acts, 1)
-                for _ in range(max(p.get("wait", 0) for _, p in pre) // STEP): stp()
+                    if p.get("fire"): acts[s] = (-1, p["fire"], geo[j]["aim"], self.info[j.name].get("atk_sd", 0.0) if p["fire"] == 1 else geo[j]["super_dist"])
+                r = stp(acts, 1)
+                for s in prep_m: prep_m[s][2] += int(r.pl[s].damage_dealt)
+                for _ in range(max(p.get("wait", 0) for _, p in pre) // STEP):
+                    r = stp()
+                    for s in prep_m: prep_m[s][2] += int(r.pl[s].damage_dealt)
+                for s in prep_m: prep_m[s][1] = int(r.pl[s].super_charge)
             r = stp(ticks=1); gu0 = {s: int(r.gad_used[s]) for s in sh}
         elif self.attack: r = stp(ticks=1); gu0 = {s: int(r.gad_used[s]) for s in sh}   # no super: fired below
         else: inst.setup(super_fill=sh, hyper_fill=sh if self.hyper else ()); r = stp(ticks=1)
@@ -913,8 +1238,20 @@ class Auditor:
                         changed=False, data0=int(ch[0, 1]) if len(ch) else NIL, ulti0=int(ch[0, 15]) if len(ch) else NIL,
                         ulti_active=False, foreign_near=False, target_dead=False, s=s, t=t, pj={}, ar={})
         m_x0, m_y0 = (lambda j: M[j]["x0"]), (lambda j: M[j]["y0"])
+        if self.gadget:
+            for j, s, t in run:
+                if s in prep_m: M[j]["prep_charge"], M[j]["prep_dd"] = prep_m[s][1] - prep_m[s][0], prep_m[s][2]
+            hid = [(j, s, t) for j, s, t in run if self.info[j.name].get("hide_t")]
+            if hid:   # issue #64: does the far target see the shooter before the fire
+                r = self.obs_step(inst, idle, [t for _, _, t in hid], 1)
+                for j, s, t in hid: M[j]["seen0"] = self.sees(inst, r, t, s)
+            rev = [(j, s, t) for j, s, t in run if self.info[j.name].get("reveal_t")]
+            if rev:   # issue #46 batch 3b (Grom): does the shooter see the target in its bush before the fire
+                r = self.obs_step(inst, idle, [s for _, s, _ in rev], 1)
+                for j, s, t in rev: M[j]["rseen0"] = self.local_sees(inst, t)
         acts = dict(idle)
-        for j, s, t in run: acts[s] = (-1, 1 if self.attack else 3 if self.gadget else 2, geo[j]["aim"], geo[j]["super_dist"])
+        for j, s, t in run:   # aim_off (issue #64, Starr Nova): the gadget thrown off the line to the target
+            acts[s] = (-1, 1 if self.attack else 3 if self.gadget else 2, (geo[j]["aim"] + self.info[j.name].get("aim_off", 0.0)) % 360, geo[j]["super_dist"])
         r = stp(acts, 1); n = 1
         if self.hyper:
             for j, s, t in run: M[j]["hyper_on"] = hy0[s][0] > 0
@@ -925,7 +1262,10 @@ class Auditor:
                 m["sc_min"] = min(m["sc_min"], int(p.super_charge)); m["sc_max"] = max(m["sc_max"], int(p.super_charge)); m["hp_max"] = max(m["hp_max"], int(p.hp))
                 m["thp_min"] = min(m["thp_min"], int(q.hp) if q.alive else 0); m["target_dead"] |= bool(not q.alive or q.eliminated)
                 m["leaping"] |= bool(p.leaping); m["ammo_min"] = min(m["ammo_min"], int(p.ammo))
+                if n <= RELOAD_T: m["ammo_early"] = max(m.get("ammo_early", int(p.ammo)), int(p.ammo))   # issue #46 batch 4: reload
+                if n <= self.info[j.name].get("heal_by", 0) and p.alive: m["hp_max_by"] = max(m.get("hp_max_by", int(p.hp)), int(p.hp))
                 if p.alive: m["move"] = max(m["move"], int(np.hypot(p.x - m["x0"], p.y - m["y0"])))
+                if p.alive and m["move"] >= MOVE_MIN and "move_n" not in m: m["move_n"] = n   # issue #64: Max's rewind tick
                 if q.alive and not q.eliminated:
                     if self.info[j.name].get("walk_in"):   # walking in: pushed back = away from the shooter's spot again
                         rr = float(np.hypot(q.x - m["x0"], q.y - m["y0"])); m["r_min"] = min(m.get("r_min", rr), rr)
@@ -935,6 +1275,8 @@ class Auditor:
                         if p.alive and m["push"] >= PUSH_MIN:   # pull: the target ends nearer the shooter than it started from
                             m["pull"] = max(m["pull"], int(np.hypot(m["tx0"] - p.x, m["ty0"] - p.y) - np.hypot(q.x - p.x, q.y - p.y)))
                 m["dd"] = m.get("dd", 0) + int(p.damage_dealt)   # per step (the host clears it after every response)
+                if "fol_sc0" in m and self.info[j.name].get("boost") and int(p.super_charge) < m["super_max"]:
+                    m["fol_last"] = [int(p.super_charge), m["dd"]]   # issue #64: the follow's charge / damage before a full super
                 if st is None: continue
                 if bid.get(s) != bid0.get(s): m["changed"] = True
                 for row in st["pj"]:
@@ -953,19 +1295,49 @@ class Auditor:
                     if cid == bid.get(s):
                         if m["data0"] != NIL and int(row[1]) != m["data0"]: m["changed"] = True
                         if row[15] not in (NIL, m["ulti0"]): m["ulti_active"] = True
-                    elif own == s and cid not in bid.values() and cid not in ids0: m["summons"][cid] = data_name(row[1])
+                    elif own == s and cid not in bid.values() and cid not in ids0:
+                        m["summons"][cid] = data_name(row[1])
+                        hp = m.setdefault("sum_hp", {}).setdefault(cid, [int(row[6]), int(row[6])]); hp[1] = int(row[6])
+                        sm = m.setdefault("sum", {}).setdefault(cid, [m["summons"][cid], int(row[3]), int(row[4]), int(row[6]), 0, n, n])
+                        sm[4] = int(row[6]); sm[6] = n   # issue #46 batch 3b: name, first x / y / HP, last HP, first / last tick
                     elif own not in (s, t) and cid not in bid.values():   # someone else's summon near this pair
                         if min(np.hypot(row[3] - m["tx0"], row[4] - m["ty0"]), np.hypot(row[3] - m["x0"], row[4] - m["y0"])) < 2000:
                             m["foreign_near"] = True
+            for j, s, t in run:   # issue #46 batch 3b: the walker's positions inside the summon's area
+                w = self.info[j.name].get("walk"); ww = self.info[j.name].get("walk_win", SUM_WALK)
+                if w and ww[0] <= n <= ww[1]:
+                    pw = r.pl[s if w == "s" else t]
+                    if pw.alive: M[j].setdefault("walk_tr", []).append((n, int(pw.x), int(pw.y)))
             if n >= max([WATCH] + [LONG_WATCH.get(j.name, 0) for j, _, _ in run if not self.attack]
                         + [self.info[j.name].get("watch", 0) for j, _, _ in run]): break
             acts = dict(idle)
+            for j, s, t in run:   # issue #64: one step's HP rise (a pick-up heal, not regen); a pick-up row walks to its item
+                p = r.pl[s]; m = M[j]
+                if p.alive and (not self.info[j.name].get("pickup") or "ph_tick" in m and n - m["ph_tick"] <= REGEN_T):
+                    m["heal_jump"] = max(m.get("heal_jump", 0), int(p.hp) - m.get("hp_last", int(p.hp)))
+                if p.alive: m["hp_last"] = int(p.hp)
+                if self.info[j.name].get("pickup") and p.alive and st is not None:
+                    its = [(float(row[3]), float(row[4])) for row in st["it"] if row[2] == s and row[0] not in ids0 and int(row[1]) // 1000000 == 18]
+                    if its:
+                        x, y = min(its, key=lambda c: np.hypot(c[0] - p.x, c[1] - p.y))
+                        if np.hypot(x - p.x, y - p.y) > 50: acts[s] = (int(round(np.degrees(np.arctan2(y - p.y, x - p.x)) / 22.5)) % 16, 0, 0.0, 0.0)
             for j, s, t in run:   # steered supers (FlyJump, Ww): once cast, the shooter walks to the target (16 joystick directions)
                 p, q = r.pl[s], r.pl[t]; inf = self.info[j.name]
                 if inf.get("steer") and n * 50 > inf.get("cast", 0) + 100 and q.alive and np.hypot(q.x - p.x, q.y - p.y) > 150:
                     acts[s] = (int(round(np.degrees(np.arctan2(q.y - p.y, q.x - p.x)) / 22.5)) % 16, 0, 0.0, 0.0)
                 if inf.get("walk_in") and q.alive and np.hypot(q.x - m_x0(j), q.y - m_y0(j)) > 150:   # item gadgets: the target walks in
                     acts[t] = (int(round(np.degrees(np.arctan2(m_y0(j) - q.y, m_x0(j) - q.x)) / 22.5)) % 16, 0, 0.0, 0.0)
+                ww = inf.get("walk_win", SUM_WALK)
+                if inf.get("walk") and ww[0] <= n < ww[1]:   # summon slow / speed, Maisie's stun: the target walks to the shooter's
+                    w, gx, gy = (s, M[j]["tx0"], M[j]["ty0"]) if inf["walk"] == "s" else (t, m_x0(j), m_y0(j))   # spot, the shooter to the target's
+                    pw = r.pl[w]
+                    if pw.alive: acts[w] = (int(round(np.degrees(np.arctan2(gy - pw.y, gx - pw.x)) / 22.5)) % 16, 0, 0.0, 0.0)
+                if inf.get("shoot_box") and q.alive and st is not None and n >= M[j].get("box_next", BURST_FROM):   # Rico: the target
+                    bx = [(float(row[3]), float(row[4])) for row in st["ch"] if int(row[2]) == s and data_name(row[1]) in inf["summons"]
+                          and int(row[0]) != bid.get(s)]   # shoots his container
+                    if bx:
+                        M[j]["box_next"] = n + BURST_EVERY
+                        acts[t] = (-1, 1, float(np.degrees(np.arctan2(bx[0][1] - q.y, bx[0][0] - q.x))), 0.0)
                 if not (self.gadget or self.attack) and n >= TRAP_WALK and q.alive and st is not None:   # proximity traps (Bo's mines)
                     tr = [(float(row[3]), float(row[4])) for row in st["it"] if row[2] == s and row[0] not in ids0 and is_trap(row[1])]
                     if tr:
@@ -979,8 +1351,19 @@ class Auditor:
             if fol:
                 for j, s, t in fol:
                     if M[j]["fol"] == 1: M[j]["thp_t2"] = int(r.pl[t].hp)
-                    M[j]["fol"] += 1; acts[s] = (-1, 1, geo[j]["aim"], 0.0)
-            if due or fol:
+                    if M[j]["fol"] == 0: M[j]["fol_sc0"], M[j]["fol_dd0"] = int(r.pl[s].super_charge), M[j].get("dd", 0)
+                    M[j]["fol"] += 1; acts[s] = (-1, 1, geo[j]["aim"], self.info[j.name].get("atk_sd", 0.0))
+            for j, s, t in run:   # issue #64: Max's reactivation, a second gadget fire while the rewind is pending
+                ag = self.info[j.name].get("again")
+                if self.gadget and ag and "again_n" not in M[j] and n >= ag:
+                    M[j]["again_n"] = n; acts[s] = (-1, 3, geo[j]["aim"], geo[j]["super_dist"])
+            look = [(j, s, t) for j, s, t in run if self.info[j.name].get("hide_t") and "seen1" not in M[j] and n >= self.info[j.name]["hide_t"]]
+            rlook = [(j, s, t) for j, s, t in run if self.info[j.name].get("reveal_t") and "rseen1" not in M[j] and n >= self.info[j.name]["reveal_t"]]
+            if (look or rlook) and not (due or fol):   # issue #64: the far target's observation, once the smoke is up; issue #46
+                r = self.obs_step(inst, acts, [t for _, _, t in look] + [s for _, s, _ in rlook], STEP); n += STEP   # batch 3b: the
+                for j, s, t in look: M[j]["seen1"] = self.sees(inst, r, t, s)                                       # shooter's, Grom
+                for j, s, t in rlook: M[j]["rseen1"] = self.local_sees(inst, t)
+            elif due or fol:
                 for j, s, t in due:
                     M[j]["ph_hp0"] = int(r.pl[s].hp); M[j]["ph_hp_min"] = int(r.pl[s].hp); M[j]["ph_tick"] = n
                     acts[t] = (-1, 1, (geo[j]["aim"] + 180.0) % 360, 0.0)
@@ -997,12 +1380,38 @@ class Auditor:
             if self.attack: m.update(consumed=m["ammo_min"] < m["ammo0"] or m.get("dd", 0) > 0, filled=True, attack=True)   # ammo spent
             m["damage"] = max(m["thp0"] - m["thp_min"], m.get("dd", 0))
             m["heal"] = m["hp_max"] - m["hp0"]
+            m["watch_ticks"] = n   # the phase's watch (the longest of its shooters'): desc_audit --live bounds "per second" numbers by it
             if self.info[j.name].get("recharge_hit"):   # Darryl: one enemy hit's charge (capped at the full super), 10 % slack
                 m["recharge"] = m["sc_max"] - m["sc0"]
                 m["recharge_need"] = max(1, min(int(0.9 * m["super_max"] * self.info[j.name]["recharge_hit"]), m["super_max"] - m["sc0"]))
             m["pre_hit"] = m["max_hp"] - m["hp0"]                     # the target's shot before the super
             if "ph_hp0" in m: m["post_hit"] = m["ph_hp0"] - m["ph_hp_min"]   # its shot POST_HIT ticks after the fire
             if self.info[j.name].get("next"): m["next_seen"] = next_seen(m, self.info[j.name]["next"])
+            inf = self.info[j.name]   # issue #64 (shot_effects)
+            if "decay" in inf["expect"] and m.get("sum_hp"):
+                cid = max(m["sum_hp"], key=lambda k: m["sum_hp"][k][0]); m["decay_hp"] = m["sum_hp"][cid]
+                m["decay"] = m["decay_hp"][1] < m["decay_hp"][0]
+            elif "decay" in inf["expect"]: m["decay"] = False
+            m.pop("sum_hp", None); m.pop("hp_last", None)
+            if inf.get("gadget_kind") == "summon": summon_measures(m, inf, n, getattr(threading.current_thread(), "names", None), t)
+            if inf.get("gadget_kind") in ("dash", "charge"): move_measures(m, inf, getattr(threading.current_thread(), "names", None), t)
+            if inf.get("burst"): burst_measures(m, inf)
+            m.pop("sum", None); m.pop("walk_tr", None); m.pop("box_next", None)
+            if inf.get("boost"):
+                m["boost_base"] = m.get("prep_charge", 0) / max(1, m.get("prep_dd", 0)) if m.get("prep_dd", 0) > 0 else 0.0
+                sc, dd = m.pop("fol_last", None) or (m["sc_max"], m.get("dd", 0))   # up to the last step below a full super (a
+                # shooter that was a target in an earlier phase starts with the charge its pre-damage shot gave)
+                fdd = dd - m.get("fol_dd0", 0); m["fol_dd"] = fdd
+                m["boost_fol"] = (sc - m.get("fol_sc0", sc)) / fdd if fdd > 0 else 0.0
+                m["boost_ratio"] = m["boost_fol"] / m["boost_base"] if m["boost_base"] > 0 else 0.0
+                m["boost_capped"] = fdd <= 0 and m["sc_max"] >= m["super_max"]   # full before any follow damage: not testable
+            if inf.get("float"): m["float_hit"] = m.get("post_hit", -1)
+            if inf.get("pickup"):   # the hit is what the pick-up can heal back
+                m["heal"] = m.get("heal_jump", 0); m["pre_damaged"] = m.get("post_hit", 0) > 0
+                m["heal_min"] = max(HEAL_MIN, int(REWIND_HEAL * m.get("post_hit", 0)))
+            if inf.get("rewind") and "ph_hp_min" in m:   # healed back to HP at the throw: from the lowest HP after the target's hit
+                m["heal"] = int(r.pl[s].hp) - m["ph_hp_min"]; m["pre_damaged"] = m.get("post_hit", 0) > 0
+                m["heal_min"] = max(HEAL_MIN, int(REWIND_HEAL * m.get("post_hit", 0)))   # most of that hit back, not regen
             m["pj"] = {str(k): v for k, v in m["pj"].items()}; m["ar"] = {str(k): v for k, v in m["ar"].items()}
             for k in ("projectiles", "summons", "items"): m[k] = sorted(m[k].values())
             m["areas"] = sorted(m["areas"].values(), key=lambda a: a["name"])
@@ -1014,6 +1423,32 @@ class Auditor:
                 m["hyper_seen"] = sorted(seen & set(inf.get("hyper_names", [])))   # none for a no_hyper brawler
             out.append((j, m))
         return out
+
+    @staticmethod
+    def obs_step(inst, acts, players, ticks):
+        """issue #64: a step that also writes the observations of these players (status_check.sees)"""
+        from nbpc import proto as P
+        mask = 0
+        for i in players: mask |= 1 << i
+        return inst.step(actions=acts, ticks=ticks, flags=P.F_STATE | P.F_OBS, native_mask=0, obs_mask=mask)
+
+    @staticmethod
+    def local_sees(inst, other):
+        """issue #46 batch 3b (Grom): is player other's brawler visible to the local player 0 (state2's visible flag, env.c's
+        bush hiding; status_check.seen)"""
+        st = parse_state(inst.state_bytes()); cid = brawler_ids(st).get(other)
+        row = st["ch"][st["ch"][:, 0] == cid]
+        return bool(len(row) and row[0][19] == 1)
+
+    @staticmethod
+    def sees(inst, r, obs, other):
+        """is player other's cell of grid channel 5 (enemy brawlers) set in player obs's observation of response r"""
+        from nbpc import proto as P
+        if not (int(r.obs_written) >> obs) & 1: return None
+        g = inst.obs_f32.reshape(P.MAXP, P.OBS_VEC + P.OBS_GRID)[obs, P.OBS_VEC:].reshape(6, 25, 25)
+        o, t = r.pl[obs], r.pl[other]
+        gx, gy = int(t.x // TILE) - int(o.x // TILE) + 12, int(t.y // TILE) - int(o.y // TILE) + 12
+        return bool(0 <= gx < 25 and 0 <= gy < 25 and g[5, gy, gx] > 0)
 
     def run(self):
         ths = [threading.Thread(target=self.worker, args=(i,), daemon=True) for i in range(self.n)]
@@ -1517,6 +1952,14 @@ def _check():
     md = markdown(rows)
     assert "- [ ] Bull (`BullDude`, Charge 1): partial: " in md and "- [x] Nita (`Shaman`, Attack: summon): works (summons: ShamanPet)" in md
     assert md.index("## works") < md.index("## partial") < md.index("## unverified") and "Totals: works 1, partial 1, unverified 1" in md
+    assert "hide" in observed(m(seen0=True, seen1=False)) and "hide" not in observed(m(seen0=False, seen1=False))
+    assert "boost" in observed(m(boost_base=0.5, boost_ratio=1.5)) and "boost" not in observed(m(boost_base=0.5, boost_ratio=1.1))
+    assert classify(m(projectiles=["P"], boost_capped=True), ["projectile", "boost"])[0] == "works"
+    assert "not testable" in describe(m(projectiles=["P"], boost_capped=True, expect=["boost"]))
+    assert "float" in observed(m(pre_hit=900, float_hit=0)) and "float" not in observed(m(pre_hit=900, float_hit=900))
+    assert "heal" not in observed(m(heal=300, heal_min=480)) and "heal" in observed(m(heal=600, heal_min=480))
+    assert "reactivate" in observed(m(again_n=16, move_n=18)) and "reactivate" not in observed(m(again_n=16, move_n=62))
+    assert "reactivate" not in observed(m(again_n=16, move_n=10)) and "reactivate" not in observed(m(again_n=16))
     n_tab = 0
     try:                                                     # the tables (game files from setup.sh), when present
         import env_v5
@@ -1571,8 +2014,8 @@ def _check():
         assert "ClusterBombDude" in ag and eb["skill"] == "ClusterBombDude_Explosion" and {"area", "damage", "push"} <= set(eb["expect"]) and eb["delay"] == 20, eb
         assert expected_gadget("DeadMariachi")["expect"] == ["area", "heal"] and expected_gadget("Ghost")["expect"] == ["area"]
         kinds = collections.Counter(k for gs in all_gadgets().values() for _, _, k in gs)   # gadget.c's coverage of the enabled cards
-        assert sum(kinds.values()) == 213 and kinds["shot"] == 25 and kinds["repeat"] == 8 and "spin" not in kinds, kinds
-        dr, fa, be, am = (_expected_gadget(n) for n in ("BarrelBot", "KickerDude", "BeeSniper", "FireDude"))   # issue #63
+        assert sum(kinds.values()) == 213 and kinds["shot"] == 33 and kinds["repeat"] == 8 and "spin" not in kinds, kinds
+        dr, fa, be, am = (_expected_gadget(n, k) for n, k in (("BarrelBot", 0), ("KickerDude", 0), ("BeeSniper", 1), ("FireDude", 0)))   # issue #63
         assert dr["expect"] == ["projectile", "damage", "recharge"] and dr["recharge_hit"] == 0.25 and "watch" not in dr, dr
         assert fa["watch"] == 108 and "recharge" not in fa["expect"], fa   # 7 x 2 ticks + (900 + 800 + 2000) / 50 + 20
         assert be["watch"] == 113 and "dist_f" not in be, be               # 4 x 4 ticks + SteerLifeTime 97
@@ -1585,9 +2028,9 @@ def _check():
         nk = {n: k for gs in all_gadgets().values() for _, n, k in gs}
         assert nk["FishTank_Slow"] is None and nk["FishTank_Shield"] == "shield", nk   # issue #46 review: Hank's slow masked
         assert nk["CrossBomber_Burst"] is None and nk["StickyBomb_Range"] == "next" and nk["Silencer_BigProjectiles"] == "next" and nk["Whirlwind_Fly"] is None, nk
-        sk = expected_gadget("Skater")
+        sk = expected_gadget("Skater", 1)   # slot 0 is Ollie's jump (DASH) since issue #46 batch 4
         assert sk["gadget_kind"] == "next" and sk["expect"][:3] == ["next_proj", "damage", "once"] and sk["follow"] == [NEXT_T1, NEXT_T2], sk
-        assert "push" not in expected_gadget("JetpackGirl")["expect"] and "recoil" in expected_gadget("JetpackGirl")["expect"]
+        assert "push" not in expected_gadget("JetpackGirl", 1)["expect"] and "recoil" in expected_gadget("JetpackGirl", 1)["expect"]
         assert expected_gadget("SnakeOil")["next"] == {"sub": 14, "n": 3} and expected_gadget("Reviver")["next"]["area"] == "ReviverDamageAreaDoubleHeal"
         assert "damage" not in _expected_gadget("Reviver")["expect"] and "damage" in _expected_gadget("Reviver", 1)["expect"]
         assert nk["FishTank_Shield"] == nk["IceDude_Freeze"] == "shield" and nk["ClusterBombDude_Explosion"] == "area", nk
@@ -1596,7 +2039,55 @@ def _check():
         assert expected_gadget("ShieldTank")["expect"][:2] == ["area", "heal"] and "ShieldTank" in area_gadgets()
         assert audit_gadgets(0)["Gunslinger"][1] == "Gunslinger_Reload" and audit_gadgets(1)["Gunslinger"][1] == "Gunslinger_BigBullet"
         assert expected_gadget("Gunslinger")["expect"][:1] == ["projectile"] and expected_gadget("Gunslinger")["gadget_kind"] == "shot"
-        assert "BowDude" not in audit_gadgets(0) and audit_gadgets(0)["HookDude"][2] == "repeat"   # Gene's homing hand: repeat (#54 redo)
+        assert audit_gadgets(0)["HookDude"][2] == "repeat"   # Gene's homing hand: repeat (#54 redo)
+        assert not {"BowDude_Totem", "Speedy_Rewind", "HammerDude_Pull", "AssaultShotgun_Bomb", "Ninja_InvisibleArea", "Gladiator_Amp",
+                    "MagicalGirl_FlyArea"} & set(MASKED)   # issue #64
+        bo, le, st, da, mx, fr = (_expected_gadget(n, k) for n, k in (("BowDude", 0), ("Ninja", 1), ("MagicalGirl", 0), ("Gladiator", 0),
+                                                                     ("Speedy", 1), ("HammerDude", 1)))
+        assert {"summon", "decay", "boost"} <= set(bo["expect"]) and bo["land"] == LAND_NEAR and bo["follow"] == [BOOST_T], bo
+        assert "heal" not in expected_gadget("BowDude")["expect"] and "heal" not in expected_gadget("Ninja", 1)["expect"]   # "health" is no heal
+        assert "hide" in le["expect"] and le["d_fix"] == HIDE_D and le["hide_t"] == HIDE_T, le
+        assert "float" in st["expect"] and st["post_hit"] == FLOAT_T and st["aim_off"] == 90, st
+        assert {"item", "heal"} <= set(da["expect"]) and da["pickup"] and da["post_hit"] == PICKUP_HIT, da
+        assert {"move", "heal", "reactivate"} <= set(mx["expect"]) and "damage" not in mx["expect"] and mx["rewind"], mx
+        assert mx["again"] == REWIND_AGAIN and REWIND_AGAIN + REWIND_EARLY < 60 and not any("reactivation" in x for x in mx["notes"]), mx
+        assert "pull" in fr["expect"] and "damage" in fr["expect"], fr
+        # issue #46 batch 3b: SUMMON (9 rows, each its brawler's first audited gadget) and Rico's container shot
+        assert kinds["summon"] == 9 and nk["TrickshotDude_ShootAround"] == "shot" and nk["Crab_DoubleTokens"] is None, kinds
+        assert audit_gadgets(0)["Ninja"][1] == "Ninja_Fake" and audit_gadgets(1)["Ninja"][1] == "Ninja_InvisibleArea"
+        assert audit_gadgets(0)["TrickshotDude"][1] == "TrickshotDude_ShootAround" and audit_gadgets(1)["TrickshotDude"][1] == "TrickshotDude_BounceHeal"
+        sx = {n: _expected_gadget(n) for n in ("ArtilleryDude", "BeeSniper", "CrossBomber", "JetpackGirl", "Roller", "BlackHole",
+                                               "Cocooner", "Ruffs", "Ninja", "TrickshotDude")}
+        assert sx["ArtilleryDude"]["expect"] == ["summon", "placed", "block"] and sx["ArtilleryDude"]["post_hit"] == BLOCK_T, sx["ArtilleryDude"]
+        assert sx["BeeSniper"]["expect"] == ["summon", "placed", "area", "decay", "slow"] and sx["BeeSniper"]["walk"] == "t", sx["BeeSniper"]
+        assert sx["CrossBomber"]["expect"] == ["summon", "placed", "area", "decay", "reveal"] and sx["CrossBomber"]["bush"], sx["CrossBomber"]
+        assert sx["JetpackGirl"]["expect"] == ["summon", "placed", "area", "decay", "damage"], sx["JetpackGirl"]
+        assert sx["Roller"]["expect"] == ["summon", "placed", "area", "decay", "speed"] and sx["Roller"]["walk"] == "s", sx["Roller"]
+        assert sx["BlackHole"]["expect"] == ["summon", "placed", "damage", "expire"] and sx["BlackHole"]["life"] == 120, sx["BlackHole"]
+        assert sx["BlackHole"]["sum_n"] == 3 and sx["BlackHole"]["place_r"] == 400 + SUM_PLACE_SLACK and sx["BlackHole"]["watch"] == 144
+        assert sx["Cocooner"]["expect"] == ["summon", "placed", "decay", "damage"] and sx["Cocooner"]["sum_n"] == 3, sx["Cocooner"]
+        assert sx["Ruffs"]["expect"] == ["summon", "placed", "cover_hp"] and sx["Ruffs"]["cover_pct"] == 40, sx["Ruffs"]
+        assert sx["Ninja"]["expect"] == ["summon", "placed", "damage"] and sx["Ninja"]["sum_n"] == 1, sx["Ninja"]
+        assert "burst" in sx["TrickshotDude"]["expect"] and sx["TrickshotDude"]["burst"] == ("TrickshotDudeGadgetProjectile", 8), sx["TrickshotDude"]
+        assert "TrickshotDudeGadgetSkillContainer" in sx["TrickshotDude"]["summons"] and "damage" not in sx["TrickshotDude"]["expect"]
+        mm = lambda **k: m(**k)
+        assert classify(mm(summons=["S"], placed=True, walk_v=350.0, walk_v0=770, walk_need=-SUM_SLOW_MIN), ["summon", "placed", "slow"])[0] == "works"
+        assert classify(mm(summons=["S"], placed=True, walk_v=700.0, walk_v0=770, walk_need=-SUM_SLOW_MIN), ["summon", "placed", "slow"])[1] == ["slow"]
+        assert "speed" in observed(mm(walk_v=920.0, walk_v0=720, walk_need=SUM_SPEED_MIN)) and "speed" not in observed(mm(walk_v=760.0, walk_v0=720, walk_need=SUM_SPEED_MIN))
+        assert "reveal" in observed(mm(rseen0=False, rseen1=True)) and "reveal" not in observed(mm(rseen0=True, rseen1=True))
+        ms = dict(x0=0, y0=0, aim=0.0, max_hp=6000, sum={1: ["RuffsCover", 400, 0, 2400, 2400, 2, 50], 2: ["RuffsCover", 328, 229, 2400, 2400, 2, 50],
+                                                         3: ["RuffsCover", 328, -229, 2390, 2390, 2, 50]}, s=0)
+        summon_measures(ms, sx["Ruffs"], 50, None, 5); assert ms["placed"] and ms["cover_hp"] and ms["cover_want"] == 2400, ms
+        ms["aim"] = 180.0; summon_measures(ms, sx["Ruffs"], 50, None, 5); assert not ms["placed"] and abs(ms["placed_bear"]) == 180, ms   # arc away
+        m0 = dict(x0=0, y0=0, aim=0.0, max_hp=6000, sum={k: [sx["Cocooner"]["sum_obj"], 0, 0, 700, 700, 2, 50] for k in (1, 2, 3)}, s=0)
+        summon_measures(m0, sx["Cocooner"], 50, None, 5); assert not m0["placed"] and m0["placed_near"] == 0, m0   # a 0 u ring
+        m0["sum"] = {1: [sx["Cocooner"]["sum_obj"], 400, 0, 700, 700, 2, 50], 2: [sx["Cocooner"]["sum_obj"], -200, 346, 700, 700, 2, 50], 3: [sx["Cocooner"]["sum_obj"], -200, -346, 700, 700, 2, 50]}
+        summon_measures(m0, sx["Cocooner"], 50, None, 5); assert m0["placed"] and "placed_bear" not in m0, m0
+        mt = dict(x0=0, y0=0, max_hp=6000, sum={1: ["BlackHolePetGadget", 400, 0, 540, 540, 2, 122]}, s=0)
+        summon_measures(mt, sx["BlackHole"], 144, None, 5); assert not mt["placed"] and mt["expire"], mt   # 1 of 3
+        mt["sum"][1][6] = 140; summon_measures(mt, sx["BlackHole"], 144, None, 5); assert not mt["expire"], mt
+        mb = dict(x0=0, y0=0, max_hp=6000, sum={1: ["SpeedBooster", 100, 0, 1000, 900, 2, 50]}, s=0, walk_tr=[(6, 0, 0), (8, 90, 0), (22, 736, 0)])
+        summon_measures(mb, sx["Roller"], 50, None, 5); assert mb["walk_v0"] == 770 and abs(mb["walk_v"] - 920) < 1 and "speed" in observed(mb), mb   # FILLER
         assert kinds["auto_aim"] == 1 and audit_gadgets(0)["Sniper"][1:] == ("Sniper_HandGun", "auto_aim"), kinds
         pa = expected_gadget("Sniper")
         assert pa["expect"] == ["projectile", "damage", "push"] and pa["range"] == 2100 and pa["projectiles"] == ["PiperHandgunProjectile"], pa
@@ -1611,10 +2102,42 @@ def _check():
         assert expected_gadget("DeadMariachi")["text_expect"] == [] and any("not checked live" in x and "slow" in x for x in expected_gadget("Ghost")["notes"])
         assert any("slow, stun" in x for x in expected_gadget("BullDude", 1)["notes"])
         assert eg.get("walk_in") and audit_gadgets(0)["Blower"][1:] == ("Blower_Stopper", "item")   # item gadgets: the target walks in
-        fg = expected_gadget("FutureGirl")   # Wendy's grenade: thrown, its areas deal no damage -> its skill's Damage is not expected
+        fg = expected_gadget("FutureGirl", 1)   # Wendy's grenade: thrown, its areas deal no damage -> its skill's Damage is not expected
         assert "damage" not in fg["expect"] and any("thrown" in x for x in fg["notes"]), fg
         assert "damage" in expected_gadget("AssaultShotgun")["expect"]   # Griff's coins land on a damage area: still expected
         assert expected_gadget("Samurai")["expect"] == ["heal"] and "Splitter" not in audit_gadgets(0)
+        # issue #46 batch 4: CHARGE (7 rows) and the DASH rows, each its brawler's first audited gadget
+        assert kinds["charge"] == 7 and kinds["dash"] == 7 and nk["InsectMan_Fly"] == "charge" and nk["Maisie_Dash"] == "dash", kinds
+        assert audit_gadgets(0)["Speedy"][1] == "Speedy_Dash" and audit_gadgets(1)["Speedy"][1] == "Speedy_Rewind"
+        assert audit_gadgets(1)["ShotgunGirl"][1] == "ShotgunGirl_Focus" and audit_gadgets(0)["Crab"][1] == "Crab_Dash"
+        cx = {n: _expected_gadget(n) for n in ("Rock", "RocketGirl", "Mender", "Speedy", "ShotgunGirl", "FutureGirl", "InsectMan", "Maisie", "Crab")}
+        assert cx["Rock"]["expect"] == ["move", "reach", "area", "damage"] and cx["Rock"]["reach"] == "aim", cx["Rock"]
+        assert cx["RocketGirl"]["expect"] == ["move", "reach", "area", "damage", "push"] and cx["RocketGirl"]["d_fix"] == DRAIN_D, cx["RocketGirl"]
+        assert cx["Mender"]["expect"] == ["move", "reach", "area", "heal"] and cx["Mender"]["reach"] == 1300 and cx["Mender"]["heal_by"] == HEAL_BY
+        assert cx["Speedy"]["expect"] == ["move", "reach", "immune"] and cx["Speedy"]["post_hit"] == IMMUNE_T, cx["Speedy"]
+        assert cx["ShotgunGirl"]["expect"] == ["move", "reach", "reload"] and cx["ShotgunGirl"]["reach"] == 800, cx["ShotgunGirl"]
+        assert cx["FutureGirl"]["expect"] == ["move", "reach"] and cx["FutureGirl"]["reach"] == 1500, cx["FutureGirl"]
+        assert cx["InsectMan"]["expect"] == ["move", "reach", "area", "damage"] and cx["InsectMan"]["reach"] == 1800 and cx["InsectMan"]["d_fix"] == DRAIN_D
+        assert cx["Maisie"]["expect"] == ["move", "reach", "area", "stun"] and cx["Maisie"]["walk_win"] == STUN_WALK and cx["Maisie"]["aim_off"] == 90
+        assert cx["Crab"]["expect"] == ["move", "reach", "reload"] and cx["Crab"]["reach"] == 1000 and "reload" not in _expected_gadget("Digger")["expect"]
+        mr = dict(move=700, super_dist=0.6, ammo0=1500, ammo_early=3000, pre_hit=900, post_hit=0, hp0=3000, hp_max_by=3900)
+        move_measures(mr, {**cx["Rock"], "expect": ["move", "reload", "immune"]}, None, 5)
+        assert mr["reach_want"] == 720 and mr["reach"] and "reload" in observed(mr) and "immune" in observed(mr), mr
+        mh = dict(move=1300, super_dist=1.0, ammo0=3000, hp0=3000, hp_max_by=5500, pre_damaged=True, spawned=True, consumed=True)
+        move_measures(mh, cx["Mender"], None, 5); assert mh["heal"] == 2500 and "heal" in observed(mh), mh   # Glowy: hp_max_by - hp0
+        mh.pop("hp_max_by"); move_measures(mh, cx["Mender"], None, 5); assert mh["heal"] == 0 and "heal" not in observed(mh), mh
+        mk = dict(x0=0, y0=0, max_hp=3000, sum={1: ["ArtilleryDudeGadgetBarrel", 0, 50, 1500, 900, 2, 50]}, s=0, post_hit=1200)
+        sk_ = sx["ArtilleryDude"]["sum_obj"]; mk["sum"][1][0] = sk_
+        summon_measures(mk, sx["ArtilleryDude"], 50, None, 5); assert mk["block"] and mk["block_hp"] == [1500, 900], mk   # Penny
+        mk["sum"][1][4] = 1500; summon_measures(mk, sx["ArtilleryDude"], 50, None, 5); assert not mk["block"], mk   # untouched barrel
+        mk["sum"][1][4] = 900; mk.pop("post_hit"); summon_measures(mk, sx["ArtilleryDude"], 50, None, 5); assert not mk["block"], mk   # no shot
+        bn, bk = sx["TrickshotDude"]["burst"]; mu = dict(projectiles={k: bn for k in range(bk)})
+        burst_measures(mu, sx["TrickshotDude"]); assert mu["burst"] and mu["burst_n"] == 8 and "burst" in observed(mu), mu   # Rico
+        mu["projectiles"] = {k: (bn if k < bk - 1 else "TrickshotDudeGadgetSkillProjectile") for k in range(bk + 2)}
+        burst_measures(mu, sx["TrickshotDude"]); assert not mu["burst"] and mu["burst_n"] == bk - 1, mu   # the gadget's own shot not counted
+        mr = dict(move=400, super_dist=1.0, ammo0=1500, walk_tr=[(3, 0, 0), (11, 10, 0)])
+        move_measures(mr, cx["Maisie"], None, 5); assert not mr["reach"] and "stun" in observed(mr), mr
+        mr["walk_tr"] = [(3, 0, 0), (11, 250, 0)]; move_measures(mr, cx["Maisie"], None, 5); assert "stun" not in observed(mr), mr
         sp = find_spots(MAP)
         assert len(sp) == 10 and all(len(d) >= 2 for _, _, d in sp), len(sp)
         assert min(max(abs(a[0] - c[0]), abs(a[1] - c[1])) for i, a in enumerate(sp) for c in sp[i + 1:]) >= SPACING * TILE
