@@ -1,0 +1,665 @@
+# Issue #64: the last seven masked gadgets (Bo's totem, Max's rewind, Frank's pull, Griff's bomb, Leon's smoke, Damian's
+# microphone, Starr Nova's fly area) work and leave g_masked. A diff on top of the other patches (after
+# star_powers2.patch). Paths relative to engine/. gadget.c: SHOT projectiles carry their skill's summon / item (arm_shot:
+# 0xb703c8 / 0xb79130, as libg's attack path arms them), UseWeaponAmmo costs and needs one ammo bar (shot_ready), the
+# REWIND kind (Max: the bolt, whose end spawns SpeedyRewindArea; the host's rewind at the area's end or at a second fire,
+# GadImpl.again; no cooldown while it is pending); superfix_moves.c: superfix_valid_spot / superfix_teleport;
+# superfix_status.c: a store status with Levitation from an area sets libg's levitating byte (+0x9b0), summon areas with a
+# Refreshable ally status re-apply every tick, Bo's ExtraSuperCharge area adds +CustomValue % charge per hit while inside
+# (ZN_TOTEM); superfix_items.c: pick-up heal items (type 72, Damian's microphone) give their StatusEffectAlly to the
+# picker; superfix.c / env.c: the summon-area table is emptied at a new battle (an old entry with a recycled character id
+# kept a new summon from getting its area).
+diff --git a/native/loader/env.c b/native/loader/env.c
+index 898feed..c88e547 100644
+--- a/native/loader/env.c
++++ b/native/loader/env.c
+@@ -2148,9 +2148,11 @@ static void hook_listener(void *sim);
+ static void hits_mark(void); void hits_dump(const char *why);
+ static long g_streams_freed; int g_free_snap_stream = 1;   /* --keep-snap-streams: 0 (keeps the game's per-tick leak, see my_deliver) */
+ static void apply_teams(void *sim);
++void superfix_summon_area_clear(void) __attribute__((weak));   /* superfix.c */
+ void env_on_build(void *battle, void *sim) {   /* a new battle was built: forget the old one */
+     g_lead_n = 0; g_lead_skip = 0;
+     gadget_clear();   /* gadget round: the old battle's accessories are freed; its table must not reach the intro ticks */
++    if (superfix_summon_area_clear) superfix_summon_area_clear();   /* issue #64: character ids restart in the new battle */
+     int gen = E.gen + 1, hr = E.have_reset, seed = E.reset_seed, gas = E.gas_on, act = E.act_tick, sa = E.seed_applied, rr = E.reset_req;
+     int ga_ok = E.gas_args_ok, a4 = E.ga4, a5 = E.ga5, a7 = E.ga7, s0 = E.gs0;
+     NbeCmd cur = E.cur;
+diff --git a/native/loader/gadget.c b/native/loader/gadget.c
+index 179b136..cefef17 100644
+--- a/native/loader/gadget.c
++++ b/native/loader/gadget.c
+@@ -36,15 +36,23 @@
+  *         heal, status and wall spawn then come from libg and the earlier rounds (superfix, spawnfix). ActivationDelay
+  *         ticks (Tick: 20) are waited out first, and the area is placed where the brawler is then. A row's ShieldPercent
+  *         for ShieldTicks (Tick: 50 % for 21) starts at the fire (superfix_status_shield, issue #55).
+- *   SHOT  empty Type, no AreaEffect, a Skill whose BehaviorType is Attack with Projectiles (32 rows: Spike, Colt x2, Brock,
++ *   SHOT  empty Type, no AreaEffect, a Skill whose BehaviorType is Attack with Projectiles (31 rows: Spike, Colt x2, Brock,
+  *         Shelly, Emz x2, ...; published PROJECTILE): NumBulletsInOneAttack of the skill's first projectile over Spread degrees
+  *         centred on the aim, to CastingRange, with the skill's Damage scaled by the brawler's damage percent (0xb4b660, as the
+- *         attack path scales it), spawned with the projectile spawn 0xb78190 (spawnfix.c) at kind 4. What the projectile
+- *         does on hit or at its end (areas, items, summons, pull / push) is libg's and the earlier rounds'. A projectile
++ *         attack path scales it), spawned with the projectile spawn 0xb78190 (spawnfix.c) at kind 4. A skill with
++ *         SummonedCharacters or a SpawnedItem gets its projectiles armed the way libg's attack path arms them (arm_shot:
++ *         0xb703c8 / 0xb79130, which 0xb78190 alone skips), so the projectile's end spawns the summon (Bo's totem, Leon's
++ *         smoke, Starr Nova's fly area, Spike's cactus) or the item (Damian's microphone; issue #64). What the projectile
++ *         does on hit or at its end (areas, items, summons, pull / push) is then libg's and the earlier rounds'. A projectile
+  *         row with DamageOnlyWithOneProj (Emz's spray) damages each target with one projectile of the volley only, through
+  *         the attack path's sibling list (volley). The skill's timing (ActiveTime, MsBetweenAttacks waves) is not read:
+  *         g_waves lists the cards whose description names more waves (Colt's Gunslinger_Reload: two shots, issue #55).
+- *         Not applied: TwoGuns, AttackPattern.
++ *         Not applied: TwoGuns, AttackPattern. A skill with UseWeaponAmmo (Frank's Pull, Shelly's Clay Pigeons, ...) needs
++ *         and spends one weapon ammo bar per fire [?] (shot_ready, issue #64).
++ *   REWIND  Max's Speedy_Rewind (card 23000311 only; published PROJECTILE; issue #64): the skill's bolt at the aim, whose
++ *         end spawns its SpeedyRewindArea (libg); when the area runs out (3 s), or at a second fire while it is up (the
++ *         card's "reactivate"), the host teleports Max to it (superfix_teleport) and heals her back to her HP at the throw.
++ *         No cooldown while the rewind is pending; Max's death drops it. See the REWIND block.
+  *   SKILL AREA  the same, but the skill has no projectile, only an AreaEffectObject (published SPAWN): Bull's Stomp (Attack:
+  *         at the brawler), 8-Bit's Extra Credits (AimableArea: at the aim point at CastingRange).
+  *   AUTO AIMER  Piper's Sniper_HandGun (repeat_shot; card 23000268 only; published PROJECTILE): one CustomObject projectile
+@@ -86,12 +94,11 @@
+  *         statuses in superfix's store (Jacky, Bonnie, Hank, Lou, Willow, Juju, Kit's box, Surge x2, Trunk, Moe), Draco's
+  *         Last Stand, Sandy's sleep, Tara's and Buzz's bush vision. Its header lists what each one does and the guesses.
+  * Readiness: a kind may have a ready() test (NEXT: not while a modifier is pending; HEAL: Meg out of her mech, Byron without
+- * ammo; BUOY: the super full; SELF: an effect still running, a form gate); while it fails the gadget publishes a
++ * ammo; SHOT: a UseWeaponAmmo skill without an ammo bar; BUOY: the super full; SELF: an effect still running, a form gate); while it fails the gadget publishes a
+  * cooldown of at least 1 and a fire is refused without spending a use. Cooldown: the accessory's +0xc4, else the Skill's
+  * BonusSkillCooldown (getter 0xb0d878, the gadget value of the skill), else its Cooldown (ms / 50). A skill gadget whose
+  * skill has MaxCharge > 1 (Shelly's Clay Pigeons, Colette's lifesteal shot: 3, "can be fired 3 times before cooldown")
+  * fires that many times per cooldown, the skill's own Cooldown (ms) apart [?]; the cooldown starts after the last one.
+- * Its UseWeaponAmmo (a shot costing weapon ammo [?]) is not applied.
+  * Every other gadget publishes kind NONE (not usable): summons / turrets, the Charge skills (Brock's jump, Max's dash, ...),
+  * weapon / super swaps, the masked rows (g_masked), the not-doable cards below, ... Each player gets GAD_USES uses per
+  * battle (unlimited by default, as in the live game since February 2025) and the accessory's cooldown between uses.
+@@ -168,6 +175,8 @@ typedef struct {
+     int (*fire)(void *sim, Gad *g, uint8_t *ch, double deg, int tick);           /* 1 = activated (a use is spent) */
+     int (*ready)(void *sim, Gad *g, uint8_t *ch);   /* optional precondition: 0 = not usable now (published as a cooldown of
+                                                      * 1 tick, refused without spending a use); NULL = always */
++    int (*again)(void *sim, Gad *g, uint8_t *ch, int tick);   /* optional: a fire while the last use is still running (Max's
++                                                     * reactivation), tried before the cooldown test; 1 = handled (no use) */
+ } GadImpl;
+ struct Gad {
+     int pid, type, card, uses, cd, cd_until, used; void *ad; const GadImpl *im;
+@@ -194,6 +203,9 @@ struct Gad {
+     int hp_prev, hp_lost[100];                        /* damage taken per tick (ring by tick % 100), for HEAL_TAKEN */
+     int buoy_ch;                                           /* BUOY: the brawler's id at the fire while its next super has not
+                                                             * landed yet (0 = none; gadget_buoy_nostun) */
++    int rw_ch, rw_area, rw_until, rw_x, rw_y, rw_hp, rw_at;   /* REWIND: the brawler's id while a rewind is pending (0 = none),
++                                                            * the bolt's marker area's id (0 = not found yet), the tick of the
++                                                            * rewind, where the bolt lands, HP at the throw, tick of the throw */
+ };
+ static Gad g_gad[NBE_MAXP]; static int g_rep_log;
+ static long g_fired[8], g_areas, g_areas_lost;
+@@ -323,8 +335,42 @@ static int dmg_scaled(uint8_t *ch, int dmg) {
+ }
+ /* one projectile from the brawler along `deg` (math degrees) to `range` units, through the projectile spawn 0xb78190 as
+  * spawnfix.c calls it (owner twice, no lateral offset, no inherited hit list) -> 1 = spawned */
+-static long g_shots;
++static long g_shots, g_armed_summon, g_armed_item;
+ static void *g_last_shot;   /* the projectile the last shoot() spawned (NULL = none), for volley's sibling list */
++static void *g_arm_sd;      /* SHOT: the gadget's skill while shot_volley fires (its summon / item ride on each projectile) */
++#define SD_NUMSPAWNS 0xb0dd5c   /* NumSpawns (skills.csv; column word 0x1241000+896) */
++#define SD_MAXSPAWNS 0xb0dd6c   /* MaxSpawns (+900) */
++#define SD_SUMMON 0xb0ddf8      /* SummonedCharacters[i] (SkillData +0x80, count +0x8c) -> CharacterData* */
++#define SD_ITEM 0xb0de70        /* SpawnedItem (SkillData +0xd8) -> ItemData* */
++/* issue #64: what libg's attack path hands each projectile of a skill that summons or drops an item, done for a SHOT
++ * gadget's projectiles (shoot() spawns them directly, so the skill's Attack handler and the character's attack tick, which
++ * do it in the game, never run for them). The projectile's end (0xb75998: 0xb75b00 -> 0xb77344, 0xb75b28 -> item factory
++ * 0xb55684) then spawns the summon / item where it lands, as for Nita's bear or Jessie's turret.
++ *   summon: the attack tick's 0xb703c8(proj, SummonedCharacters[0], NumSpawns, MaxSpawns, +0xacc, +0xad4, char byte +0xaf1,
++ *     owner CharacterData +636 < 1, 0, 0, 0, 0) (0xb4cab8..0xb4cb20; the Attack handler's setSummon 0xb5a6b4 is where the
++ *     character's fields come from). The two bonus words (char +0xacc / +0xad4, summon HP and damage bonuses the Attack
++ *     handler scales from the level) are 0 [?]: this build's level scale 0xb565a8 is the identity and the host has no gear
++ *     that adds to them.
++ *   item: the attack path's 0xb79130(proj, SpawnedItem, NumSpawns, 0xb6e680(ch, skill) (MaxSpawns plus bonuses), damage,
++ *     second damage word, 0 (any end reason), 1) (0xb4f288..0xb4f2a4, from char +0xacc / +0xad0 that the Attack handler
++ *     sets through 0xb5a6ec at 0xb7ed38: the damage and the skill's getter 0xb0dc14); here the projectile's damage and
++ *     0xb0dc14(skill). */
++static void arm_shot(uint8_t *ch, void *sd, uint8_t *p) {
++    void *cd = ((void *(*)(void *, int))B(SD_SUMMON))(sd, 0), *it = ((void *(*)(void *))B(SD_ITEM))(sd);
++    int n = sd_get(sd, SD_NUMSPAWNS);
++    if (cd) {
++        uint8_t *ocd = ((void *(*)(void *))B(0xb6a384))(ch); int mx = sd_get(sd, SD_MAXSPAWNS);
++        ((void (*)(void *, void *, int, int, int, int, int, int, long, long, long, long))B(0xb703c8))(
++            p, cd, n > 0 ? n : 1, mx > 0 ? mx : 1, 0, 0, U8(ch, 0xaf1), ocd && I32(ocd, 636) < 1, 0, 0, 0, 0);
++        g_armed_summon++;
++    }
++    if (it) {
++        int mx = ((int (*)(void *, void *))B(0xb6e680))(ch, sd);
++        ((void (*)(void *, void *, int, int, int, int, int, int))B(0xb79130))(p, it, n > 0 ? n : 1, mx > 0 ? mx : 1, I32(p, 0xd4), sd_get(sd, 0xb0dc14), 0, 1);
++        g_armed_item++;
++    }
++    if ((cd || it) && g_armed_summon + g_armed_item <= 6) LOG("[gadget] shot %p carries summon %p / item %p (count %d)\n", p, cd, it, n);
++}
+ static int shoot(void *sim, uint8_t *ch, void *pd, double deg, int range, int dmg) {
+     g_last_shot = NULL;
+     if (!pd || !PTR(ch, 0x20)) return 0;
+@@ -332,6 +378,7 @@ static int shoot(void *sim, uint8_t *ch, void *pd, double deg, int range, int dm
+     int tx = (int)floor(X + range * cos(r) + 0.5), ty = (int)floor(Y + range * sin(r) + 0.5);
+     void *p = ((SpawnProj)B(0xb78190))(X, Y, ch, ch, pd, tx, ty, dmg, dmg, 0, 0, NULL, sim, 0, GAD_PROJ_KIND, NULL);
+     if (p) g_shots++;
++    if (p && g_arm_sd) arm_shot(ch, g_arm_sd, p);
+     g_last_shot = p;
+     if (g_shots <= 4) LOG("[gadget] shot %p to %d,%d dmg %d (proj +0xd4 %d)\n", p, tx, ty, dmg, p ? I32(p, 0xd4) : -1);
+     return p != NULL;
+@@ -377,11 +424,26 @@ static int shot_volley(void *sim, Gad *g, uint8_t *ch, double deg) {
+     int n = sd_get(sd, SD_NBULLETS), cr = sd_get(sd, SD_RANGE), range = cr > 0 ? cr * 100 : 1000;
+     n = n < 1 ? 1 : n > 16 ? 16 : n;   /* NumBulletsInOneAttack 1..5 in the gadget rows */
+     if (pd && U8(pd, PD_INDIRECT)) range = aimed_range(range, g->dist);   /* issue #55: Griff's coins land where aimed */
+-    return volley(sim, ch, pd, deg, n, sd_get(sd, SD_SPREAD), range, dmg_scaled(ch, sd_get(sd, SD_DAMAGE)));
++    g_arm_sd = sd;   /* issue #64: each projectile carries the skill's summon / item (arm_shot) */
++    int k = volley(sim, ch, pd, deg, n, sd_get(sd, SD_SPREAD), range, dmg_scaled(ch, sd_get(sd, SD_DAMAGE)));
++    g_arm_sd = NULL;
++    return k;
++}
++/* issue #64: a skill with UseWeaponAmmo (SkillData +0x238, the byte the loader stores at 0xb0bd2c) costs one weapon ammo
++ * bar and needs one, as Byron's heal does (heal_ready). [?] the amount: the column is a flag, and no card text names the
++ * cost. SHOT rows with the flag: Frank's HammerDude_Pull, Shelly's ShotgunGirl_Focus, Colt's Gunslinger_BigBullet, Emz's
++ * Mummy_Acid, Meg's MechaDude_ReloadTower, the Percenter rows and FutureGirl_ProjectileGadget. */
++#define SD_USE_AMMO 0x238
++static int shot_ready(void *sim, Gad *g, uint8_t *ch) {
++    (void)sim; void *sd = PTR(g->ad, AD_SKILL);
++    if (!ch || I32(ch, 0x3c4) <= 0) return 0;
++    if (sd && U8(sd, SD_USE_AMMO)) { uint8_t *sk = ammo_skill(ch); if (!sk || I32(sk, 0x18) < 1000 * (1 + env_pending_attacks(g->pid))) return 0; }
++    return 1;
+ }
+ static int shot_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+-    if (I32(ch, 0x3c4) <= 0 || g->burst_left) return 0;
++    if (I32(ch, 0x3c4) <= 0 || g->burst_left || !shot_ready(sim, g, ch)) return 0;
+     if (shot_volley(sim, g, ch, deg) <= 0) return 0;
++    if (U8(PTR(g->ad, AD_SKILL), SD_USE_AMMO)) I32(ammo_skill(ch), 0x18) -= 1000;
+     for (unsigned k = 0; k < sizeof g_waves / sizeof *g_waves; k++)
+         if (g_waves[k].card == g->card && g_waves[k].waves > 1) {
+             g->burst_id = I32(ch, 8); g->burst_left = g_waves[k].waves - 1; g->burst_gap = g_waves[k].gap > 0 ? g_waves[k].gap : 1;
+@@ -395,6 +457,92 @@ static void burst_tick(void *sim, Gad *g, int tick) {   /* the later waves, alon
+     while (g->burst_left > 0 && tick >= g->burst_next) { shot_volley(sim, g, ch, g->burst_deg); g->burst_left--; g->burst_next += g->burst_gap; }
+ }
+ 
++/* ---- REWIND: Max's Sneaky Sneakers (Speedy_Rewind, issue #64; published PROJECTILE). Text: "Max throws a lightning bolt. If
++ * she reactivates the Gadget, or after 3 seconds, she blinks back to the lightning bolt and heals any damage taken since."
++ * The skill (SpeedyRewindBonusSkill) throws SpeedyRewindProjectile (Indirect, ForceValidTile) to the aim, pulled back to a
++ * walkable tile (superfix_valid_spot); at its end libg's projectile end (0xb75afc -> 0xb76c0c, iteration 0: the getter
++ * 0xafa7f4, ProjectileData +0x128) spawns the skin's SpawnAreaEffectObject, SpeedyRewindArea (TimeMs 3000, type Effect, a
++ * marker that deals nothing), as it spawns Griff's bomb explosion. The host finds that area with libg's finder
++ * 0xb2b1b0(data, Max) (the first area of that data and player); if none shows up within REWIND_FIND ticks it spawns one
++ * itself at the landing point (0xb35c40, as AREA). The rewind, at the throw + TimeMs or at a fire while it is pending (the
++ * reactivation: the swapped-in SpeedyRewindBonusSkillBlink, BehaviorType DestroyArea; GadImpl.again, no use spent): Max is
++ * teleported to the area (superfix_teleport, superfix_moves.c), healed the HP lost since the throw (0xb41554) and the area
++ * ends (end tick +0xd8 = now; libg's area tick then expires it). A reactivation before the area is found waits for it
++ * (at most REWIND_FIND ticks). Max dead or another character: no rewind, the area ends.
++ * Not used: the card's character component Brawler_SpeedyRewind (type 32, vtable 0x120a880), whose skill-used 0xb9bb84
++ * listens to the area's expire and does the same rewind in the client. It keeps raw pointers to Max and the area, and
++ * nothing in this libg lets go of it when Max dies (0xb9bc8c's only caller is 0xb9bb84 itself), so a death with a pending
++ * rewind could run its expire handler 0xb9be00 on a freed character.
++ * Cooldown: none while the rewind is pending (the gadget publishes ready, so the policy can reactivate; the throw skill has
++ * NoBonusSkillCooldown); the full BonusSkillCooldown (300 ticks) starts at the rewind, or when Max dies or changes before it
++ * (the blink skill's FullBonusSkillCooldownOnDeath). */
++#define CARD_REWIND 23000311       /* cards.csv Speedy_Rewind (a data id, as g_masked) */
++#define PD_SPAWN_AREA 0x128        /* ProjectileData +0x128: the skin's SpawnAreaEffectObject (createReferences 0xaf9074) */
++#define AREA_END 0xd8              /* area end tick (shouldExpire 0xb28d4c) */
++#define AREA_TIME_MS 0x124         /* AreaEffectData TimeMs */
++#define REWIND_FIND 4              /* ticks the host waits for the bolt's area (29000 u/s: it lands the tick after the throw) */
++void superfix_valid_spot(void *sim, int x0, int y0, int *tx, int *ty) __attribute__((weak));   /* superfix_moves.c */
++int superfix_teleport(uint8_t *ch, int tx, int ty) __attribute__((weak));
++static long g_rewinds, g_rewind_again, g_rewind_done, g_rewind_drop, g_rewind_own;
++static int g_cls_card;             /* the card being classified (gadget_reset_player) */
++static int is_area(uint8_t *o) {   /* a live area: item vtable, data of type 17 (as gadget_root_post), not expired (+0xf4) */
++    int vt = VTOF(o); uint8_t *d = vt == VT_ITEM || vt == VT_ITEM2 ? PTR(o, 0x10) : NULL;
++    return d && I32(d, 0x20) / 1000000 == 17 && !U8(o, 0xf4);
++}
++static int rewind_classify(void *ad, int type) {
++    void *sd = type == ACC_PLAIN ? PTR(ad, AD_SKILL) : NULL, *pd = sd ? skill_proj(sd) : NULL;
++    return g_cls_card == CARD_REWIND && !PTR(ad, AD_AREA) && pd && PTR(pd, PD_SPAWN_AREA);
++}
++static int rewind_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
++    if (I32(ch, 0x3c4) <= 0 || g->rw_ch || !PTR(ch, 0x20)) return 0;
++    void *sd = PTR(g->ad, AD_SKILL), *pd = skill_proj(sd), *ad_ = PTR(pd, PD_SPAWN_AREA);
++    int cr = sd_get(sd, SD_RANGE), range = aimed_range(cr > 0 ? cr * 100 : 800, g->dist), X = I32(ch, 0x38), Y = I32(ch, 0x3c);
++    double r = deg * M_PI / 180; int tx = (int)floor(X + range * cos(r) + 0.5), ty = (int)floor(Y + range * sin(r) + 0.5);
++    if (superfix_valid_spot) superfix_valid_spot(sim, X, Y, &tx, &ty);   /* ForceValidTile */
++    int d = (int)floor(hypot(tx - X, ty - Y) + 0.5);
++    if (!shoot(sim, ch, pd, deg, d > 0 ? d : 1, 0)) return 0;   /* the bolt (29000 u/s: it lands in a tick) */
++    g->rw_ch = I32(ch, 8); g->rw_area = 0; g->rw_at = tick; g->rw_x = tx; g->rw_y = ty; g->rw_hp = I32(ch, 0x3c4);
++    g->rw_until = tick + (I32(ad_, AREA_TIME_MS) > 0 ? I32(ad_, AREA_TIME_MS) / 50 : 60);
++    if (g_rewinds++ < 6) LOG("[gadget] rewind: bolt to %d,%d at tick %d, rewind at tick %d, hp %d\n", tx, ty, tick, g->rw_until, g->rw_hp);
++    return 1;
++}
++static uint8_t *rewind_area(void *sim, Gad *g, uint8_t *ch, int tick) {   /* the bolt's marker area, NULL = none (yet / any more) */
++    if (g->rw_area) { uint8_t *a = env_obj_by_id(sim, g->rw_area); return a && is_area(a) ? a : NULL; }
++    void *ad_ = PTR(skill_proj(PTR(g->ad, AD_SKILL)), PD_SPAWN_AREA);
++    uint8_t *a = ((void *(*)(void *, void *))B(0xb2b1b0))(ad_, ch);
++    if (a && !is_area(a)) a = NULL;
++    if (!a && tick >= g->rw_at + REWIND_FIND) {   /* the bolt spawned no area: the host's own at the landing point */
++        a = ((void *(*)(void *, void *, int, int, int, int, void *))B(0xb35c40))(ch, ad_, g->rw_x, g->rw_y, 0, 2, NULL);
++        if (a) g_rewind_own++;
++    }
++    if (a) g->rw_area = I32(a, 8);
++    return a;
++}
++static void rewind_tick(void *sim, Gad *g, int tick) {
++    uint8_t *ch = env_obj_by_id(sim, g->rw_ch);
++    if (!ch || I32(ch, 0x3c4) <= 0 || VTOF(ch) != VT_CHAR) {   /* dead or another character: no rewind, full cooldown */
++        uint8_t *a = g->rw_area ? env_obj_by_id(sim, g->rw_area) : NULL;
++        if (a && is_area(a)) I32(a, AREA_END) = tick;
++        g->rw_ch = 0; g->cd_until = tick + g->cd; g_rewind_drop++; return;
++    }
++    uint8_t *a = rewind_area(sim, g, ch, tick);
++    if (!g->rw_area && tick < g->rw_at + REWIND_FIND) return;   /* the bolt is still flying */
++    if (a && tick < g->rw_until) return;
++    int x = a ? I32(a, 0x38) : g->rw_x, y = a ? I32(a, 0x3c) : g->rw_y, lost = g->rw_hp - I32(ch, 0x3c4);
++    if (superfix_teleport) superfix_teleport(ch, x, y);
++    if (lost > 0) ((void (*)(void *, int, int, int, void *, int, int, int, long, long))B(0xb41554))(ch, g->pid, lost, 1, NULL, 0, 0, 0, 0, 0);
++    if (a) I32(a, AREA_END) = tick;
++    if (g_rewind_done++ < 6) LOG("[gadget] rewind done at tick %d (thrown at %d): char at %d,%d, hp %d (%d at the throw)\n", tick, g->rw_at,
++                                 I32(ch, 0x38), I32(ch, 0x3c), I32(ch, 0x3c4), g->rw_hp);
++    g->rw_ch = 0; g->cd_until = tick + g->cd;
++}
++static int rewind_again(void *sim, Gad *g, uint8_t *ch, int tick) {   /* the reactivation: the rewind now */
++    if (!g->rw_ch || !ch || I32(ch, 8) != g->rw_ch || I32(ch, 0x3c4) <= 0) return 0;
++    g->rw_until = tick; g_rewind_again++;
++    rewind_tick(sim, g, tick);   /* now, unless the bolt's area is still awaited (then within REWIND_FIND ticks) */
++    return 1;
++}
++
+ /* ---- SKILL AREA: the gadget's skill has no projectile, only an AreaEffectObject: an Attack skill's area at the brawler
+  * (Bull's Stomp) or one whose AreaEffectFollowType is follow (8-Bit's Extra Credits), any other AimableArea skill's at
+  * the aim point, super_dist of its CastingRange out */
+@@ -416,7 +564,6 @@ static int skill_area_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick)
+ #define AD_RANGE 0xa93348          /* Range (column slot 0x123f000+2032, filled by the column-index init that ends at 0xa93244) */
+ #define AD_RANGE_U 300             /* accessory Range is in tiles: the client's aim guide (bl 0xa93348 at 0x876558) draws it as
+                                     * Range x 3 in the 100 u steps of CastingRange, i.e. 300 u per tile (Piper: 7 -> 2100 u) */
+-static int g_cls_card;             /* the card being classified (gadget_reset_player) */
+ static int auto_aim_classify(void *ad, int type) {
+     return type == ACC_REPEAT && g_cls_card == CARD_AUTO_AIMER && custom_proj(ad) && ad_get(ad, AD_RANGE) > 0;
+ }
+@@ -904,7 +1051,8 @@ static const GadImpl g_impl[] = {
+     {NBE_GAD_DASH, dash_classify, dash_fire},
+     {NBE_GAD_HEAL, heal_classify, heal_fire, heal_ready},
+     {NBE_GAD_SPAWN, area_classify, area_fire},
+-    {NBE_GAD_PROJECTILE, shot_classify, shot_fire},
++    {NBE_GAD_PROJECTILE, rewind_classify, rewind_fire, NULL, rewind_again},
++    {NBE_GAD_PROJECTILE, shot_classify, shot_fire, shot_ready},
+     {NBE_GAD_SPAWN, skill_area_classify, skill_area_fire},
+     {NBE_GAD_PROJECTILE, auto_aim_classify, auto_aim_fire},
+     {NBE_GAD_PROJECTILE, rep_classify, rep_fire},
+@@ -921,13 +1069,6 @@ static const GadImpl g_impl[] = {
+  * by the shipped tables): left unusable (kind NONE) so the policy cannot spend a fire on them. bsrl-sim super_audit.MASKED
+  * lists the same rows. */
+ static const int g_masked[] = {
+-    23000263,   /* BowDude_Totem: the projectile flies, the totem summon never spawns */
+-    23000311,   /* Speedy_Rewind: its projectile is a marker; the rewind (teleport back) is not implemented */
+-    23000351,   /* HammerDude_Pull: no pull, no damage on the target */
+-    23000399,   /* AssaultShotgun_Bomb: no explosion, no damage */
+-    23000408,   /* Ninja_InvisibleArea: the invisibility area summon never spawns */
+-    23001247,   /* Gladiator_Amp: the healing item never spawns */
+-    23001255,   /* MagicalGirl_FlyArea: the area summon never spawns */
+     23000294,   /* TntDude_Stun: armed and consumed, but the explosion's damage reaches env.c's root with no source object, so
+                  * the hit struct's stun (+0x10) is never read: no stun */
+     23000522,   /* ShieldTank_Pull: consumed (0xb4e314), no pull */
+@@ -955,6 +1096,9 @@ void gadget_clear(void) {
+     if (g_buoy_nostun) LOG("[gadget] reserve buoy: %ld torpedoes without the landing stun\n", g_buoy_nostun);
+     g_buoy_nostun = 0;
+     if (g_rep_charged) LOG("[gadget] repeat: %ld enemy hits gave super charge\n", g_rep_charged);
++    if (g_rewinds) LOG("[gadget] rewind: %ld bolts, %ld reactivations, %ld rewinds, %ld dropped (death / changed), %ld areas spawned by the host\n", g_rewinds, g_rewind_again, g_rewind_done, g_rewind_drop, g_rewind_own);
++    if (g_armed_summon + g_armed_item) LOG("[gadget] shots carrying a summon %ld / an item %ld\n", g_armed_summon, g_armed_item);
++    g_rewinds = g_rewind_again = g_rewind_done = g_rewind_drop = g_rewind_own = g_armed_summon = g_armed_item = 0;
+     g_rep_charged = 0; memset(g_rshot, 0, sizeof g_rshot); memset(g_rshot_k, 0, sizeof g_rshot_k);
+     memset(g_gad, 0, sizeof g_gad); g_nsleep = 0; gself_clear();
+ }
+@@ -994,10 +1138,11 @@ void gadget_reset_player(int i, void *acc) {
+ int gadget_use(void *sim, int i, uint8_t *ch, double deg, double dist, int tick) {
+     if (i < 0 || i >= NBE_MAXP || !g_gad[i].im) return 0;
+     Gad *g = &g_gad[i]; g->dist = dist;
++    if (g->im->again && g->im->again(sim, g, ch, tick)) return 1;   /* Max's reactivation: no use, no cooldown test */
+     if (g->uses <= 0 || tick < g->cd_until || !ch) return 1;
+     if (g->im->ready && (g->not_ready || !g->im->ready(sim, g, ch))) return 1;   /* published as not ready: refused, nothing spent */
+     if (g->im->fire(sim, g, ch, deg, tick)) {
+-        g->uses--; g->used++; g->cd_until = tick + g->cd;
++        g->uses--; g->used++; g->cd_until = g->rw_ch ? tick : tick + g->cd;   /* REWIND: no cooldown while the rewind is pending */
+         if (g->charge_max > 1) {   /* a shot of a MaxCharge window: the next one after charge_gap, the cooldown after the last */
+             if (--g->charges > 0) g->cd_until = tick + g->charge_gap; else g->charges = g->charge_max;
+         }
+@@ -1012,6 +1157,7 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
+         if (g_gad[i].area_at && tick >= g_gad[i].area_at) area_spawn(sim, &g_gad[i]);
+         if (g_gad[i].rep_n) rep_tick(sim, &g_gad[i], tick);
+         if (g_gad[i].burst_left) burst_tick(sim, &g_gad[i], tick);
++        if (g_gad[i].rw_ch) rewind_tick(sim, &g_gad[i], tick);
+         if (g_gad[i].im && g_gad[i].type == ACC_HEAL_TAKEN) taken_tick(sim, &g_gad[i], tick);
+         if (g_gad[i].im && g_gad[i].type == ACC_NEXT) next_tick(sim, &g_gad[i], tick);
+         if (g_gad[i].im && g_gad[i].im->ready) g_gad[i].not_ready = !g_gad[i].im->ready(sim, &g_gad[i], char_of(sim, i));
+diff --git a/native/loader/superfix.c b/native/loader/superfix.c
+index 7b7c59f..67bba01 100644
+--- a/native/loader/superfix.c
++++ b/native/loader/superfix.c
+@@ -74,12 +74,19 @@ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind,
+  * own max HP gave 304 a second (10 % of 3040: summons keep their power-1 HP here). Without a living summoner, and for other
+  * scale types, -Damage % of the summon's max HP or -Damage, x P11_SCALE (power-1 numbers, issue #22). An area with
+  * OverHealTicks (Pam's hypercharged turret, HotAndOverheals) heals allies at full HP too, and what goes past max HP becomes
+- * a decaying shield (hyper.c hyper_overheal). */
++ * a decaying shield (hyper.c hyper_overheal). The table is emptied when a new battle is built (env.c env_on_build:
++ * superfix_summon_area_clear) and, as a fallback, when the character's sim changes or its tick goes back: character ids
++ * restart in a new battle, and an old entry with the same id would keep a new summon from getting its area (issue #64). */
+ typedef struct { int ch_id, area_id; uint8_t *a; int next; } SumArea;
+ #define SA_MAX 32
+ static SumArea g_sa[SA_MAX]; static int g_nsa; static long g_nsum_area, g_nsum_end;
++static void *g_sa_sim; static int g_sa_tick;
++void superfix_summon_area_clear(void) { g_nsa = 0; g_sa_sim = NULL; g_sa_tick = 0; }
+ void superfix_summon_area(uint8_t *ch) {
+     if (!g_superfix || !mode() || !ch || !PTR(ch, 0x20) || I32(ch, 0x3c4) <= 0) return;
++    {   void *sim = ((void *(*)(void *))B(0xb6a378))(ch); int t = sim ? I32(sim, 0x10) : 0;   /* the character's sim and tick */
++        if (sim != g_sa_sim || t < g_sa_tick) g_nsa = 0;
++        g_sa_sim = sim; g_sa_tick = t; }
+     uint8_t *cd = ((void *(*)(void *))B(0xb6a384))(ch), *ad = cd ? PTR(cd, 0xb8) : NULL;
+     if (!ad || (((geti_t)B(0xb34de4))(ch) & 1)) return;
+     int id = I32(ch, 8);
+diff --git a/native/loader/superfix_items.c b/native/loader/superfix_items.c
+index 209dfaa..eb7d758 100644
+--- a/native/loader/superfix_items.c
++++ b/native/loader/superfix_items.c
+@@ -31,6 +31,16 @@
+  *
+  * Otis' super projectile deals no damage to the character it attaches its SilencerHugger to (b74c00): see superfix_hugger.
+  *
++ * Pick-up heal items (type 72: Damian's GladiatorHealingItem, his gadget's microphone; issue #64): the client's update runs
++ * the pick-up (b6d710..b6dce0: CanBePickedUp, the nearest living character of the item's team within TriggerRangeSubTiles
++ * x 100 + its radius sets +0xa8 picker, +0x90 1 and a 250 ms flight +0x9c to it), but at the flight's end only types 9, 0x42
++ * and 3 have code: nothing reads StatusEffectAlly (ItemData +0x70) and the item stays. Re-implemented after the update: once
++ * the flight is over, the picker (alive) gets StatusEffectAlly through 0xb35dd0 with the area-status arguments (source
++ * player / team of the item, the item, its owner +0xb0, kind +0xb8), so superfix_status's store heals it (GladiatorGadgetHeal:
++ * Healing 1600, TriggerOnFirstTick), and the item is destroyed (0xb6e0b0, as for a blomb). A picker that died during the
++ * flight gets nothing [?]. libg's scan does not leave the thrower out (PickUpOnlyBySource is empty for this row), so Damian
++ * picks up his own microphone too [?] (the text says "the first teammate").
++ *
+  * NB_SUPERFIX=0 turns this off with the rest of superfix; NB_SUPERFIX_ITEMS=0 only this part. */
+ #include "nbhost.h"
+ #include <stdlib.h>
+@@ -58,6 +68,7 @@ static int busy;   /* our own spawns run 0xb29494 / update code again: no nested
+                                              * 0x202 << 32, 0x4800 << 48; issue #63: was 0x4802020200005040, which left out type
+                                              * 25, Tick's ClusterMine and Fang's KickerDudeMine, and took in 49) */
+ #define STICKY_TYPE 32                      /* Squeak's blombs (ItemData +0x54; 0xae6cf4) */
++#define PICKUP_HEAL_TYPE 72                 /* Damian's GladiatorHealingItem (the type name table at 0xae78d8) */
+ 
+ static long hp_sum(uint8_t *src) {   /* debug: HP of every character (vtable 0x1209020) in src's object manager */
+     uint8_t *mgr = PTR(src, 0x20); void **arr = mgr ? PTR(mgr, 0x28) : NULL; int cnt = mgr ? I32(mgr, 0x34) : 0; long s = 0;
+@@ -130,6 +141,23 @@ static void sticky_update(uint8_t *it, uint8_t *d, void *trig) {
+     my_sticky_blow(it);
+     ((void (*)(void *))B(0xb6e0b0))(it);
+ }
++static int g_pick_ring[64], g_pick_pos, g_pick_last = -1; static long g_npick, g_npick_dead;
++static void pickup_update(uint8_t *it, uint8_t *d) {   /* type 72, after the client's update (see the header) */
++    uint8_t *pk = PTR(it, 0xa8); void *se = PTR(d, 0x70); int t = now_of(it);
++    if (!U8(it, 0x90) || I32(it, 0x9c) > 0 || !pk) return;   /* not picked up, or still flying to the picker */
++    if (t < g_pick_last) { for (int i = 0; i < 64; i++) g_pick_ring[i] = 0; }   /* a new battle: ids restart */
++    g_pick_last = t;
++    if (seen(g_pick_ring, 64, &g_pick_pos, I32(it, 8))) return;
++    int alive = *(uint8_t **)pk == B(0x1209020) && I32(pk, 0x3c4) > 0, hp = alive ? I32(pk, 0x3c4) : 0;
++    busy = 1;
++    if (alive && se) ((void (*)(void *, void *, int, int, void *, void *, int, int, int, int, int))B(0xb35dd0))(
++        pk, se, ((geti_t)B(0xb6a754))(it), ((geti_t)B(0xb6a820))(it), it, PTR(it, 0xb0), I32(it, 0xb8), 0, -1, -1, 0);
++    ((void (*)(void *))B(0xb6e0b0))(it);
++    busy = 0;
++    if (alive) g_npick++; else g_npick_dead++;
++    if (g_superfix_dbg) LOG("[superfix] item %d (data %d) picked up by ch %d (%s): hp %d -> %d, tick %d\n", I32(it, 8), I32(d, 0x20),
++                            I32(pk, 8), alive ? "status given" : "dead: nothing", hp, alive ? I32(pk, 0x3c4) : 0, t);
++}
+ static void my_item_update(uint8_t *it, void *x1, void *x2, void *x3) {
+     uint8_t *d = it ? data_of(it) : NULL;
+     int on = g_superfix && g_superfix_items && d && !busy && mode();
+@@ -137,6 +165,7 @@ static void my_item_update(uint8_t *it, void *x1, void *x2, void *x3) {
+     o_item_update(it, x1, x2, x3);
+     if (!on) return;
+     int type = I32(d, 0x54), id = I32(d, 0x20); void *trig = PTR(d, 0x60);
++    if (type == PICKUP_HEAL_TYPE) { pickup_update(it, d); return; }   /* issue #64 (no TriggerAreaEffect) */
+     if (!trig || id == BOMB_ITEM || id == OC_BOMB_ITEM) return;
+     static int ring2[64], pos2;   /* debug: where each trap lies once armed (the audit's target stands still) */
+     if (g_superfix_dbg && type >= 0 && type < 64 && ((FUSE_TYPES >> type) & 1) && I32(it, 0x94) <= 0 && !seen(ring2, 64, &pos2, I32(it, 8))) {
+@@ -231,5 +260,5 @@ void superfix_items_install(void) {
+     else LOG("[superfix] items: 0xb74c00 is not the hugger attach: Otis' super damage off\n");
+     LOG("[superfix] items installed (item trigger areas, sticky blombs, area chains, hugger hit)\n");
+ }
+-void superfix_items_status(void) { LOG("[superfix] items: trigger areas %ld (fuse) + %ld (sign); blombs blown %ld (%ld by their fuse); chain areas %ld (items %ld, %ld expired early); hugger hits %ld\n",
+-                                       g_ntrig, g_nsign, g_nsticky, g_nsticky_fuse, g_nchain, g_nchain_item, g_nchain_early, g_nhug); }
++void superfix_items_status(void) { LOG("[superfix] items: trigger areas %ld (fuse) + %ld (sign); blombs blown %ld (%ld by their fuse); chain areas %ld (items %ld, %ld expired early); hugger hits %ld; pick-up heals %ld (%ld picker dead)\n",
++                                       g_ntrig, g_nsign, g_nsticky, g_nsticky_fuse, g_nchain, g_nchain_item, g_nchain_early, g_nhug, g_npick, g_npick_dead); }
+diff --git a/native/loader/superfix_moves.c b/native/loader/superfix_moves.c
+index 80e2b5e..65ef742 100644
+--- a/native/loader/superfix_moves.c
++++ b/native/loader/superfix_moves.c
+@@ -251,7 +251,27 @@ static void stop_mover(void *ch) {   /* env.c sf_stop: not charging, can stop, m
+ }
+ typedef struct { uint8_t *ch; int x, y; } BlinkHome;
+ static BlinkHome g_home[16]; static int g_nhome;
+-static long g_blink, g_blink_back, g_blink_hits;
++static long g_blink, g_blink_back, g_blink_hits, g_rewind_tp;
++/* ForceValidTile: (tx, ty) pulled back along the line towards (x0, y0), 50 u at a time, to the first walkable tile (at worst
++ * (x0, y0) itself). Also gadget.c's (issue #64: Max's bolt lands on a walkable tile) */
++void superfix_valid_spot(void *sim, int x0, int y0, int *tx, int *ty) {
++    double L = hypot(*tx - x0, *ty - y0), back = 0; int lx = *tx, ly = *ty;
++    while (sim && !walkable(sim, lx, ly) && back < L) {
++        back += 50; double f = (L - back) / (L > 1 ? L : 1); if (f < 0) f = 0;
++        lx = (int)floor(x0 + (*tx - x0) * f + 0.5); ly = (int)floor(y0 + (*ty - y0) * f + 0.5);
++    }
++    *tx = lx; *ty = ly;
++}
++/* a plain teleport of a living brawler to (tx, ty) (pulled back to a walkable tile from where it stands): the stop, then libg's
++ * position set. gadget.c's REWIND (issue #64: Max back to her bolt) */
++int superfix_teleport(uint8_t *ch, int tx, int ty) {
++    void *sim = ch ? sim_of(ch) : NULL; if (!sim || I32(ch, 0x3c4) <= 0) return 0;
++    superfix_valid_spot(sim, I32(ch, 0x38), I32(ch, 0x3c), &tx, &ty);
++    stop_mover(ch);
++    ((void (*)(void *, int, int, int))B(0xb6a61c))(ch, tx, ty, 0);
++    g_rewind_tp++;
++    return 1;
++}
+ static void blink_start(uint64_t *ctx) {   /* enter 0xb4ffe0(char, tx, ty, areaLeave, areaEnter, scaled damage, Damage, ...) */
+     uint64_t lr = ctx[9] - (uint64_t)g_libg->base;
+     if (!mode() || (lr != 0xb804a8 && lr != 0xb80334)) return;   /* the two calls in the Blink handler 0xb80110 */
+@@ -267,11 +287,7 @@ static void blink_start(uint64_t *ctx) {   /* enter 0xb4ffe0(char, tx, ty, areaL
+         if (k == g_nhome) { if (g_nhome >= 16) return; g_nhome++; }
+         g_home[k] = (BlinkHome){ch, x0, y0};
+     }
+-    double L = hypot(tx - x0, ty - y0), back = 0; int lx = tx, ly = ty;   /* ForceValidTile: back along the line */
+-    while (!walkable(sim, lx, ly) && back < L) {
+-        back += 50; double f = (L - back) / (L > 1 ? L : 1); if (f < 0) f = 0;
+-        lx = (int)floor(x0 + (tx - x0) * f + 0.5); ly = (int)floor(y0 + (ty - y0) * f + 0.5);
+-    }
++    int lx = tx, ly = ty; superfix_valid_spot(sim, x0, y0, &lx, &ly);   /* ForceValidTile: back along the line */
+     if (aLeave) spawn_area(ch, aLeave, x0, y0, 0, 2);
+     stop_mover(ch);
+     ((void (*)(void *, int, int, int))B(0xb6a61c))(ch, lx, ly, 0);
+@@ -916,12 +932,12 @@ void superfix_moves_install(void) {
+         n & 8 ? " change-area" : "", n & 16 ? " split" : "", n & 32 ? " split-water" : "", n & 64 ? " (character hits)" : "");
+ }
+ void superfix_moves_status(void) {
+-    LOG("[superfix] moves: flyjump %ld starts, %ld landings (%ld fallback); ww %ld starts, %ld hits; blink %ld (%ld back), %ld hits; "
++    LOG("[superfix] moves: flyjump %ld starts, %ld landings (%ld fallback); ww %ld starts, %ld hits; blink %ld (%ld back), %ld hits, rewind teleports %ld; "
+         "change character %ld (%ld left to battle_fix), with area %ld (%ld hits); cross slash %ld (%ld hits); split: rejoins %ld, "
+         "component ticks %ld, speed ticks %ld, legs retired without a head %ld, water walks %ld, put on land %ld; portals: %ld links, "
+         "%ld teleports (%ld shields); grapple: %ld character / %ld wall pulls, %ld landings (%ld stuns), %ld supers given back; "
+         "kit: %ld jumps, %ld on teammates (%ld heals), %ld on enemies (%ld stuns)\n", g_fj_start, g_fj_land,
+-        g_fj_fallback, g_ww_start, g_ww_hits, g_blink, g_blink_back, g_blink_hits, g_change, g_change_skip, g_change_area, g_change_hits,
++        g_fj_fallback, g_ww_start, g_ww_hits, g_blink, g_blink_back, g_blink_hits, g_rewind_tp, g_change, g_change_skip, g_change_area, g_change_hits,
+         g_slash_n, g_slash_hits, g_split_rejoin, g_split_comp, g_split_spd, g_split_orphan, g_split_wow, g_split_land, g_portal_links, g_portal_tp,
+         g_portal_shields, g_gr_char, g_gr_wall, g_gr_land, g_gr_stun, g_gr_reload, g_kit_jumps,
+         g_kit_ally, g_kit_heal, g_kit_enemy, g_kit_stun);
+diff --git a/native/loader/superfix_status.c b/native/loader/superfix_status.c
+index 762f919..efcac98 100644
+--- a/native/loader/superfix_status.c
++++ b/native/loader/superfix_status.c
+@@ -77,7 +77,8 @@ enum { SE_DUR = 0x98, SE_RATE = 0xa0, SE_SRCDEATH = 0xa8, SE_FIRST = 0xab, SE_ST
+        SE_HPBOOST = 0x114, SE_CANCEL_CHARGE_END = 0xa6,
+        /* bytes */
+        SE_CCIMM = 0x12a, SE_LOSECTL = 0x131, SE_TAUNT = 0x132, SE_FEAR = 0x133, SE_STASIS = 0x137, SE_SILENCE = 0x138,
+-       SE_FULLSTUN = 0x139 };
++       SE_FULLSTUN = 0x139,
++       SE_LEVITATE = 0x157 /* Levitation (BooleanAttributes, store 0xba4ce0; issue #64) */ };
+ /* character aggregates (manager +0xc4 / +0xec); issue #19: the bytes libg's own checks read. 0xb38b54 ("cannot act": the
+  * mover 0xb4790c and the fire code 0xb48bf4 / 0xb48c9c return early on it) = LosePlayerControl +0x984 || Stasis +0x987 ||
+  * stun ticks +0xe1c > 0 (the character update counts +0xe1c down at 0xb39a5c); the silence getter 0xb38dec (+0x988) blocks
+@@ -85,14 +86,24 @@ enum { SE_DUR = 0x98, SE_RATE = 0xa0, SE_SRCDEATH = 0xa8, SE_FIRST = 0xab, SE_ST
+  * int aggregates +0x958..+0x978 (speed, damage) have no reader that matters here (the mover never reads speed from them),
+  * so speed and damage are applied by env.c from superfix_status_mods() instead and those ints are left alone. */
+ enum { CH_SHIELD = 0x954, CH_INVIS = 0x97c, CH_CCIMM = 0x982, CH_LOSECTL = 0x984, CH_TAUNT = 0x985, CH_FEAR = 0x986,
+-       CH_STASIS = 0x987, CH_SILENCE = 0x988, CH_FULLSTUN = 0x989, CH_STUN_TICKS = 0xe1c };
++       CH_STASIS = 0x987, CH_SILENCE = 0x988, CH_FULLSTUN = 0x989, CH_STUN_TICKS = 0xe1c,
++       CH_LEVITATE = 0x9b0 };
++/* issue #64: char +0x9b0 is libg's "levitating" byte, read next to the leap / flight bytes +0x490 / +0x491: the hit test 0xb5033c
++ * (not hit unless the source has HitLevitating, AreaEffectData +0x204), the knockback 0xb49834 (skipped, b49884), the obstacle
++ * tests 0xb511c8 / 0xb51240 and the damage code (0xb41e00, 0xb3bfa4). Nothing in the client writes it (server code). It is
++ * set here while the character has a Levitation status that an area gave (Starr Nova's MagicalGirlLevitation from her
++ * gadget's MagicalGirlFlyArea: "allowing teammates to float inside of the area"). Janet's own JetpackGirlLevitation (her
++ * skill's self status) is left out: her flight is superfix_moves.c's FlyJump. Not in the observation (obs_v5 has no
++ * levitation bit; an enemy sees only the device): adding one is an OBS_VERSION change. */
+ /* taunt / fear (+0x985 / +0x986, the client aggregator 0xba7060's bytes): nothing in libg reads them (no AI or mover code);
+  * written for the record, the effect is env.c's (superfix_status_taunt) */
+ #define VT_CHAR 0x1209020
+ 
+-typedef struct {
+-    uint8_t *ch; int ch_id; void *data, *src_obj, *src_ch; int src_id, src_player, start, until, next;
++typedef struct {   /* lev: a Levitation status an area added (lev_from_area, decided at the add: src_obj is only compared
++                   * afterwards, the area may be gone while its status lives) */
++    uint8_t *ch; int ch_id; void *data, *src_obj, *src_ch; int src_id, src_player, start, until, next, lev;
+ } St;
++static long g_nlev;          /* issue #64: levitation starts (CH_LEVITATE) */
+ #define ST_MAX 512            /* 10 brawlers + summons x a few effects; Draco re-adds a 2-tick status every tick */
+ static St g_st[ST_MAX]; static int g_nst;
+ static long g_ntrail, g_nmech;
+@@ -117,7 +128,8 @@ static uint8_t *by_id(uint8_t *any, int id) {
+  * DamageBoost: damage percent; issue #19 final: Edgar's reload and super charge percents, Angelo's weapon switch), marked by superfix_status_area at the area's tick and read at the character's next update /
+  * damage: a mark lasts until the tick after it was made */
+ enum { ZN_SMOKE = 1, ZN_DMG = 2, ZN_RELOAD = 3, ZN_CHARGE = 4, ZN_SWITCH = 5,   /* 3-5: issue #19 final (area_extra) */
+-       ZN_SHIELD = 6 };   /* issue #55: a gadget's own ShieldPercent for ShieldTicks (superfix_status_shield) */
++       ZN_SHIELD = 6,     /* issue #55: a gadget's own ShieldPercent for ShieldTicks (superfix_status_shield) */
++       ZN_TOTEM = 7 };    /* issue #64: Bo's totem's charge percent (ExtraSuperCharge), added to ZN_CHARGE's */
+ typedef struct { uint8_t *ch; int ch_id, kind, val, until; } Zone;
+ #define ZN_MAX 64
+ static Zone g_zn[ZN_MAX]; static int g_nzn; static long g_nzone;
+@@ -151,22 +163,28 @@ static int zone_get(uint8_t *ch, int kind, int t) {
+ static void pierce_mark(uint8_t *src, uint8_t *target, void *data);   /* Pierce's marked shots (below) */
+ /* 0xba3230 */
+ void env_status_added(uint8_t *ch, void *data, int until) __attribute__((weak));   /* env.c */
++static int lev_from_area(void *data, void *src_obj) {   /* issue #64: a Levitation status whose source is an area */
++    if (!U8(data, SE_LEVITATE) || !src_obj || *(uint8_t **)src_obj == B(VT_CHAR)) return 0;
++    uint8_t *sd = ((getp_t)B(0xb6a384))(src_obj); return sd && I32(sd, 0x20) / 1000000 == 17;
++}
+ static void *my_status_add(void *cont, uint8_t *ch, void *data, int src_player, int team, void *src_obj, uint8_t *src_ch) {
+     (void)cont; (void)team;
+     if (!g_superfix || !mode() || !ch || !data) return NULL;
+     int dur = I32(data, SE_DUR), t = now_tick(ch);
+     if (dur <= 0 || t < 0) return NULL;
++    int lev = lev_from_area(data, src_obj);
+     if (env_status_added) env_status_added(ch, data, t + dur);   /* env.c: hypercharged Bolt's wall pass (RockUltiDamageReduction) */
+     if (!U8(data, SE_STACK))
+         for (int i = 0; i < g_nst; i++) if (g_st[i].ch == ch && g_st[i].ch_id == I32(ch, 8) && g_st[i].data == data) {
+             if (U8(data, SE_REFRESH) || g_st[i].until < t + dur) g_st[i].until = t + dur;   /* refresh: a new full duration */
++            g_st[i].lev |= lev;
+             g_nrefresh++; pierce_mark(src_ch, ch, data); return NULL;
+         }
+     if (g_nst >= ST_MAX) { g_nfull++; return NULL; }
+     int rate = I32(data, SE_RATE);
+     St *s = &g_st[g_nst++];
+     *s = (St){ch, I32(ch, 8), data, src_obj, src_ch, src_ch ? I32(src_ch, 8) : -1, src_player, t, t + dur,
+-              U8(data, SE_FIRST) || rate <= 0 ? t : t + rate};
++              U8(data, SE_FIRST) || rate <= 0 ? t : t + rate, lev};
+     g_nadd++;
+     if (g_superfix_dbg) LOG("[superfix] st: add %d to ch %d (hp %d) from ch %d player %d: %d ticks, tick %d, shield %d dmg %d heal %d invis %d, live %d\n",
+                             data_id(data), I32(ch, 8), I32(ch, 0x3c4), s->src_id, src_player, dur, t, I32(data, SE_SHIELD),
+@@ -351,7 +369,7 @@ static void on_char_update(uint64_t *ctx) {
+             }
+         }
+     }
+-    int shield = 0, invis = 0, any = 0, cc = 0, lose = 0, stasis = 0, silence = 0, full = 0, taunt = 0, fear = 0;
++    int shield = 0, invis = 0, any = 0, cc = 0, lose = 0, stasis = 0, silence = 0, full = 0, taunt = 0, fear = 0, lev = 0;
+     for (int i = 0; i < g_nst; i++) {
+         St *s = &g_st[i];
+         if (s->ch != ch || s->ch_id != I32(ch, 8)) continue;
+@@ -375,6 +393,12 @@ static void on_char_update(uint64_t *ctx) {
+         cc |= U8(s->data, SE_CCIMM); lose |= U8(s->data, SE_LOSECTL); stasis |= U8(s->data, SE_STASIS);
+         silence |= U8(s->data, SE_SILENCE); full |= U8(s->data, SE_FULLSTUN);
+         taunt |= U8(s->data, SE_TAUNT); fear |= U8(s->data, SE_FEAR);
++        lev |= s->lev;   /* issue #64: a Levitation status from an area (Starr Nova's device) */
++    }
++    if (lev != U8(ch, CH_LEVITATE)) {
++        if (lev) g_nlev++;
++        if (g_superfix_dbg) LOG("[superfix] st: ch %d levitating %d tick %d\n", I32(ch, 8), lev, t);
++        U8(ch, CH_LEVITATE) = lev;
+     }
+     (void)any;
+     {   int z = zone_get(ch, ZN_SMOKE, t); if (z > invis) invis = z; }   /* SmokeScreen areas (superfix_status_area) */
+@@ -575,7 +599,8 @@ int superfix_status_taunt(uint8_t *ch, int *x, int *y) {
+  * with no effect before, RockWeaponDamageBoost 50 and DaredevilSpUltiChargeRate 30 */
+ int superfix_status_charge_pct(uint8_t *ch) {
+     if (!g_superfix || !mode() || !is_char(ch)) return 0;
+-    return zone_get(ch, ZN_CHARGE, now_tick(ch)) + st_field(ch, SE_CHARGE, NULL);
++    int t = now_tick(ch);   /* the kinds add up [?]: Bo's totem with Edgar's hypercharge, a status's UltiChargeBoostPercent */
++    return zone_get(ch, ZN_CHARGE, t) + zone_get(ch, ZN_TOTEM, t) + st_field(ch, SE_CHARGE, NULL);
+ }
+ static int g_st_on;
+ int superfix_status_live(void) { return g_superfix && g_st_on; }   /* issue #46: gadget_self.c puts statuses in this store */
+@@ -626,8 +651,12 @@ static int same_area_immune(uint8_t *d, uint8_t *o, int t) {   /* 1 = skip o; el
+  *     lose-control. Its CustomValue (80) is not used (an immunity after the cleanse is not modelled).
+  *   Super charge areas, every SC_TICKS ticks while they live: CustomValue +0x13c through libg's super charge add
+  *     0xb4f7f8(ch, amount, 5, 0xb6a884(area)) (the call and the field of the shipped ChargeSuperFromProjectiles code 0xb2aa00,
+- *     without its modifier). ExtraSuperCharge 31 (Bo's totem): every brawler of the owner's team inside. EnemyChargeSuper 26 /
+- *     AllyChargeSuper 29 (personal passive areas; Buster for 29): the owner, while an enemy / a teammate brawler is inside.
++ *     without its modifier): EnemyChargeSuper 26 / AllyChargeSuper 29 (personal passive areas; Buster for 29), the owner,
++ *     while an enemy / a teammate brawler is inside.
++ *   ExtraSuperCharge 31 (Bo's totem, issue #64; the card's "increases allies' Super charging rate by <customValue1>%"):
++ *     every tick, each brawler of the owner's team inside holds a ZN_TOTEM mark of CustomValue (50) percent for that tick,
++ *     which superfix_status_charge_pct adds to the charge of each of his hits (env.c my_charge) [?] that "charging rate"
++ *     means the charge per hit (the client has no other super charge source to scale).
+  * Issue #19 final (libg reads none of these types; Max's drink projectiles: superfix.c my_spawn_area):
+  *   ChargeSuper 18 (Max's hypercharged drink, SpeedyOverchargedArea2: "granting them 25% Super charge"): once, every brawler
+  *     of the owner's team inside (Max too: the area has no owner rule) gets CustomValue (1000 = 25 % of the 4000 maximum)
+@@ -793,7 +822,7 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
+         }
+         return;
+     }
+-    int charge = type == 26 || type == 29 || type == 31, once = type == 23 || type == 18 || type == 57;
++    int charge = type == 26 || type == 29, once = type == 23 || type == 18 || type == 57;
+     AreaRec *r = area_rec(a, d, t, U8(d, 0x17c) && charge ? t + SC_TICKS : t);
+     if (t < r->next) return;
+     if (type == 3 || type == 17) {   /* once, through libg's Hot body */
+@@ -827,7 +856,9 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
+             I32(o, CH_STUN_TICKS) = 0; U8(o, CH_LOSECTL) = 0;
+             g_ncleanse++;
+             if (g_superfix_dbg) LOG("[superfix] st: cleanse ch %d tick %d: %d statuses removed\n", id, t, removed);
+-        } else if (((type == 31 || type == 18) && same && hero) || (type == 57 && same && hero && o != owner)) {
++        } else if (type == 31 && same && hero) {   /* issue #64: Bo's totem, "+CustomValue % Super charging rate" */
++            zone_mark(o, ZN_TOTEM, I32(d, 0x13c), t); g_ncharge++;
++        } else if ((type == 18 && same && hero) || (type == 57 && same && hero && o != owner)) {
+             int amount = type == 57 ? I32(d, 0x134) : I32(d, 0x13c);
+             if ((type == 18 || type == 57) && superfix_area_reach && superfix_area_reach(a, d, o) < 0) continue;
+             if (same_area_immune(d, o, t)) continue;
+@@ -865,7 +896,10 @@ void superfix_status_area(uint8_t *a) {
+      * statuses every tick while it lives: Sandy's SandStormOverchargedUltiAreaSpeedBuff (9 s) carries a Refreshable 10-tick
+      * SpeedBoostAbsolute 200, "increased movement speed while inside of Sandstorm" */
+     extern int hyper_area_oc_only(uint8_t *) __attribute__((weak));
+-    int rep = interval <= 0 && hyper_area_oc_only && hyper_area_oc_only(a), again = ar->n++ > 0;
++    /* issue #64: so does a summon's own area (superfix_summon_area: it lives as long as its summon) whose Self / Ally status is
++     * Refreshable: Starr Nova's MagicalGirlFlyArea (MagicalGirlLevitation, 10 ticks, "float inside of the area") */
++    int summon_own = !(((geti_t)B(0xb34de4))(owner) & 1) && ((self && U8(self, SE_REFRESH)) || (ally && U8(ally, SE_REFRESH)));
++    int rep = interval <= 0 && ((hyper_area_oc_only && hyper_area_oc_only(a)) || summon_own), again = ar->n++ > 0;
+     ar->next = interval > 0 ? t + interval : rep ? t + 1 : 0x7fffffff;
+     int n; void **v = objects(owner, &n); if (!v) return;
+     int team = ((geti_t)B(0xb6a820))(a), player = ((geti_t)B(0xb6a754))(a), ax = I32(a, 0x38), ay = I32(a, 0x3c);
+@@ -879,7 +913,7 @@ void superfix_status_area(uint8_t *a) {
+         if (dx * dx + dy * dy > r * r) continue;
+         void *st = o == owner ? self : ((geti_t)B(0xb6a820))(o) == team ? ally : enemy;
+         if (!st || (rep && again && st == enemy)) continue;
+-        if (g_superfix_dbg) LOG("[superfix] st: area %d (owner ch %d) tick %d: %s %d -> ch %d at %ld u\n", data_id(d), I32(owner, 8), t,
++        if (g_superfix_dbg && (!again || t % 20 == 0)) LOG("[superfix] st: area %d (owner ch %d) tick %d: %s %d -> ch %d at %ld u\n", data_id(d), I32(owner, 8), t,
+                                 st == enemy ? "enemy" : o == owner ? "self" : "ally", data_id(st), I32(o, 8), (long)__builtin_sqrt((double)(dx * dx + dy * dy)));
+         ((apply_t)B(0xb35dd0))(o, st, player, team, a, owner, I32(a, 0xf8), 0, -1, -1, 0);
+         hits++; g_narea_hits++;
+@@ -920,8 +954,8 @@ void superfix_status_status(void) {
+         "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
+         "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld "
+         "(same-area skips %ld), spin bullets %ld, charge-end cancels %ld; Pierce marked shots %ld, second-wave shots %ld (dropped %ld); "
+-        "trail ticks %ld, mech deploys %ld; oil circles %ld, lit %ld, fire areas %ld; Bolt speed adds %ld, trail areas %ld\n",
++        "trail ticks %ld, mech deploys %ld; oil circles %ld, lit %ld, fire areas %ld; Bolt speed adds %ld, trail areas %ld; levitation starts %ld\n",
+         g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal, g_narea_apply, g_narea_hits, g_nmount, g_nstun,
+         g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nimm_skip, g_nspin, g_ncharge_end,
+-        g_npierce_mark, g_npierce_wave2, g_npierce_drop, g_ntrail, g_nmech, g_noil_add, g_nignite, g_nfire, g_nrock_spd, g_nrock_trail);
++        g_npierce_mark, g_npierce_wave2, g_npierce_drop, g_ntrail, g_nmech, g_noil_add, g_nignite, g_nfire, g_nrock_spd, g_nrock_trail, g_nlev);
+ }

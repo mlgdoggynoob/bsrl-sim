@@ -170,3 +170,5 @@ and shadows, later),
 Eve Motherly Love (egg hatch), Jessie Recoil Spring (turret timer field), Lumi Grim and Frostbitten (slippery), Amber Fire
 Starters (petrol is server-only), Penny Trusty Spyglass (turret rules), Draco Upper Cut (knock-up state), Grom Radio Check
 (burst not in client code). Also the next-attack SubTypes 5, 6, 8, 13, 17, 18, 19, 25, 27, 28, 30: no client code.
+
+Batches 3b (summons) and 4 (Charge-skill gadgets): `issue46_b34.md`.

@@ -74,12 +74,19 @@ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind,
  * own max HP gave 304 a second (10 % of 3040: summons keep their power-1 HP here). Without a living summoner, and for other
  * scale types, -Damage % of the summon's max HP or -Damage, x P11_SCALE (power-1 numbers, issue #22). An area with
  * OverHealTicks (Pam's hypercharged turret, HotAndOverheals) heals allies at full HP too, and what goes past max HP becomes
- * a decaying shield (hyper.c hyper_overheal). */
+ * a decaying shield (hyper.c hyper_overheal). The table is emptied when a new battle is built (env.c env_on_build:
+ * superfix_summon_area_clear) and, as a fallback, when the character's sim changes or its tick goes back: character ids
+ * restart in a new battle, and an old entry with the same id would keep a new summon from getting its area (issue #64). */
 typedef struct { int ch_id, area_id; uint8_t *a; int next; } SumArea;
 #define SA_MAX 32
 static SumArea g_sa[SA_MAX]; static int g_nsa; static long g_nsum_area, g_nsum_end;
+static void *g_sa_sim; static int g_sa_tick;
+void superfix_summon_area_clear(void) { g_nsa = 0; g_sa_sim = NULL; g_sa_tick = 0; }
 void superfix_summon_area(uint8_t *ch) {
     if (!g_superfix || !mode() || !ch || !PTR(ch, 0x20) || I32(ch, 0x3c4) <= 0) return;
+    {   void *sim = ((void *(*)(void *))B(0xb6a378))(ch); int t = sim ? I32(sim, 0x10) : 0;   /* the character's sim and tick */
+        if (sim != g_sa_sim || t < g_sa_tick) g_nsa = 0;
+        g_sa_sim = sim; g_sa_tick = t; }
     uint8_t *cd = ((void *(*)(void *))B(0xb6a384))(ch), *ad = cd ? PTR(cd, 0xb8) : NULL;
     if (!ad || (((geti_t)B(0xb34de4))(ch) & 1)) return;
     int id = I32(ch, 8);
@@ -92,12 +99,29 @@ void superfix_summon_area(uint8_t *ch) {
     /* DamageScaleType 1 / 3 (8-Bit's DamageBoost, JetpackGirl's gadget tower): the create 0xb2aefc reads the owner's weapon / ulti
      * (0xb34da4(owner) +0x260 / +0x268, at 0xb2b01c / 0xb2b074) and crashes on a summon that has none (8-Bit's super:
      * SIGSEGV at 0xb0dc18). Then the area is made with DamageScaleType 0 (its Damage as is; DamageBoost reads its percent
-     * from the data, superfix_status.c) and the data's value is put back. */
+     * from the data, superfix_status.c) and the data's value is put back. A damaging one (Dot / Damage with DamageScaleType 1:
+     * Janet's gadget speaker) then gets the damage words libg's create computes for scale type 1 (0xb2b008..0xb2b050), with
+     * the summoner (the living brawler of the summon's player) in place of the summon: its weapon's Damage x the area's
+     * Damage / 100 (issue #46 batch 3b) [?] the server's owner for the scale; without it the hit was the raw 10. */
     int dst = I32(ad, 0x138); uint8_t *ocd = ((void *(*)(void *))B(0xb34da4))(ch);
     int noskill = (dst == 1 || dst == 3) && (!ocd || !PTR(ocd, dst == 1 ? 0x260 : 0x268));
     if (noskill) I32(ad, 0x138) = 0;
     uint8_t *a = my_spawn_area(ch, 0, 0, ad, 2, 0, 0, 1, NULL, NULL, NULL, 1);
     if (noskill) I32(ad, 0x138) = dst;
+    if (a && noskill && dst == 1 && (I32(ad, 0x118) == 0 || I32(ad, 0x118) == 2) && I32(ad, 0x134) > 0) {   /* Damage 0 / Dot 2 (env.c) */
+        void *sim = ((void *(*)(void *))B(0xb6a378))(ch), *h = sim ? PTR(sim, 0) : NULL; int nn = h ? I32(h, 0xc) : 0;
+        void **vv = h ? PTR(h, 0) : NULL; uint8_t *boss = NULL;
+        for (int k = 0; vv && k < nn && k < 4096 && !boss; k++) {
+            uint8_t *c = vv[k];
+            if (c && c != ch && (int)((uint8_t *)PTR(c, 0) - g_libg->base) == 0x1209020 && I32(c, 0x80) == I32(ch, 0x80) &&
+                I32(c, 0x3c4) > 0 && (((geti_t)B(0xb34de4))(c) & 1)) boss = c;
+        }
+        uint8_t *bcd = boss ? ((void *(*)(void *))B(0xb34da4))(boss) : NULL; void *ws = bcd ? PTR(bcd, 0x260) : NULL;
+        int dmg = ws ? (int)((int64_t)((geti_t)B(0xb0dc14))(ws) * I32(ad, 0x134) / 100) : 0;
+        if (dmg > 0) { I32(a, 0xe8) = dmg; if (I32(a, 0xec)) I32(a, 0xec) = dmg; }
+        static int nlog; if (nlog++ < 12 || g_superfix_dbg)
+            LOG("[superfix] summon area %d: damage %d from the summoner's weapon (%s)\n", I32(ad, 0x20), I32(a, 0xe8), boss ? "found" : "no summoner");
+    }
     if (g_nsa >= SA_MAX) g_nsa = 0;
     g_sa[g_nsa++] = (SumArea){id, a ? I32(a, 8) : -1, a, 0};
     if (a) g_nsum_area++;
@@ -108,7 +132,12 @@ void superfix_summon_area(uint8_t *ch) {
                               * 10000 capped, 1 s apart); the v68.279 row says -10 (wiki: 12 %), the live game heals 14 % */
 long superfix_area_reach(uint8_t *a, uint8_t *d, uint8_t *o) __attribute__((weak));   /* superfix_cc.c: libg's target test */
 void hyper_overheal(uint8_t *ch, int over, uint8_t *ad) __attribute__((weak));   /* hyper.c: Pam's hypercharged turret */
-static long g_nsum_hot;
+static long g_nsum_hot, g_nsum_dot;
+/* A summon's Dot area (JetpackGirlGadgetDamageArea, the only one: "deals damage per second to enemies around it"): libg's
+ * apply 0xb29494 runs once, at the spawn (the per-tick damage is server code), so it hit once. While it and its summon live,
+ * the apply runs again every SUM_DOT_EVERY ticks, +0xd0 / +0xd4 / +0xd8 saved and restored as hyper.c's hyper_area_tick does
+ * for the hypercharged Dot areas (issue #46 batch 3b). */
+#define SUM_DOT_EVERY 20   /* [?] the row has no interval: 1 s, the card's "per second" */
 static void summon_area_end(uint8_t *a, uint8_t *sim) {   /* from the area tick: the summon gone -> the area ends now */
     for (int i = 0; i < g_nsa; i++) if (g_sa[i].a == a && g_sa[i].area_id == I32(a, 8)) {
         uint8_t *d = PTR(a, 0x10), *own = PTR(a, 0x108); int now = I32(sim, 0x10);
@@ -134,6 +163,14 @@ static void summon_area_end(uint8_t *a, uint8_t *sim) {   /* from the area tick:
                 if (over && hp + amt > mx) hyper_overheal(c, hp + amt - (hp > mx ? hp : mx), d);   /* the part past max HP: a shield */
                 g_nsum_hot++;
                 if (g_superfix_dbg) LOG("[superfix] summon Hot area %d heals ch %d by %d tick %d\n", I32(d, 0x20), I32(c, 8), amt, now);
+            }
+        }
+        if (d && own && I32(d, 0x118) == 2 && I32(a, 0xe8) > 0 && I32(own, 0x3c4) > 0) {   /* a summon's Dot area (Janet's speaker) */
+            int d0 = I32(a, 0xd0), d4 = I32(a, 0xd4), d8 = I32(a, 0xd8), el = now - d0;
+            if (el > 0 && el % SUM_DOT_EVERY == 0 && now <= d8) {
+                ((void (*)(void *))B(0xb29494))(a);
+                I32(a, 0xd0) = d0; I32(a, 0xd4) = d4; I32(a, 0xd8) = d8; g_nsum_dot++;
+                if (g_superfix_dbg) LOG("[superfix] summon Dot area %d hit again after %d ticks, dmg %d\n", I32(d, 0x20), el, I32(a, 0xe8));
             }
         }
         uint8_t *owner = NULL;
@@ -223,8 +260,8 @@ void superfix_install(void) {
     extern void superfix_cc_install(void) __attribute__((weak)); if (superfix_cc_install) superfix_cc_install();   /* issue #19 */
 }
 void superfix_status(void) { LOG("[superfix] areas spawned %ld, skipped %ld; delayed damage %ld; slippery hits %ld; heal own %ld projectiles, %ld owners; "
-                                 "summon areas %ld (ended %ld, Hot heals %ld)\n", g_narea, g_narea_skip, g_ndelayed, g_nslip, g_nheal,
-                                 g_nheal_self, g_nsum_area, g_nsum_end, g_nsum_hot);
+                                 "summon areas %ld (ended %ld, Hot heals %ld, Dot hits %ld)\n", g_narea, g_narea_skip, g_ndelayed, g_nslip, g_nheal,
+                                 g_nheal_self, g_nsum_area, g_nsum_end, g_nsum_hot, g_nsum_dot);
     extern void superfix_items_status(void) __attribute__((weak)); if (superfix_items_status) superfix_items_status();
     extern void superfix_moves_status(void) __attribute__((weak)); if (superfix_moves_status) superfix_moves_status();
     extern void superfix_status_status(void) __attribute__((weak)); if (superfix_status_status) superfix_status_status();

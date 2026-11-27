@@ -13,17 +13,27 @@ CustomObject projectile / area / item rows it uses.
             set for the kind lacks, or says it deals damage while the host only heals. The host's set comes from the kind
             plus the data it spawns: area -> its area_effects_logic Type / Damage / PushbackStrength / StunTicks; shot,
             auto_aim, repeat -> damage plus the projectile's PushbackStrength / StunLengthMS / HealOwnPercent / ConsumableShield
-            (repeat with TargetFriends, Barley's potion: heal in place of damage); heal_now -> heal; super -> super charge
+            (repeat with TargetFriends, Barley's potion: heal in place of damage), and for a shot whose skill has
+            SummonedCharacters / a SpawnedItem also status / item (gadget.c arm_shot: the summon, its area and the item run
+            the game's own data; issue #64); heal_now -> heal; super -> super charge
             (Buzz's buoy also stun: the text is about his super's stun); item -> the item (Gale's WindWall also push:
             gadget.c's repel zone, REPEL); next / status (issue #46: libg's own next-attack branch, the statuses in
-            superfix's store) -> status; shield -> shield.
+            superfix's store) -> status; shield -> shield; summon (gadget.c SUMMON, issue #46 batch 3b) -> status (the summon,
+            its area and its HP loss run the game's own data), plus damage for an attacking summon (a FindEnemies pet or a
+            Mirage clone with an auto attack or a weapon, or a summon whose area is Dot / Damage with Damage: Janet's speaker,
+            superfix.c's summon Dot); the summon's area counts as the row's area for the trait flags,
+            and a FindEnemies pet carries "homing"; dash / charge (gadget.c DASH and CHARGE, issue #46 batch 4) -> move, plus
+            the effects of the areas they spawn (a dash row's AreaEffect, the charge skill's AreaEffectObject / AreaEffectObject2;
+            a DamageDrain area with Damage is damage), shield (an ActivationSelfStatusEffects status with ShieldPercent: Max),
+            reload (the skill's Reload flag, Shelly; dash SubType 3, Clancy).
             Status effects and items run the game's own data ("status" / "item" cover any text effect: not compared).
+            "heal" does not match "health" ("slowly loses its health" is no heal).
     aim     the text says closest / nearest / automatic target (AIM_WORDS) and the kind fires along the policy's aim
             (shot, repeat, and skill_area with an AimableArea skill). auto_aim and the repeat_shot rows with SubType 1 (one shot
             per target in Range) or 5 (Mico: at the nearest enemy in Range) pick the target themselves (REP_TARGETED).
     range   the accessory has RequireEnemyInRange or a Range, which only auto_aim and the REP_TARGETED repeat rows read
     count   the text describes one shot (ONE_WORDS) and the kind fires several, or the text says several (MULTI_WORDS) and
-            the kind fires one. Counts: shot NumBulletsInOneAttack, auto_aim 1, repeat ActiveTicks // CustomValue1 shots (1..20)
+            the kind fires one. Counts: shot NumBulletsInOneAttack (+ BURST: Rico's container's bullets), auto_aim 1, repeat ActiveTicks // CustomValue1 shots (1..20)
             x |CustomValue3| projectiles each for SubType 4 / 5; a SubType 1 row fires one shot per target (any number), so
             its text's "a shot" / "shots" is not compared.
     split   the text says it splits / breaks into several (SPLIT_TXT) and the projectile row has no ChainBullet(s) / ChainsToEnemies /
@@ -59,7 +69,7 @@ import argparse, os, re, sys
 
 # text -> effect category. Each keyword is a regex on the lower-cased EN text.
 EFFECT_WORDS = {
-    "heal": r"\bheal|restor|regenerat",          # "heals", "healing", "restores", "regenerates"
+    "heal": r"\bheal(?!th)|restor|regenerat",    # "heals", "healing", "restores", "regenerates"; not "health" (issue #64)
     "shield": r"\bshield",
     "speed": r"speed boost|movement speed|faster|\bspeed\b|\bhaste",
     "stun": r"\bstun",
@@ -102,18 +112,25 @@ def text_effects(text):
 
 
 WAVES = {"Gunslinger_Reload": 2}   # gadget.c g_waves: SHOT gadgets that fire more than one wave (issue #55)
+BURST = {"TrickshotDude_ShootAround": 8}   # libg + spawnfix.c BulletExplosion: the container's bullets when destroyed (its explosion's CustomValue)
 _true = lambda a, k: ((a or {}).get(k) or "").lower() == "true"
 _rep_targeted = lambda a: (a or {}).get("Type") == "repeat_shot" and (a or {}).get("SubType") in REP_TARGETED
 
 
-def host_effects(kind, area=None, projs=(), skill=None, acc=None):
-    """the effect categories the host's kind produces, from the data rows it spawns (dicts of CSV columns)"""
+def host_effects(kind, area=None, projs=(), skill=None, acc=None, summon=None, self_st=()):
+    """the effect categories the host's kind produces, from the data rows it spawns (dicts of CSV columns; self_st: a charge
+    skill's ActivationSelfStatusEffects rows)"""
     ex = set()
     if kind in ("shot", "auto_aim") or kind == "repeat" and not _true(acc, "TargetFriends"): ex.add("damage")
     if kind == "repeat" and _true(acc, "TargetFriends"): ex.add("heal")   # gadget.c rep_fire: Hitpoints x |CustomValue2| % to the potion's area
-    if kind == "skill_area" or kind == "area":
+    if kind in ("dash", "charge"):   # gadget.c DASH / CHARGE (issue #46 batch 4)
+        ex.add("move")
+        if any(_num(st.get("ShieldPercent")) > 0 for st in self_st): ex.add("shield")
+        if "reload" in ((skill or {}).get("BooleanAttributes") or "").lower().split(";"): ex.add("reload")
+        if kind == "dash" and (acc or {}).get("SubType") == "3" and _num((acc or {}).get("CustomValue3")) > 0: ex.add("reload")
+    if kind in ("skill_area", "area", "dash", "charge") and area:
         al = area or {}; ty = al.get("Type") or ""
-        if _num(al.get("Damage")) > 0 and ty == "Damage": ex.add("damage")
+        if _num(al.get("Damage")) > 0 and (ty == "Damage" or ty == "DamageDrain" and kind == "charge"): ex.add("damage")
         if ty in ("Heal", "Hot", "HealRegen", "HealAndDamage", "HotAndDot"): ex.add("heal")
         if ty == "Stun": ex.add("stun")              # KickerDude_Sweep: Type Stun, the stun time in CustomValue
         if ty in ("HealAndDamage", "HotAndDot") and _num(al.get("Damage")) > 0: ex.add("damage")
@@ -128,6 +145,8 @@ def host_effects(kind, area=None, projs=(), skill=None, acc=None):
         # the projectile skin's on-hit status effects and spawned areas run the game's own data (merged in by rows())
         if any(p.get(k) for k in ("SpawnCharacter", "OnEnemyHitActions", "StatusEffectEnemy", "StatusEffectAlly", "SpawnAreaEffectObject", "StatusEffectSelfOnHit")): ex.add("status")
     if skill and _num(skill.get("ConsumableShieldValue")) > 0: ex.add("shield")
+    if kind == "shot" and (skill or {}).get("SummonedCharacters"): ex.add("status")   # gadget.c arm_shot: the summon and its area
+    if kind == "shot" and (skill or {}).get("SpawnedItem"): ex.add("item")            # run the game's own data (issue #64)
     if kind == "area" and _num((acc or {}).get("ShieldPercent")) > 0 and _num((acc or {}).get("ShieldTicks")) > 0: ex.add("shield")   # gadget.c area_fire
     if kind == "item": ex.add("item")
     if kind == "item" and (acc or {}).get("Name") in REPEL: ex.add("push")
@@ -138,12 +157,22 @@ def host_effects(kind, area=None, projs=(), skill=None, acc=None):
     if kind in ("next", "status"): ex.add("status")   # gadget.c NEXT (libg's own SubType branch on the row's data, the row's
                                                      # StatusEffectEnemy) and gadget_self.c's statuses: the game's own data (issue #46)
     if kind == "shield": ex.add("shield")             # gadget_self.c SHIELD: the row's ShieldPercent for ShieldTicks
+    if kind == "summon":   # gadget.c SUMMON (issue #46 batch 3b): the summon runs the game's own data (its area, AI, HP loss)
+        ex.add("status")
+        if _summon_attacks(summon or {}): ex.add("damage")
+        if (area or {}).get("Type") in ("Dot", "Damage") and _num((area or {}).get("Damage")) > 0: ex.add("damage")   # its area hits
     return ex
+
+
+def _summon_attacks(c):
+    """a characters.csv summon that attacks: a walking pet (FindEnemies) or a clone (Mirage) with an auto attack or a weapon"""
+    return (c.get("Type") or "") in ("Minion_FindEnemies", "Minion_Mirage") and (_num(c.get("AutoAttackDamage")) > 0 or bool(c.get("WeaponSkill")))
 
 
 def host_count(kind, acc=None, skill=None):
     """shots fired per use (None: not a shot kind; a SubType 1 repeat row: at most this many, one per target)"""
-    if kind == "shot": return max(1, min(16, int(_num((skill or {}).get("NumBulletsInOneAttack")) or 1))) * WAVES.get((acc or {}).get("Name"), 1)
+    if kind == "shot": return (max(1, min(16, int(_num((skill or {}).get("NumBulletsInOneAttack")) or 1))) * WAVES.get((acc or {}).get("Name"), 1)
+                               + BURST.get((acc or {}).get("Name"), 0))
     if kind == "auto_aim": return 1   # gadget.c auto_aim_fire: one shot at the nearest enemy (issue #54)
     if kind == "repeat":   # gadget.c rep_fire: ActiveTicks // CustomValue1 shots (1..REP_MAX 20), SubType 4 / 5 x |CustomValue3| (<= 16)
         a = acc or {}; cv1 = _num(a.get("CustomValue1")); n = max(1, min(20, int(_num(a.get("ActiveTicks")) // cv1))) if cv1 > 0 else 1
@@ -152,7 +181,7 @@ def host_count(kind, acc=None, skill=None):
     return None
 
 
-def host_traits(kind, area=None, projs=(), skill=None, acc=None):
+def host_traits(kind, area=None, projs=(), skill=None, acc=None, summon=None):
     """behaviour data the host's kind spawns, as a set of "split" / "homing" / "speed" / "terrain" (from the projectile, area and
     skill rows; status effects and items are the game's own data, so they carry "speed" and "split")"""
     tr = set(); t = lambda d, k: (d.get(k) or "").lower() == "true"
@@ -171,6 +200,7 @@ def host_traits(kind, area=None, projs=(), skill=None, acc=None):
     if s.get("AreaEffectFollowType"): tr.add("homing")
     if _num(s.get("MovementSpeed")) > 0 or _num(s.get("ChargeSpeed")) > 0: tr.add("speed")
     if kind in ("status", "item"): tr.add("speed")
+    if kind == "summon" and (summon or {}).get("Type") == "Minion_FindEnemies": tr.add("homing")   # the pet seeks its target (libg's AI)
     return tr
 
 
@@ -335,9 +365,21 @@ def rows():
             if kind == "shot": projs = [pj(p) for p in (sk.get("Projectiles") or "").split(";") if p][:1]
             if kind == "skill_area":
                 ao = (sk.get("AreaEffectObject") or ""); area = T["alog"].get(T["askin"].get(ao, {}).get("Logic") or ao, {})
+            summon = T["char"].get(obj, {}) if kind == "summon" else None
+            areas2, self_st = [], []
+            if kind == "charge":   # gadget.c CHARGE: the skill (Skill, or activate_skill's CustomObject), its take-off / landing areas
+                sk = S.charge_skill(a) or {}; srow = {r[next(iter(r))]: r for r in S._status_rows()}
+                for k in ("AreaEffectObject", "AreaEffectObject2"):
+                    ao = sk.get(k) or ""
+                    if ao: areas2.append(T["alog"].get(T["askin"].get(ao, {}).get("Logic") or ao, {}))
+                area = areas2[0] if areas2 else {}
+                self_st = [srow.get(x, {}) for x in (sk.get("ActivationSelfStatusEffects") or "").split(";") if x]
+            if kind == "summon":   # the summon's own area (superfix_summon_area)
+                ao = summon.get("AreaEffect") or ""; area = T["alog"].get(T["askin"].get(ao, {}).get("Logic") or ao, {})
             it = T["item"].get(obj, {}) if kind == "item" else {}
-            hfx = host_effects(kind, area, projs, sk, a) if kind else None
-            tr = host_traits(kind, area, projs, sk, a)
+            hfx = host_effects(kind, area, projs, sk, a, summon, self_st) if kind else None
+            tr = host_traits(kind, area, projs, sk, a, summon)
+            for ar in areas2[1:]: hfx |= host_effects(kind, ar); tr |= host_traits(kind, ar)
             pq = list(projs)
             for p in projs:   # a chained projectile (Griff's piggy bank) spawns its own areas
                 if p.get("ChainBullet") in T["plog"] or p.get("ChainBullet") in T["pskin"]: pq.append(pj(p["ChainBullet"]))
@@ -395,6 +437,8 @@ def _check():
     assert "effect" not in ok("heal_now", "Heals 60% of the damage taken", hfx=host_effects("heal_now"))
     assert "heal" not in text_effects("slows all enemies hit and stops them healing momentarily")   # Wendy's grenade
     assert "effect" not in ok("area", "Slows enemies", hfx=host_effects("area", {"Type": "StatusEffect"}))
+    assert host_effects("summon", {"Type": "Dot", "Damage": "100"}) == {"status", "damage"}   # Janet's speaker: its Dot area
+    assert host_effects("summon", {"Type": "StatusEffect"}) == {"status"}                     # Bea's pot: a slow, no damage
     assert "effect" in ok("area", "Stuns enemies", hfx=host_effects("area", {"Type": "Damage", "Damage": "100"}))
     # aim
     assert "aim" in ok("repeat", "Pops a shot at the closest enemy", hfx={"damage"}, acc={"CustomValue1": "5"})
@@ -418,6 +462,10 @@ def _check():
     assert "effect" in ok("repeat", "Heals allies", acc={}, hfx=host_effects("repeat", acc={}))
     assert "push" in host_effects("item", acc={"Name": "Blower_Stopper"}) and "push" not in host_effects("item", acc={"Name": "x"})
     assert "stun" in host_effects("area", {"Type": "Stun"})
+    assert host_effects("charge", skill={"BooleanAttributes": "Reload"}) == {"move", "reload"} and host_effects("dash", acc={"SubType": "3", "CustomValue3": "100"}) == {"move", "reload"}
+    assert host_effects("charge", {"Type": "DamageDrain", "Damage": "2200"}) == {"move", "damage"} and "shield" in host_effects("charge", self_st=[{"ShieldPercent": "100"}])
+    assert host_effects("dash", {"Type": "Stun"}) == {"move", "stun"}
+    assert host_effects("shot", skill={"SpawnedItem": "I"}) == {"damage", "item"} and "status" in host_effects("shot", skill={"SummonedCharacters": "C"})
     # behaviour flags
     bf = lambda text, *tr: behaviour_flags(text, set(tr))
     assert bf("Fires a bullet that splits into 3 smaller bullets") == ["split"] and not bf("Fires a bullet that splits into 3", "split")
@@ -469,6 +517,11 @@ def _check():
     for c in ("Barkeep_HealPotion", "HookDude_Homing", "TntDude_Spin", "Leaper_Shotgun", "Blower_Stopper", "BarrelBot_Spin",
               "BeeSniper_ExtraBee", "FireDude_FlameShield", "KickerDude_Mines"):   # the last four since issue #63
         r = next(r for r in g if r["card"] == c); assert not r["masked"] and r["kind"] in ("repeat", "item") and not r["flags"], (c, r["flags"])
+    for c in ("BowDude_Totem", "Speedy_Rewind", "HammerDude_Pull", "AssaultShotgun_Bomb", "Ninja_InvisibleArea", "Gladiator_Amp",
+              "MagicalGirl_FlyArea"):   # issue #64: unmasked, their texts match the host
+        r = next(r for r in g if r["card"] == c); assert not r["masked"] and r["kind"] == "shot" and not r["flags"], (c, r["flags"])
+    assert "item" in next(r for r in g if r["card"] == "Gladiator_Amp")["host_effects"]
+    assert "status" in next(r for r in g if r["card"] == "BowDude_Totem")["host_effects"] and "heal" not in text_effects("loses its health")
     assert "heal" in next(r for r in g if r["card"] == "Barkeep_HealPotion")["host_effects"]
     assert "push" in next(r for r in g if r["card"] == "Blower_Stopper")["host_effects"]
     for c in ("TrickshotDude_BounceHeal", "TntDude_Spin", "Mummy_Acid", "AssaultShotgun_Bomb"):   # real splitting / speed / wall data
