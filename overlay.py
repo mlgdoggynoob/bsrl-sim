@@ -181,7 +181,7 @@ def _check():
     got = sorted(c for c, *_ in boxes(v, 0, cam, 1920, 864, P))
     assert got == sorted(["player", "enemy", "power_box", "teammate_projectile", "enemy_projectile", "power_cube"]), got
     img = draw(np.zeros((864, 1920, 3), np.uint8), boxes(v, 0, cam, 1920, 864, P), ground(p, cam, 1920, 864, P),
-               ["planner (display only): farm", "cube 3 tiles S: picking up"])
+               ["planner: farm", "cube 3 tiles S: picking up"])
     assert img.shape == (864, 1920, 3) and img.any()
     print("overlay check ok (%d boxes, path %d tiles)" % (len(got), len(p)))
 

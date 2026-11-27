@@ -121,7 +121,7 @@ def main(argv=None):
         except ValueError: return img
         bx = OV.boxes(view, 0, cam, W, H); pk = ov["pick"]; line, tgt, txt = (), None, [title]
         if pk is not None:
-            txt += ["planner (display only, the policy plays free): " + pk["rule"], pk["reason"]]
+            txt += ["planner: " + pk["rule"], pk["reason"]]
             if pk["kind"] != "none":
                 me = view.player_char(0)
                 tx, ty = (float(r.pl[pk["q"]].x), float(r.pl[pk["q"]].y)) if pk.get("q", -1) >= 0 else pk["pt"]
