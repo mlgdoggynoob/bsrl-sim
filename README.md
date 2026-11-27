@@ -86,24 +86,30 @@ comparable across runs.
 
 ### Planner rules, in priority order
 
-First match wins. Share = planner calls per rule (31,053 calls, 5-minute live check, noisy observations, 0.65 ms per call).
+First match wins. Share = planner calls per rule (31,053 calls, 5-minute live check, noisy observations, 0.65 ms per call;
+taken before rules 2, 6 and 11 and the strength test existed, so "—" = not measured yet).
 
 | # | When | Intent | Share |
 |---|---|---|---|
 | 1 | gas within 2 tiles | move out of the gas | 9.8 % |
-| 2 | low hp, an enemy within its reach | disengage: bush or away | 3.0 % |
-| 3 | known thrower behind a wall | engage it or leave its range | 0.1 % |
-| 4 | known short-range enemy close, I outrange it | keep my distance | 0.6 % |
-| 5 | two enemies fighting nearby | third-party the low one or go away | 0.4 % |
-| 6 | 2 teams left, gas in view | hold the gas edge | 10.3 % |
-| 7 | mate too far | regroup | 9.6 % |
-| 8 | weaker enemy, or one in range | engage | 5.4 % |
-| 9 | cube or safe box | farm | 21.4 % |
-| 10 | bush camper, no enemy | hide in a bush | 6.1 % |
-| 11 | map edge in view | explore away from it | 4.1 % |
-| 12 | otherwise | none: free play | 28.9 % |
+| 2 | gas within 5 tiles (not with 2 teams left) | rotate 5-7 tiles from it, early | — |
+| 3 | low hp, an enemy within its reach | disengage: bush or away | 3.0 % |
+| 4 | known thrower behind a wall | engage it or leave its range | 0.1 % |
+| 5 | known short-range enemy close, I outrange it | keep my distance | 0.6 % |
+| 6 | an enemy 1.5 x my strength within its reach | stay away | — |
+| 7 | two enemies fighting nearby | third-party the weaker one or go away | 0.4 % |
+| 8 | 2 teams left, gas in view | hold 3-4 tiles inside the gas edge | 10.3 % |
+| 9 | mate too far | regroup | 9.6 % |
+| 10 | weaker enemy (strength), one in range, or one to finish; in teams my mate's nearest | engage | 5.4 % |
+| 11 | weaker enemy next to the gas | hold its way out (pin) | — |
+| 12 | cube or safe box (fewer enemies near, edges early) | farm | 21.4 % |
+| 13 | bush camper, no enemy | hide in a bush | 6.1 % |
+| 14 | map edge in view | explore away from it | 4.1 % |
+| 15 | otherwise | none: free play | 28.9 % |
 
-Thresholds come from the sliders. Rules 3 and 4 need the enemy's brawler and skip enemies that were not identified.
+Thresholds come from the sliders. Rules 4 and 5 need the enemy's brawler and skip enemies that were not identified.
+Strength = HP now x (1 + 0.1 per power cube); an engage also needs 2 of 3 ammo bars and, below 80 % HP, an enemy in range
+(a finish below 25 % needs neither). Move targets are tiles reachable around the walls on the seen grid.
 Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 `hp 30 %, Gunslinger 9 tiles N (reach 11 tiles): disengaging S`. A higher rule can replace a held intent early.
 
@@ -135,7 +141,7 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | `env_v5.py` | Randomised Showdown battles on top of nirkt's `MAEnv`: random map, brawlers, solo / duo / trio teams, policy-controlled slots vs the native AI, team placement reward, behaviour-slider reward terms (per-slider normalisation from native-AI battles: `--native 1 --episodes F`, then `--norm F`), gadget loadouts (`with_gadgets`, trainer `--gadgets 1`, default off) and gadget readiness from the host (`Env.gadget` = self 3), hypercharge cards (`with_hyper`, trainer `--hyper 1`, default off) and hypercharge readiness (`Env.hyper` = self 4). `python -m env_v5 --check` |
 | `obs_v5.py` | The observation: `self` (8; self 3 = gadget ready, v5.7; self 4 = hypercharge ready, v5.8), `ent` (39 x 36 entity slots; area effects with radius and harms / helps / slows me; enemy / teammate brawler and projectile-owner identity (brawler stats + known flag, per-battle identity noise); wall / water between me and each player), `grid` (25 x 25 tile classes), `cond` (30: brawler stats, 12 slider weights, team size, cubes, players left), the intent block (11: kind one-hot, target offset, radius, time left; all zeros = free play); named slider presets (play-style modes: bush camper, aggressive, cube farmer, ...). Per-episode detector noise, latency and HUD masking. `python -m obs_v5` |
 | `intent.py` | Intents (per-second goals: move to, avoid, hold, engage, farm, regroup, hide): kind specs and end rules, the block encoder, the intent-following reward (signed progress, capped per intent), the random-valid sampler. `env_v5.Env.intents` runs them in battles (trainer `--intent-scale`, default 0 = off). `python -m intent` |
-| `planner.py` | Rule planner: 12 priority rules (gas, low HP, thrower behind a wall, keep away from a short-range enemy, fight / third party, endgame, regroup, engage, farm, hide, explore, none) on what the policy sees, thresholds from the sliders, rules needing the enemy's brawler skip unknown ones; each pick has a readable reason (replay frames, viz). Training rollouts: trainer `--p-plan` (default 0 = off; design 0.5) with preemption of held planner intents; `--eval-plan 1` = eval kind `evalp_plan` (planner vs free play, same seeds). `python -m planner` |
+| `planner.py` | Rule planner: 15 priority rules (gas, rotate, low HP, thrower behind a wall, keep away from a short-range enemy, outclassed, fight / third party, endgame, regroup, engage, pin, farm, hide, explore, none) on what the policy sees, a cube-aware strength test for fights, wall-aware move targets, thresholds from the sliders, rules needing the enemy's brawler skip unknown ones; each pick has a readable reason (replay frames, viz). Training rollouts: trainer `--p-plan` (default 0 = off; design 0.5) with preemption of held planner intents; `--eval-plan 1` = eval kind `evalp_plan` (planner vs free play, same seeds); its docstring ends with the `train_fast` command that fine-tunes a checkpoint on planner intents. `python -m planner` |
 | `export_policy.py` | Checkpoint -> ONNX policy for the BSRL bot (inputs s / ent / grid / h, fire head masked in the graph, metadata `spec`: obs version, shapes, sliders and presets, trained brawlers, every brawler's display name and stats for live identity) + a `.ref.npz` of torch outputs the bot's test replays. `python -m export_policy CKPT OUT.onnx --trained Sniper`, `--check` |
 | `policy_video.py` | A checkpoint's battles rendered by the real game client as MP4s: N battles, the best one motion-interpolated to 30 fps, loadouts from the run's `config.json`, brawlers turned to their aim (`facing_sync`). Procedure: [docs/RECORDING.md](docs/RECORDING.md). `xvfb-run -a python -m policy_video --ckpt CKPT --out DIR --tries 5`, `--check` |
 | `fast_obs.py`, `fast_act.py` | Batched, vectorised versions of the observation builder and the actor for the multi-process trainer (bit-equal to the reference paths). |
