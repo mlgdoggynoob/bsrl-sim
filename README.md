@@ -154,6 +154,7 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | `desc_values.py` | The numbers the game's card descriptions show (issue #55 step 2), from the game data: `<!path>` placeholders and libg's `<VALUEn>` codes for gadgets (`notes/desc_values.md`). `python -m desc_values`, `--check` |
 | `star_check.py` | One-boot check of the star power cards the host re-implements or libg attaches itself (issue #47): the loadout reaches the host, then per card a small scripted battle with a carrier and a control of the same brawler (damage taken, damage dealt, reload, periodic heal, heal and damage after a kill, speed below an hp line, trait speed and super at spawn), each effect against the card's own Value columns; `LIVE` = what `--star-powers 1` hands out besides `star_audit.LIVE`. `python -m star_check [--only A,B]`, `--check` |
 | `hyper_check.py` | One-boot check of hypercharge: the card reaches the host, charging from hits, fire 4 activates only at a full charge with the card, +speed / +damage / shield while active, the end after 5 s and normal speed after it, a hypercharged super deals at least the normal super's damage, `Env.hyper` agrees with the host. `python -m hyper_check [--brawler Piper]`, `--check` |
+| `gear_check.py` | One-boot check of gears (issue #51): per gear in `LIVE` a carrier and a control of the same brawler (damage below 50 % hp, the 900 shield, regen, bush speed, reload, super charge, gadget cooldown); `LIVE` = what `--gears 1` hands out. `python -m gear_check`, `--check` |
 | `live_check.py` | One-boot check of the host round: team reward, area effects (radius, kind), teammate respawn, HUD mask, live map tiles, cubes lost at a knock-out. |
 | `showdown_check.py` | Showdown rules (issue #21), played by the native AI in solo / duo / trio: the battle ends when one team is left, death cube drops, spawn protection after a respawn, the storm's ramp and gas heal cut, and with `--mods 3,5` meteors and healing mushrooms. `--check` without the host. |
 | `test_fast.py` | Equality and timing of the fast paths against the reference paths on real battles. |
@@ -165,8 +166,7 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | `update.sh` | Updates a checkout to the latest `main` (fast-forward, or a merge into your branch), then reruns `setup.sh`; `--check` runs the self-checks. |
 | `engine/` | nirkt's battle host and environment as one tree: `native/` (host sources, qemu patches), `py/` (`nbpc`, `models4.py`), `train/`, nirkt's vision-label tools; this project's changes applied. What came from where: `engine/NOTICE.md`. |
 | `engine/patches/` | Record of this project's changes to nirkt's host and camera rules (`training_round`, `fair_view`, `live_state`, `gadgets`, `charge`, `hypercharge`, `hypercharged_supers`, `hyper_supers_fix`, `area_gadgets`, `gadgets_batch2`, `showdown`, `showdown_leftovers`, `star_probe`, `star_card_hits`, `supers`, `status_movement`, `obs_invisibility`, `trio_respawn_gas`, `broken_supers`, `guessed_numbers`, `status_leftovers`, `meg_mech`, `split_and_paint`, `status_final`, `heal_scale`, `gears`, `repeat_spin_off`, `hyper_piper_bombs`, `hyper_supers_all`, `hyper_desc_match`, `desc_audit`, `gadget_damage`, `repeat_spin_rebuild`, `split_extras`, `hyper_unmodelled`, `gadgets_batch3`, `no_trains`, `bolt_overdrive`, `facing_sync`, `repeat_masked`, `star_powers2`, `masked_seven`, `summons_dashes`; already applied in `engine/`). |
-| `notes/` | Working notes from the sessions behind each host change (libg offsets, measurements, guesses); index and dates in `notes/README.md`. |
-| `pro_strategies.md` | Community Showdown habits and what each means for the observation / reward. |
+| `notes/` | Working notes from the sessions behind each host change (libg offsets, measurements, guesses); index and dates in `notes/README.md`; `notes/pro_strategies.md`: community Showdown habits and what each means for the observation / reward. |
 
 ## Vision models
 
@@ -206,10 +206,16 @@ changed and installs new Python requirements; the game files and qemu are kept. 
 the observation version changed (re-export policies for the bot with `export_policy.py`; old checkpoints still load).
 Before `update.sh` existed: `git pull` once, then `./update.sh`.
 
-Self-checks (no battle is booted; `obs_v5` / `env_v5` read the game's data tables, so they need the game files):
+Self-checks (no battle is booted; `obs_v5` / `env_v5` read the game's data tables, so they need the game files;
+`export_policy` needs `onnx`, `policy_video` needs `ffmpeg`). `./update.sh --check` runs all of them but `policy_video`:
 
 ```bash
-python -m obs_v5 && python -m intent && python -m planner && python -m model && python -m fast_obs && python -m env_v5 --check && python -m train_ppo --check && python -m scenarios --check && python -m gadget_check --check && python -m hyper_check --check && python -m charge_check --check && python -m showdown_check --check && python -m status_check --check && python -m super_audit --check && python -m star_audit --check && python -m star_check --check && python -m export_policy --check && python -m policy_video --check && python apply_noise.py --test
+python -m obs_v5 && python -m intent && python -m planner && python -m model && python -m fast_obs && python -m imitation
+python -m env_v5 --check && python -m train_ppo --check && python -m scenarios --check && python -m export_policy --check
+python -m gadget_check --check && python -m hyper_check --check && python -m charge_check --check && python -m gear_check --check
+python -m showdown_check --check && python -m status_check --check && python -m super_audit --check
+python -m star_audit --check && python -m star_check --check && python -m desc_audit --check && python -m desc_values --check
+python -m policy_video --check && python scorecard.py --check && python apply_noise.py --test
 ```
 
 Live checks (boot the host; each boot takes about 60-90 s):
@@ -223,6 +229,8 @@ python -m status_check                              # speed boosts, slows, stuns
 python -m showdown_check                            # team end, death cube drops, respawn protection, storm
 python -m star_audit                                # which star power cards libg still reads in battle
 python -m star_check                                # the star power cards the host re-implements (starfx.c): each effect against the card's Values
+python -m gear_check                                # each gear in gear_check.LIVE against a control without it
+python -m test_fast                                 # fast_obs / fast_act bit-equal to the reference paths
 python -m env_v5 --n 4 --minutes 2 --agents 10      # random-action benchmark
 ```
 

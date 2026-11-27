@@ -301,9 +301,10 @@ downloaded game build, default `work/`), `SIM_VENV`.
 - **Variables come out empty.** `env.sh` must have LF line endings (CRLF breaks every variable). From Windows, pass
   scripts to `wsl.exe ... bash -s` on stdin.
 - **Slow start.** One boot takes 60-90 s. Batch your checks into one run.
-- **The fire head never uses most gadgets.** The game build compiles gadget activation out, and the
-  host activates only the kinds `native/loader/gadget.c` implements (dash, heal over time, area at the brawler), so for every other
-  gadget the class stays masked. `python -m gadget_check` shows which kinds the built host publishes.
+- **The fire head never uses some gadgets.** The game build compiles gadget activation out, and the
+  host activates only the kinds `native/loader/gadget.c` implements (117 of the 213 gadgets, README "Notes"; the rows in
+  `g_masked` stay off), so for every other gadget the class stays masked. Training also needs `--gadgets 1`.
+  `python -m gadget_check` shows which kinds the built host publishes.
 - **The fire head never uses hypercharge.** It needs `--hyper 1` (players get their card) and a host built with
   `native/loader/hyper.c`. `python -m hyper_check` checks the built host.
 - **Every boot crashes at "loading 45%".** A game file is a Git LFS pointer, not the file (seen with `assets/sc/ui.sc`
