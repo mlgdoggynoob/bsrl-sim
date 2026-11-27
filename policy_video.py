@@ -13,7 +13,11 @@ Frames go to ffmpeg at 20 fps (one try<k>_20fps.mp4 per battle); the best battle
 motion-interpolated to --fps (policy_<fps>fps.mp4). episodes.json lists every battle (seed, rank, ticks, kills, file).
 Brawlers turn to their aim / walking direction: NBHOST_FACING=1 (set here unless already in the environment) switches on
 the host's facing_sync (env.c, engine/patches/facing_sync.patch); without it, or with a host built before it, every brawler
-faces the camera."""
+faces the camera.
+--overlay 1 (default 0) draws over every frame (overlay.py): a box with its showdown-vision det class tag above it for
+every entity the client renders, and the rule planner's pick (planner.RulePlanner on the policy's observation, re-asked
+every 10 decisions = 1 s): its rule and reason in a text panel, a white A* path over the walkable tiles from the policy to
+the pick's target. The planner is display only: the policy plays on intent none, as in the evals."""
 import argparse, json, os, subprocess, sys, time
 import numpy as np
 import torch
@@ -67,6 +71,7 @@ def check(a, feat):
         assert c is not None and c["seed"] == 1, k
     assert shutil.which("ffmpeg"), "ffmpeg not found (apt install ffmpeg)"
     assert os.environ.get("NBHOST_FACING") is not None
+    import overlay; overlay._check()                 # --overlay: boxes, path, drawing (synthetic state)
     print("policy_video check ok (features %s)" % feat)
 
 
@@ -79,6 +84,7 @@ def main(argv=None):
     ap.add_argument("--max-ticks", type=int, default=4000); ap.add_argument("--tick", type=int, default=1); ap.add_argument("--debug", type=int, default=0)
     for f in ("gadgets", "hyper", "star-powers", "gears"):
         ap.add_argument("--" + f, type=int, default=-1, help="1 / 0 = on / off; -1 = as the run's config.json (none: off)")
+    ap.add_argument("--overlay", type=int, default=0, help="1 = det-class boxes + the rule planner's pick and path drawn over the frames")
     ap.add_argument("--check", action="store_true", help="self-check without the host")
     a = ap.parse_args(argv)
     if not a.check and not (a.ckpt and a.out): ap.error("--ckpt and --out are required")
@@ -101,6 +107,33 @@ def main(argv=None):
     ob = O.ObsV5(noise=O.NOISE, seed=0, ticks=a.every * a.tick)
     T = lambda x, dt=torch.float32: torch.as_tensor(x).to(dt)
     z = np.zeros(HID, np.float32); h = z; hold = None; step = 0; n_ep = 0; ff = None; part = None; results = []; t0 = time.time()
+    ov = {"pick": None, "path": [], "n": 0}
+    if a.overlay:
+        import overlay as OV, planner as PL, state2 as S2
+        planner = PL.RulePlanner(noisy=True); title = "%s u%s" % (os.path.basename(os.path.dirname(os.path.abspath(a.ckpt))), ck.get("update"))
+
+    def overlay_frame(img):
+        """the frame with --overlay's boxes, planner text and path (overlay.py)"""
+        s0 = env.I[0]; r = s0.inst.resp
+        if not r.cam_valid: return img
+        cam = (float(r.cam_x), float(r.cam_y))
+        try: view = S2.StateView(s0.inst.state_bytes(), {}, None)
+        except ValueError: return img
+        bx = OV.boxes(view, 0, cam, W, H); pk = ov["pick"]; line, tgt, txt = (), None, [title]
+        if pk is not None:
+            txt += ["planner (display only, the policy plays free): " + pk["rule"], pk["reason"]]
+            if pk["kind"] != "none":
+                me = view.player_char(0)
+                tx, ty = (float(r.pl[pk["q"]].x), float(r.pl[pk["q"]].y)) if pk.get("q", -1) >= 0 else pk["pt"]
+                if me is not None:
+                    walk = s0.sl["walk"]; Ht, Wt = walk.shape
+                    a0 = (min(Wt - 1, max(0, int(me[3]) // 300)), min(Ht - 1, max(0, int(me[4]) // 300)))
+                    b0 = (min(Wt - 1, max(0, int(tx) // 300)), min(Ht - 1, max(0, int(ty) // 300)))
+                    if ov["path"][-1:] != [b0] or ov["path"][:1] != [a0]: ov["path"] = OV.path(walk, a0, b0)
+                    line = OV.ground(ov["path"], cam, W, H)
+                    if line: line[0] = OV.ground([(int(me[3]) / 300 - 0.5, int(me[4]) / 300 - 0.5)], cam, W, H)[0]
+                tgt = OV.ground([(tx / 300 - 0.5, ty / 300 - 0.5)], cam, W, H)[0]
+        return OV.draw(img, bx, line, txt, tgt)
 
     def open_ff(k):
         p = os.path.join(a.out, "try%d_20fps.mp4" % k)
@@ -114,14 +147,16 @@ def main(argv=None):
                 if ff: ff.stdin.close(); ff.wait()
                 results.append({"seed": r["seed"], "rank": r["rank"], "ticks": r["ticks"], "file": part, "kills": r["terms"].get("kills"),
                                 "frames": step}); print("[video] episode", json.dumps(results[-1]), flush=True)
-                ff = None; h = z; hold = None; step = 0
+                ff = None; h = z; hold = None; step = 0; ov.update(pick=None, path=[], n=0)
             n_ep = len(env.episodes)
             if all(s.state == "idle" for s in env.I): break
             if not len(ids): continue
             f = env.I[0].inst.pixels_rgba()
             if f is not None and f.shape[:2] == (H, W):
                 if ff is None: part, ff = open_ff(len(results))
-                ff.stdin.write(np.ascontiguousarray(f[::-1, :, :3]).tobytes())
+                img = np.ascontiguousarray(f[::-1, :, :3])
+                if a.overlay: img = overlay_frame(img)
+                ff.stdin.write(np.ascontiguousarray(img).tobytes())
             if step % a.every == 0 or hold is None:
                 o = ob.build(obs["vec"], obs["grid"], env.last_meta, ids, who=env.last_who, gadget=env.gadget(ids), hyper=env.hyper(ids))
                 s = policy_s(env, ids, o)
@@ -129,6 +164,9 @@ def main(argv=None):
                     lg, _, h2 = net(T(s), T(o["ent"]), T(o["grid"], torch.uint8), T(h[None]), T(priv(env, ids)))
                     _, _, A = dist_logp_ent(lg)
                 A = A.numpy(); h = h2.numpy()[0]; hold = A.copy(); hold[:, 1:] = 0   # in-between ticks: same move, no fire
+                if a.overlay and ov["n"] % 10 == 0:   # the planner's 1 Hz tick (design 4.4), display only
+                    ov["pick"] = planner.plan(env, env.I[0], 0, 0, env._world(env.I[0]), o, env.cond(ids))
+                if a.overlay: ov["n"] += 1
             else:
                 A = hold
             if a.debug and step % (a.every * 10) == 0:
