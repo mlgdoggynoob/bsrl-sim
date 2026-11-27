@@ -49,6 +49,7 @@ ffmpeg -loglevel error -y -i $SIM_WORK/video/RUN/try0_20fps.mp4 -vf "select='not
 | `--brawler`, `--loc` | Sniper (Piper), Survival604 | everyone's brawler and the Showdown map, as the trainer's flags |
 | `--every K` | 2 | the policy decides every K ticks (2 = as in training) and holds its move in between, with no fire |
 | `--max-ticks T` | 4000 | a battle ends after T ticks (200 s) |
+| `--overlay 1` | 0 | draw over every frame (`overlay.py`): a box with its showdown-vision det class tag above it for every entity the client renders (player, enemy, enemy_summon, power_box, power_cube, teammate_projectile = the policy's own shots, enemy_projectile), and the rule planner's pick, asked every second on the policy's observation: rule and reason in a text panel, a white A* path over the walkable tiles to its target. The planner is display only: the policy plays on intent none, as in the evals |
 | `--gadgets`, `--hyper`, `--star-powers`, `--gears` | -1 | 1 / 0 = on / off; -1 = as the run's `config.json` |
 
 `NBHOST_FACING=0` before the command renders the old front-facing look. `NBHOST_BIN=path` plays with another host binary
