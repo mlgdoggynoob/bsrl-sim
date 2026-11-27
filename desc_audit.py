@@ -13,11 +13,14 @@ CustomObject projectile / area / item rows it uses.
             set for the kind lacks, or says it deals damage while the host only heals. The host's set comes from the kind
             plus the data it spawns: area -> its area_effects_logic Type / Damage / PushbackStrength / StunTicks; shot,
             auto_aim, repeat -> damage plus the projectile's PushbackStrength / StunLengthMS / HealOwnPercent / ConsumableShield
-            (repeat with TargetFriends, Barley's potion: heal in place of damage); heal_now -> heal; super -> super charge
+            (repeat with TargetFriends, Barley's potion: heal in place of damage), and for a shot whose skill has
+            SummonedCharacters / a SpawnedItem also status / item (gadget.c arm_shot: the summon, its area and the item run
+            the game's own data; issue #64); heal_now -> heal; super -> super charge
             (Buzz's buoy also stun: the text is about his super's stun); item -> the item (Gale's WindWall also push:
             gadget.c's repel zone, REPEL); next / status (issue #46: libg's own next-attack branch, the statuses in
             superfix's store) -> status; shield -> shield.
             Status effects and items run the game's own data ("status" / "item" cover any text effect: not compared).
+            "heal" does not match "health" ("slowly loses its health" is no heal).
     aim     the text says closest / nearest / automatic target (AIM_WORDS) and the kind fires along the policy's aim
             (shot, repeat, and skill_area with an AimableArea skill). auto_aim and the repeat_shot rows with SubType 1 (one shot
             per target in Range) or 5 (Mico: at the nearest enemy in Range) pick the target themselves (REP_TARGETED).
@@ -44,7 +47,7 @@ import argparse, os, re, sys
 
 # text -> effect category. Each keyword is a regex on the lower-cased EN text.
 EFFECT_WORDS = {
-    "heal": r"\bheal|restor|regenerat",          # "heals", "healing", "restores", "regenerates"
+    "heal": r"\bheal(?!th)|restor|regenerat",    # "heals", "healing", "restores", "regenerates"; not "health" (issue #64)
     "shield": r"\bshield",
     "speed": r"speed boost|movement speed|faster|\bspeed\b|\bhaste",
     "stun": r"\bstun",
@@ -108,6 +111,8 @@ def host_effects(kind, area=None, projs=(), skill=None, acc=None):
         # the projectile skin's on-hit status effects and spawned areas run the game's own data (merged in by rows())
         if any(p.get(k) for k in ("SpawnCharacter", "OnEnemyHitActions", "StatusEffectEnemy", "StatusEffectAlly", "SpawnAreaEffectObject", "StatusEffectSelfOnHit")): ex.add("status")
     if skill and _num(skill.get("ConsumableShieldValue")) > 0: ex.add("shield")
+    if kind == "shot" and (skill or {}).get("SummonedCharacters"): ex.add("status")   # gadget.c arm_shot: the summon and its area
+    if kind == "shot" and (skill or {}).get("SpawnedItem"): ex.add("item")            # run the game's own data (issue #64)
     if kind == "area" and _num((acc or {}).get("ShieldPercent")) > 0 and _num((acc or {}).get("ShieldTicks")) > 0: ex.add("shield")   # gadget.c area_fire
     if kind == "item": ex.add("item")
     if kind == "item" and (acc or {}).get("Name") in REPEL: ex.add("push")
@@ -291,6 +296,7 @@ def _check():
     assert "effect" in ok("repeat", "Heals allies", acc={}, hfx=host_effects("repeat", acc={}))
     assert "push" in host_effects("item", acc={"Name": "Blower_Stopper"}) and "push" not in host_effects("item", acc={"Name": "x"})
     assert "stun" in host_effects("area", {"Type": "Stun"})
+    assert host_effects("shot", skill={"SpawnedItem": "I"}) == {"damage", "item"} and "status" in host_effects("shot", skill={"SummonedCharacters": "C"})
     # behaviour flags
     bf = lambda text, *tr: behaviour_flags(text, set(tr))
     assert bf("Fires a bullet that splits into 3 smaller bullets") == ["split"] and not bf("Fires a bullet that splits into 3", "split")
@@ -321,6 +327,11 @@ def _check():
     for c in ("Barkeep_HealPotion", "HookDude_Homing", "TntDude_Spin", "Leaper_Shotgun", "Blower_Stopper", "BarrelBot_Spin",
               "BeeSniper_ExtraBee", "FireDude_FlameShield", "KickerDude_Mines"):   # the last four since issue #63
         r = next(r for r in g if r["card"] == c); assert not r["masked"] and r["kind"] in ("repeat", "item") and not r["flags"], (c, r["flags"])
+    for c in ("BowDude_Totem", "Speedy_Rewind", "HammerDude_Pull", "AssaultShotgun_Bomb", "Ninja_InvisibleArea", "Gladiator_Amp",
+              "MagicalGirl_FlyArea"):   # issue #64: unmasked, their texts match the host
+        r = next(r for r in g if r["card"] == c); assert not r["masked"] and r["kind"] == "shot" and not r["flags"], (c, r["flags"])
+    assert "item" in next(r for r in g if r["card"] == "Gladiator_Amp")["host_effects"]
+    assert "status" in next(r for r in g if r["card"] == "BowDude_Totem")["host_effects"] and "heal" not in text_effects("loses its health")
     assert "heal" in next(r for r in g if r["card"] == "Barkeep_HealPotion")["host_effects"]
     assert "push" in next(r for r in g if r["card"] == "Blower_Stopper")["host_effects"]
     for c in ("TrickshotDude_BounceHeal", "TntDude_Spin", "Mummy_Acid", "AssaultShotgun_Bomb"):   # real splitting / speed / wall data

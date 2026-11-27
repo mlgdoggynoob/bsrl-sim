@@ -31,6 +31,16 @@
  *
  * Otis' super projectile deals no damage to the character it attaches its SilencerHugger to (b74c00): see superfix_hugger.
  *
+ * Pick-up heal items (type 72: Damian's GladiatorHealingItem, his gadget's microphone; issue #64): the client's update runs
+ * the pick-up (b6d710..b6dce0: CanBePickedUp, the nearest living character of the item's team within TriggerRangeSubTiles
+ * x 100 + its radius sets +0xa8 picker, +0x90 1 and a 250 ms flight +0x9c to it), but at the flight's end only types 9, 0x42
+ * and 3 have code: nothing reads StatusEffectAlly (ItemData +0x70) and the item stays. Re-implemented after the update: once
+ * the flight is over, the picker (alive) gets StatusEffectAlly through 0xb35dd0 with the area-status arguments (source
+ * player / team of the item, the item, its owner +0xb0, kind +0xb8), so superfix_status's store heals it (GladiatorGadgetHeal:
+ * Healing 1600, TriggerOnFirstTick), and the item is destroyed (0xb6e0b0, as for a blomb). A picker that died during the
+ * flight gets nothing [?]. libg's scan does not leave the thrower out (PickUpOnlyBySource is empty for this row), so Damian
+ * picks up his own microphone too [?] (the text says "the first teammate").
+ *
  * NB_SUPERFIX=0 turns this off with the rest of superfix; NB_SUPERFIX_ITEMS=0 only this part. */
 #include "nbhost.h"
 #include <stdlib.h>
@@ -58,6 +68,7 @@ static int busy;   /* our own spawns run 0xb29494 / update code again: no nested
                                              * 0x202 << 32, 0x4800 << 48; issue #63: was 0x4802020200005040, which left out type
                                              * 25, Tick's ClusterMine and Fang's KickerDudeMine, and took in 49) */
 #define STICKY_TYPE 32                      /* Squeak's blombs (ItemData +0x54; 0xae6cf4) */
+#define PICKUP_HEAL_TYPE 72                 /* Damian's GladiatorHealingItem (the type name table at 0xae78d8) */
 
 static long hp_sum(uint8_t *src) {   /* debug: HP of every character (vtable 0x1209020) in src's object manager */
     uint8_t *mgr = PTR(src, 0x20); void **arr = mgr ? PTR(mgr, 0x28) : NULL; int cnt = mgr ? I32(mgr, 0x34) : 0; long s = 0;
@@ -130,6 +141,23 @@ static void sticky_update(uint8_t *it, uint8_t *d, void *trig) {
     my_sticky_blow(it);
     ((void (*)(void *))B(0xb6e0b0))(it);
 }
+static int g_pick_ring[64], g_pick_pos, g_pick_last = -1; static long g_npick, g_npick_dead;
+static void pickup_update(uint8_t *it, uint8_t *d) {   /* type 72, after the client's update (see the header) */
+    uint8_t *pk = PTR(it, 0xa8); void *se = PTR(d, 0x70); int t = now_of(it);
+    if (!U8(it, 0x90) || I32(it, 0x9c) > 0 || !pk) return;   /* not picked up, or still flying to the picker */
+    if (t < g_pick_last) { for (int i = 0; i < 64; i++) g_pick_ring[i] = 0; }   /* a new battle: ids restart */
+    g_pick_last = t;
+    if (seen(g_pick_ring, 64, &g_pick_pos, I32(it, 8))) return;
+    int alive = *(uint8_t **)pk == B(0x1209020) && I32(pk, 0x3c4) > 0, hp = alive ? I32(pk, 0x3c4) : 0;
+    busy = 1;
+    if (alive && se) ((void (*)(void *, void *, int, int, void *, void *, int, int, int, int, int))B(0xb35dd0))(
+        pk, se, ((geti_t)B(0xb6a754))(it), ((geti_t)B(0xb6a820))(it), it, PTR(it, 0xb0), I32(it, 0xb8), 0, -1, -1, 0);
+    ((void (*)(void *))B(0xb6e0b0))(it);
+    busy = 0;
+    if (alive) g_npick++; else g_npick_dead++;
+    if (g_superfix_dbg) LOG("[superfix] item %d (data %d) picked up by ch %d (%s): hp %d -> %d, tick %d\n", I32(it, 8), I32(d, 0x20),
+                            I32(pk, 8), alive ? "status given" : "dead: nothing", hp, alive ? I32(pk, 0x3c4) : 0, t);
+}
 static void my_item_update(uint8_t *it, void *x1, void *x2, void *x3) {
     uint8_t *d = it ? data_of(it) : NULL;
     int on = g_superfix && g_superfix_items && d && !busy && mode();
@@ -137,6 +165,7 @@ static void my_item_update(uint8_t *it, void *x1, void *x2, void *x3) {
     o_item_update(it, x1, x2, x3);
     if (!on) return;
     int type = I32(d, 0x54), id = I32(d, 0x20); void *trig = PTR(d, 0x60);
+    if (type == PICKUP_HEAL_TYPE) { pickup_update(it, d); return; }   /* issue #64 (no TriggerAreaEffect) */
     if (!trig || id == BOMB_ITEM || id == OC_BOMB_ITEM) return;
     static int ring2[64], pos2;   /* debug: where each trap lies once armed (the audit's target stands still) */
     if (g_superfix_dbg && type >= 0 && type < 64 && ((FUSE_TYPES >> type) & 1) && I32(it, 0x94) <= 0 && !seen(ring2, 64, &pos2, I32(it, 8))) {
@@ -231,5 +260,5 @@ void superfix_items_install(void) {
     else LOG("[superfix] items: 0xb74c00 is not the hugger attach: Otis' super damage off\n");
     LOG("[superfix] items installed (item trigger areas, sticky blombs, area chains, hugger hit)\n");
 }
-void superfix_items_status(void) { LOG("[superfix] items: trigger areas %ld (fuse) + %ld (sign); blombs blown %ld (%ld by their fuse); chain areas %ld (items %ld, %ld expired early); hugger hits %ld\n",
-                                       g_ntrig, g_nsign, g_nsticky, g_nsticky_fuse, g_nchain, g_nchain_item, g_nchain_early, g_nhug); }
+void superfix_items_status(void) { LOG("[superfix] items: trigger areas %ld (fuse) + %ld (sign); blombs blown %ld (%ld by their fuse); chain areas %ld (items %ld, %ld expired early); hugger hits %ld; pick-up heals %ld (%ld picker dead)\n",
+                                       g_ntrig, g_nsign, g_nsticky, g_nsticky_fuse, g_nchain, g_nchain_item, g_nchain_early, g_nhug, g_npick, g_npick_dead); }

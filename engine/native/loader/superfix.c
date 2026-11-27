@@ -74,12 +74,19 @@ static void *my_spawn_area(uint8_t *ch, int extra, int w2, void *data, int kind,
  * own max HP gave 304 a second (10 % of 3040: summons keep their power-1 HP here). Without a living summoner, and for other
  * scale types, -Damage % of the summon's max HP or -Damage, x P11_SCALE (power-1 numbers, issue #22). An area with
  * OverHealTicks (Pam's hypercharged turret, HotAndOverheals) heals allies at full HP too, and what goes past max HP becomes
- * a decaying shield (hyper.c hyper_overheal). */
+ * a decaying shield (hyper.c hyper_overheal). The table is emptied when a new battle is built (env.c env_on_build:
+ * superfix_summon_area_clear) and, as a fallback, when the character's sim changes or its tick goes back: character ids
+ * restart in a new battle, and an old entry with the same id would keep a new summon from getting its area (issue #64). */
 typedef struct { int ch_id, area_id; uint8_t *a; int next; } SumArea;
 #define SA_MAX 32
 static SumArea g_sa[SA_MAX]; static int g_nsa; static long g_nsum_area, g_nsum_end;
+static void *g_sa_sim; static int g_sa_tick;
+void superfix_summon_area_clear(void) { g_nsa = 0; g_sa_sim = NULL; g_sa_tick = 0; }
 void superfix_summon_area(uint8_t *ch) {
     if (!g_superfix || !mode() || !ch || !PTR(ch, 0x20) || I32(ch, 0x3c4) <= 0) return;
+    {   void *sim = ((void *(*)(void *))B(0xb6a378))(ch); int t = sim ? I32(sim, 0x10) : 0;   /* the character's sim and tick */
+        if (sim != g_sa_sim || t < g_sa_tick) g_nsa = 0;
+        g_sa_sim = sim; g_sa_tick = t; }
     uint8_t *cd = ((void *(*)(void *))B(0xb6a384))(ch), *ad = cd ? PTR(cd, 0xb8) : NULL;
     if (!ad || (((geti_t)B(0xb34de4))(ch) & 1)) return;
     int id = I32(ch, 8);

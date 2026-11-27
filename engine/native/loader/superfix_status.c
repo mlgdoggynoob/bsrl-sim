@@ -77,7 +77,8 @@ enum { SE_DUR = 0x98, SE_RATE = 0xa0, SE_SRCDEATH = 0xa8, SE_FIRST = 0xab, SE_ST
        SE_HPBOOST = 0x114, SE_CANCEL_CHARGE_END = 0xa6,
        /* bytes */
        SE_CCIMM = 0x12a, SE_LOSECTL = 0x131, SE_TAUNT = 0x132, SE_FEAR = 0x133, SE_STASIS = 0x137, SE_SILENCE = 0x138,
-       SE_FULLSTUN = 0x139 };
+       SE_FULLSTUN = 0x139,
+       SE_LEVITATE = 0x157 /* Levitation (BooleanAttributes, store 0xba4ce0; issue #64) */ };
 /* character aggregates (manager +0xc4 / +0xec); issue #19: the bytes libg's own checks read. 0xb38b54 ("cannot act": the
  * mover 0xb4790c and the fire code 0xb48bf4 / 0xb48c9c return early on it) = LosePlayerControl +0x984 || Stasis +0x987 ||
  * stun ticks +0xe1c > 0 (the character update counts +0xe1c down at 0xb39a5c); the silence getter 0xb38dec (+0x988) blocks
@@ -85,14 +86,24 @@ enum { SE_DUR = 0x98, SE_RATE = 0xa0, SE_SRCDEATH = 0xa8, SE_FIRST = 0xab, SE_ST
  * int aggregates +0x958..+0x978 (speed, damage) have no reader that matters here (the mover never reads speed from them),
  * so speed and damage are applied by env.c from superfix_status_mods() instead and those ints are left alone. */
 enum { CH_SHIELD = 0x954, CH_INVIS = 0x97c, CH_CCIMM = 0x982, CH_LOSECTL = 0x984, CH_TAUNT = 0x985, CH_FEAR = 0x986,
-       CH_STASIS = 0x987, CH_SILENCE = 0x988, CH_FULLSTUN = 0x989, CH_STUN_TICKS = 0xe1c };
+       CH_STASIS = 0x987, CH_SILENCE = 0x988, CH_FULLSTUN = 0x989, CH_STUN_TICKS = 0xe1c,
+       CH_LEVITATE = 0x9b0 };
+/* issue #64: char +0x9b0 is libg's "levitating" byte, read next to the leap / flight bytes +0x490 / +0x491: the hit test 0xb5033c
+ * (not hit unless the source has HitLevitating, AreaEffectData +0x204), the knockback 0xb49834 (skipped, b49884), the obstacle
+ * tests 0xb511c8 / 0xb51240 and the damage code (0xb41e00, 0xb3bfa4). Nothing in the client writes it (server code). It is
+ * set here while the character has a Levitation status that an area gave (Starr Nova's MagicalGirlLevitation from her
+ * gadget's MagicalGirlFlyArea: "allowing teammates to float inside of the area"). Janet's own JetpackGirlLevitation (her
+ * skill's self status) is left out: her flight is superfix_moves.c's FlyJump. Not in the observation (obs_v5 has no
+ * levitation bit; an enemy sees only the device): adding one is an OBS_VERSION change. */
 /* taunt / fear (+0x985 / +0x986, the client aggregator 0xba7060's bytes): nothing in libg reads them (no AI or mover code);
  * written for the record, the effect is env.c's (superfix_status_taunt) */
 #define VT_CHAR 0x1209020
 
-typedef struct {
-    uint8_t *ch; int ch_id; void *data, *src_obj, *src_ch; int src_id, src_player, start, until, next;
+typedef struct {   /* lev: a Levitation status an area added (lev_from_area, decided at the add: src_obj is only compared
+                   * afterwards, the area may be gone while its status lives) */
+    uint8_t *ch; int ch_id; void *data, *src_obj, *src_ch; int src_id, src_player, start, until, next, lev;
 } St;
+static long g_nlev;          /* issue #64: levitation starts (CH_LEVITATE) */
 #define ST_MAX 512            /* 10 brawlers + summons x a few effects; Draco re-adds a 2-tick status every tick */
 static St g_st[ST_MAX]; static int g_nst;
 static long g_ntrail, g_nmech;
@@ -117,7 +128,8 @@ static uint8_t *by_id(uint8_t *any, int id) {
  * DamageBoost: damage percent; issue #19 final: Edgar's reload and super charge percents, Angelo's weapon switch), marked by superfix_status_area at the area's tick and read at the character's next update /
  * damage: a mark lasts until the tick after it was made */
 enum { ZN_SMOKE = 1, ZN_DMG = 2, ZN_RELOAD = 3, ZN_CHARGE = 4, ZN_SWITCH = 5,   /* 3-5: issue #19 final (area_extra) */
-       ZN_SHIELD = 6 };   /* issue #55: a gadget's own ShieldPercent for ShieldTicks (superfix_status_shield) */
+       ZN_SHIELD = 6,     /* issue #55: a gadget's own ShieldPercent for ShieldTicks (superfix_status_shield) */
+       ZN_TOTEM = 7 };    /* issue #64: Bo's totem's charge percent (ExtraSuperCharge), added to ZN_CHARGE's */
 typedef struct { uint8_t *ch; int ch_id, kind, val, until; } Zone;
 #define ZN_MAX 64
 static Zone g_zn[ZN_MAX]; static int g_nzn; static long g_nzone;
@@ -151,22 +163,28 @@ static int zone_get(uint8_t *ch, int kind, int t) {
 static void pierce_mark(uint8_t *src, uint8_t *target, void *data);   /* Pierce's marked shots (below) */
 /* 0xba3230 */
 void env_status_added(uint8_t *ch, void *data, int until) __attribute__((weak));   /* env.c */
+static int lev_from_area(void *data, void *src_obj) {   /* issue #64: a Levitation status whose source is an area */
+    if (!U8(data, SE_LEVITATE) || !src_obj || *(uint8_t **)src_obj == B(VT_CHAR)) return 0;
+    uint8_t *sd = ((getp_t)B(0xb6a384))(src_obj); return sd && I32(sd, 0x20) / 1000000 == 17;
+}
 static void *my_status_add(void *cont, uint8_t *ch, void *data, int src_player, int team, void *src_obj, uint8_t *src_ch) {
     (void)cont; (void)team;
     if (!g_superfix || !mode() || !ch || !data) return NULL;
     int dur = I32(data, SE_DUR), t = now_tick(ch);
     if (dur <= 0 || t < 0) return NULL;
+    int lev = lev_from_area(data, src_obj);
     if (env_status_added) env_status_added(ch, data, t + dur);   /* env.c: hypercharged Bolt's wall pass (RockUltiDamageReduction) */
     if (!U8(data, SE_STACK))
         for (int i = 0; i < g_nst; i++) if (g_st[i].ch == ch && g_st[i].ch_id == I32(ch, 8) && g_st[i].data == data) {
             if (U8(data, SE_REFRESH) || g_st[i].until < t + dur) g_st[i].until = t + dur;   /* refresh: a new full duration */
+            g_st[i].lev |= lev;
             g_nrefresh++; pierce_mark(src_ch, ch, data); return NULL;
         }
     if (g_nst >= ST_MAX) { g_nfull++; return NULL; }
     int rate = I32(data, SE_RATE);
     St *s = &g_st[g_nst++];
     *s = (St){ch, I32(ch, 8), data, src_obj, src_ch, src_ch ? I32(src_ch, 8) : -1, src_player, t, t + dur,
-              U8(data, SE_FIRST) || rate <= 0 ? t : t + rate};
+              U8(data, SE_FIRST) || rate <= 0 ? t : t + rate, lev};
     g_nadd++;
     if (g_superfix_dbg) LOG("[superfix] st: add %d to ch %d (hp %d) from ch %d player %d: %d ticks, tick %d, shield %d dmg %d heal %d invis %d, live %d\n",
                             data_id(data), I32(ch, 8), I32(ch, 0x3c4), s->src_id, src_player, dur, t, I32(data, SE_SHIELD),
@@ -351,7 +369,7 @@ static void on_char_update(uint64_t *ctx) {
             }
         }
     }
-    int shield = 0, invis = 0, any = 0, cc = 0, lose = 0, stasis = 0, silence = 0, full = 0, taunt = 0, fear = 0;
+    int shield = 0, invis = 0, any = 0, cc = 0, lose = 0, stasis = 0, silence = 0, full = 0, taunt = 0, fear = 0, lev = 0;
     for (int i = 0; i < g_nst; i++) {
         St *s = &g_st[i];
         if (s->ch != ch || s->ch_id != I32(ch, 8)) continue;
@@ -375,6 +393,12 @@ static void on_char_update(uint64_t *ctx) {
         cc |= U8(s->data, SE_CCIMM); lose |= U8(s->data, SE_LOSECTL); stasis |= U8(s->data, SE_STASIS);
         silence |= U8(s->data, SE_SILENCE); full |= U8(s->data, SE_FULLSTUN);
         taunt |= U8(s->data, SE_TAUNT); fear |= U8(s->data, SE_FEAR);
+        lev |= s->lev;   /* issue #64: a Levitation status from an area (Starr Nova's device) */
+    }
+    if (lev != U8(ch, CH_LEVITATE)) {
+        if (lev) g_nlev++;
+        if (g_superfix_dbg) LOG("[superfix] st: ch %d levitating %d tick %d\n", I32(ch, 8), lev, t);
+        U8(ch, CH_LEVITATE) = lev;
     }
     (void)any;
     {   int z = zone_get(ch, ZN_SMOKE, t); if (z > invis) invis = z; }   /* SmokeScreen areas (superfix_status_area) */
@@ -575,7 +599,8 @@ int superfix_status_taunt(uint8_t *ch, int *x, int *y) {
  * with no effect before, RockWeaponDamageBoost 50 and DaredevilSpUltiChargeRate 30 */
 int superfix_status_charge_pct(uint8_t *ch) {
     if (!g_superfix || !mode() || !is_char(ch)) return 0;
-    return zone_get(ch, ZN_CHARGE, now_tick(ch)) + st_field(ch, SE_CHARGE, NULL);
+    int t = now_tick(ch);   /* the kinds add up [?]: Bo's totem with Edgar's hypercharge, a status's UltiChargeBoostPercent */
+    return zone_get(ch, ZN_CHARGE, t) + zone_get(ch, ZN_TOTEM, t) + st_field(ch, SE_CHARGE, NULL);
 }
 static int g_st_on;
 int superfix_status_live(void) { return g_superfix && g_st_on; }   /* issue #46: gadget_self.c puts statuses in this store */
@@ -626,8 +651,12 @@ static int same_area_immune(uint8_t *d, uint8_t *o, int t) {   /* 1 = skip o; el
  *     lose-control. Its CustomValue (80) is not used (an immunity after the cleanse is not modelled).
  *   Super charge areas, every SC_TICKS ticks while they live: CustomValue +0x13c through libg's super charge add
  *     0xb4f7f8(ch, amount, 5, 0xb6a884(area)) (the call and the field of the shipped ChargeSuperFromProjectiles code 0xb2aa00,
- *     without its modifier). ExtraSuperCharge 31 (Bo's totem): every brawler of the owner's team inside. EnemyChargeSuper 26 /
- *     AllyChargeSuper 29 (personal passive areas; Buster for 29): the owner, while an enemy / a teammate brawler is inside.
+ *     without its modifier): EnemyChargeSuper 26 / AllyChargeSuper 29 (personal passive areas; Buster for 29), the owner,
+ *     while an enemy / a teammate brawler is inside.
+ *   ExtraSuperCharge 31 (Bo's totem, issue #64; the card's "increases allies' Super charging rate by <customValue1>%"):
+ *     every tick, each brawler of the owner's team inside holds a ZN_TOTEM mark of CustomValue (50) percent for that tick,
+ *     which superfix_status_charge_pct adds to the charge of each of his hits (env.c my_charge) [?] that "charging rate"
+ *     means the charge per hit (the client has no other super charge source to scale).
  * Issue #19 final (libg reads none of these types; Max's drink projectiles: superfix.c my_spawn_area):
  *   ChargeSuper 18 (Max's hypercharged drink, SpeedyOverchargedArea2: "granting them 25% Super charge"): once, every brawler
  *     of the owner's team inside (Max too: the area has no owner rule) gets CustomValue (1000 = 25 % of the 4000 maximum)
@@ -793,7 +822,7 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
         }
         return;
     }
-    int charge = type == 26 || type == 29 || type == 31, once = type == 23 || type == 18 || type == 57;
+    int charge = type == 26 || type == 29, once = type == 23 || type == 18 || type == 57;
     AreaRec *r = area_rec(a, d, t, U8(d, 0x17c) && charge ? t + SC_TICKS : t);
     if (t < r->next) return;
     if (type == 3 || type == 17) {   /* once, through libg's Hot body */
@@ -827,7 +856,9 @@ static void area_extra(uint8_t *a, uint8_t *d, int type) {
             I32(o, CH_STUN_TICKS) = 0; U8(o, CH_LOSECTL) = 0;
             g_ncleanse++;
             if (g_superfix_dbg) LOG("[superfix] st: cleanse ch %d tick %d: %d statuses removed\n", id, t, removed);
-        } else if (((type == 31 || type == 18) && same && hero) || (type == 57 && same && hero && o != owner)) {
+        } else if (type == 31 && same && hero) {   /* issue #64: Bo's totem, "+CustomValue % Super charging rate" */
+            zone_mark(o, ZN_TOTEM, I32(d, 0x13c), t); g_ncharge++;
+        } else if ((type == 18 && same && hero) || (type == 57 && same && hero && o != owner)) {
             int amount = type == 57 ? I32(d, 0x134) : I32(d, 0x13c);
             if ((type == 18 || type == 57) && superfix_area_reach && superfix_area_reach(a, d, o) < 0) continue;
             if (same_area_immune(d, o, t)) continue;
@@ -865,7 +896,10 @@ void superfix_status_area(uint8_t *a) {
      * statuses every tick while it lives: Sandy's SandStormOverchargedUltiAreaSpeedBuff (9 s) carries a Refreshable 10-tick
      * SpeedBoostAbsolute 200, "increased movement speed while inside of Sandstorm" */
     extern int hyper_area_oc_only(uint8_t *) __attribute__((weak));
-    int rep = interval <= 0 && hyper_area_oc_only && hyper_area_oc_only(a), again = ar->n++ > 0;
+    /* issue #64: so does a summon's own area (superfix_summon_area: it lives as long as its summon) whose Self / Ally status is
+     * Refreshable: Starr Nova's MagicalGirlFlyArea (MagicalGirlLevitation, 10 ticks, "float inside of the area") */
+    int summon_own = !(((geti_t)B(0xb34de4))(owner) & 1) && ((self && U8(self, SE_REFRESH)) || (ally && U8(ally, SE_REFRESH)));
+    int rep = interval <= 0 && ((hyper_area_oc_only && hyper_area_oc_only(a)) || summon_own), again = ar->n++ > 0;
     ar->next = interval > 0 ? t + interval : rep ? t + 1 : 0x7fffffff;
     int n; void **v = objects(owner, &n); if (!v) return;
     int team = ((geti_t)B(0xb6a820))(a), player = ((geti_t)B(0xb6a754))(a), ax = I32(a, 0x38), ay = I32(a, 0x3c);
@@ -879,7 +913,7 @@ void superfix_status_area(uint8_t *a) {
         if (dx * dx + dy * dy > r * r) continue;
         void *st = o == owner ? self : ((geti_t)B(0xb6a820))(o) == team ? ally : enemy;
         if (!st || (rep && again && st == enemy)) continue;
-        if (g_superfix_dbg) LOG("[superfix] st: area %d (owner ch %d) tick %d: %s %d -> ch %d at %ld u\n", data_id(d), I32(owner, 8), t,
+        if (g_superfix_dbg && (!again || t % 20 == 0)) LOG("[superfix] st: area %d (owner ch %d) tick %d: %s %d -> ch %d at %ld u\n", data_id(d), I32(owner, 8), t,
                                 st == enemy ? "enemy" : o == owner ? "self" : "ally", data_id(st), I32(o, 8), (long)__builtin_sqrt((double)(dx * dx + dy * dy)));
         ((apply_t)B(0xb35dd0))(o, st, player, team, a, owner, I32(a, 0xf8), 0, -1, -1, 0);
         hits++; g_narea_hits++;
@@ -920,8 +954,8 @@ void superfix_status_status(void) {
         "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
         "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld "
         "(same-area skips %ld), spin bullets %ld, charge-end cancels %ld; Pierce marked shots %ld, second-wave shots %ld (dropped %ld); "
-        "trail ticks %ld, mech deploys %ld; oil circles %ld, lit %ld, fire areas %ld; Bolt speed adds %ld, trail areas %ld\n",
+        "trail ticks %ld, mech deploys %ld; oil circles %ld, lit %ld, fire areas %ld; Bolt speed adds %ld, trail areas %ld; levitation starts %ld\n",
         g_nadd, g_nrefresh, g_nfull, g_nexpire, g_nremove, g_nst, g_ndmg, g_nheal, g_narea_apply, g_narea_hits, g_nmount, g_nstun,
         g_nreload, g_nsteal, g_nsmoke_hits, g_nzone, g_nheal_area, g_ncleanse, g_ncharge, g_nimm_skip, g_nspin, g_ncharge_end,
-        g_npierce_mark, g_npierce_wave2, g_npierce_drop, g_ntrail, g_nmech, g_noil_add, g_nignite, g_nfire, g_nrock_spd, g_nrock_trail);
+        g_npierce_mark, g_npierce_wave2, g_npierce_drop, g_ntrail, g_nmech, g_noil_add, g_nignite, g_nfire, g_nrock_spd, g_nrock_trail, g_nlev);
 }

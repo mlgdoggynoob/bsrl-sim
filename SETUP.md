@@ -255,6 +255,20 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   (`env.c` rec_move; an hp-line change re-sends the move). `NB_STAR_FX=0` turns them off; `NB_STAR_VT=1` logs the calls of
   libg's lazy init 0xb2fe44 (notes/issue47.md). `NbeResp` star_* fields (card, effect, counts). `python -m star_check`.
   Notes: `notes/issue47.md`.
+- `masked_seven.patch` (issue #64, a diff on top of `star_powers2.patch`): the last seven masked gadgets work and are
+  unmasked. `gadget.c`: a SHOT gadget's projectiles carry the skill's summon or item the way libg's attack path arms them
+  (`arm_shot`: 0xb703c8 / 0xb79130, which the plain spawn 0xb78190 skips), so Bo's totem, Leon's smoke, Starr Nova's fly
+  area, Spike's cactus and Damian's microphone appear where the shot ends; a skill with UseWeaponAmmo (Frank's pull,
+  Shelly's Clay Pigeons, ...) needs and spends one ammo bar; the REWIND kind throws Max's bolt (whose end spawns its
+  SpeedyRewindArea) and, when the area runs out or at a second fire (the reactivation; no cooldown while the rewind is
+  pending), teleports her back to it and restores her HP at the throw. `superfix_moves.c`: `superfix_teleport` and
+  `superfix_valid_spot` (a walkable spot). `superfix_status.c`: a Levitation status from an area sets libg's levitating byte (+0x9b0), so
+  enemy shots pass through Starr Nova's floating teammates; a summon's area with a Refreshable ally status re-applies every
+  tick; Bo's ExtraSuperCharge area adds +CustomValue % to the charge of each hit while inside. `superfix_items.c`: a pick-up heal item (type 72)
+  gives its StatusEffectAlly to whoever picks it up. `superfix.c` / `env.c`: the summon-area table is emptied when a new
+  battle is built (character ids restart; an old entry kept a new summon from getting its area). Frank's and Griff's masks were
+  stale (both already worked). Notes:
+  `notes/issue64.md`. `python -m super_audit --gadget`, `python -m gadget_check`.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).
