@@ -10,7 +10,7 @@
 <p align="center">
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white">
   <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white">
-  <img alt="Observation v5.9" src="https://img.shields.io/badge/observation-v5.9-blue">
+  <img alt="Observation v5.9" src="https://img.shields.io/badge/observation-v5.10-blue">
   <a href="LICENSE"><img alt="Licence: AGPL v3" src="https://img.shields.io/badge/licence-AGPL--3.0-green"></a>
 </p>
 
@@ -58,7 +58,7 @@ intent (or none = free play), with a readable reason. The intent goes into the o
 
 ```mermaid
 flowchart LR
-    H["Game host"] -->|"obs + state"| O["Observation v5.9<br/>self · cond · intent · 39 entity rows · 25×25 grid"]
+    H["Game host"] -->|"obs + state"| O["Observation v5.10<br/>self · cond · intent · 39 entity rows · 25×25 grid"]
     O -->|"1 / s"| PL["Rule planner"] -->|"intent"| O
     O -->|"10 / s"| P["Policy (GRU)"] -->|"actions"| H
 ```
@@ -133,15 +133,16 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | v5.7 | fire head: 4th class gadget (zero-initialised `fire_x` head), allowed only while self 3 (gadget ready) is set | `fire_x` zeros, act the same while self 3 is 0 |
 | v5.8 | fire head: 5th class hypercharge, allowed only while self 4 (hypercharge ready) is set | act the same while self 4 is 0 |
 | v5.9 | invisible enemies are left out of the observation beyond their reveal distance (host `encode.c`; no shape change) | load unchanged |
+| v5.10 | power cubes held per enemy / teammate player row + known flag (entity rows 36 → 38); intent kinds super and check_bush (block 11 → 13) | zero-padded (the new one-hot columns inserted before dx, dy), act the same |
 
 ## What is here
 
 | File | What it does |
 |---|---|
 | `env_v5.py` | Randomised Showdown battles on top of nirkt's `MAEnv`: random map, brawlers, solo / duo / trio teams, policy-controlled slots vs the native AI, team placement reward, behaviour-slider reward terms (per-slider normalisation from native-AI battles: `--native 1 --episodes F`, then `--norm F`), gadget loadouts (`with_gadgets`, trainer `--gadgets 1`, default off) and gadget readiness from the host (`Env.gadget` = self 3), hypercharge cards (`with_hyper`, trainer `--hyper 1`, default off) and hypercharge readiness (`Env.hyper` = self 4). `python -m env_v5 --check` |
-| `obs_v5.py` | The observation: `self` (8; self 3 = gadget ready, v5.7; self 4 = hypercharge ready, v5.8), `ent` (39 x 36 entity slots; area effects with radius and harms / helps / slows me; enemy / teammate brawler and projectile-owner identity (brawler stats + known flag, per-battle identity noise); wall / water between me and each player), `grid` (25 x 25 tile classes), `cond` (30: brawler stats, 12 slider weights, team size, cubes, players left), the intent block (11: kind one-hot, target offset, radius, time left; all zeros = free play); named slider presets (play-style modes: bush camper, aggressive, cube farmer, ...). Per-episode detector noise, latency and HUD masking. `python -m obs_v5` |
-| `intent.py` | Intents (per-second goals: move to, avoid, hold, engage, farm, regroup, hide): kind specs and end rules, the block encoder, the intent-following reward (signed progress, capped per intent), the random-valid sampler. `env_v5.Env.intents` runs them in battles (trainer `--intent-scale`, default 0 = off). `python -m intent` |
-| `planner.py` | Rule planner: 15 priority rules (gas, rotate, low HP, thrower behind a wall, keep away from a short-range enemy, outclassed, fight / third party, endgame, regroup, engage, pin, farm, hide, explore, none) on what the policy sees, a cube-aware strength test for fights, wall-aware move targets, thresholds from the sliders, rules needing the enemy's brawler skip unknown ones; each pick has a readable reason (replay frames, viz). Training rollouts: trainer `--p-plan` (default 0 = off; design 0.5) with preemption of held planner intents; `--eval-plan 1` = eval kind `evalp_plan` (planner vs free play, same seeds); its docstring ends with the `train_fast` command that fine-tunes a checkpoint on planner intents. `python -m planner` |
+| `obs_v5.py` | The observation: `self` (8; self 3 = gadget ready, v5.7; self 4 = hypercharge ready, v5.8), `ent` (39 x 38 entity slots; area effects with radius and harms / helps / slows me; enemy / teammate brawler and projectile-owner identity (brawler stats + known flag, per-battle identity noise); wall / water between me and each player; power cubes each player holds + known, v5.10, with per-battle read noise), `grid` (25 x 25 tile classes), `cond` (30: brawler stats, 12 slider weights, team size, cubes, players left), the intent block (11: kind one-hot, target offset, radius, time left; all zeros = free play); named slider presets (play-style modes: bush camper, aggressive, cube farmer, ...). Per-episode detector noise, latency and HUD masking. `python -m obs_v5` |
+| `intent.py` | Intents (per-second goals: move to, avoid, hold, engage, farm, regroup, hide, super, check bush): kind specs and end rules, the block encoder, the intent-following reward (signed progress, capped per intent), the random-valid sampler. `env_v5.Env.intents` runs them in battles (trainer `--intent-scale`, default 0 = off). `python -m intent` |
+| `planner.py` | Rule planner: 17 priority rules (gas, rotate, low HP, super, thrower behind a wall, keep away from a short-range enemy, outclassed, fight / third party, endgame, regroup, engage, pin, check bush, farm, hide, explore, none) on what the policy sees, a cube-aware strength test for fights, wall-aware move targets, thresholds from the sliders, rules needing the enemy's brawler skip unknown ones; each pick has a readable reason (replay frames, viz). Training rollouts: trainer `--p-plan` (default 0 = off; design 0.5) with preemption of held planner intents; `--eval-plan 1` = eval kind `evalp_plan` (planner vs free play, same seeds); its docstring ends with the `train_fast` command that fine-tunes a checkpoint on planner intents. `python -m planner` |
 | `export_policy.py` | Checkpoint -> ONNX policy for the BSRL bot (inputs s / ent / grid / h, fire head masked in the graph, metadata `spec`: obs version, shapes, sliders and presets, trained brawlers, every brawler's display name and stats for live identity) + a `.ref.npz` of torch outputs the bot's test replays. `python -m export_policy CKPT OUT.onnx --trained Sniper`, `--check` |
 | `policy_video.py` | A checkpoint's battles rendered by the real game client as MP4s: N battles, the best one motion-interpolated to 30 fps, loadouts from the run's `config.json`, brawlers turned to their aim (`facing_sync`). Procedure: [docs/RECORDING.md](docs/RECORDING.md). `xvfb-run -a python -m policy_video --ckpt CKPT --out DIR --tries 5`, `--check`; `--overlay 1` draws det-class boxes and the rule planner's pick and path |
 | `overlay.py` | What `policy_video --overlay 1` draws: a box per rendered entity with its showdown-vision det class tag, an A* path over the walkable tiles, a text panel; projection = `engine/py/proj.py`. `python -m overlay` |
@@ -282,7 +283,7 @@ cd $SIM_WORK/runs && python -m http.server 8766      # dashboard: http://localho
   effect that needs a number or state the host does not have (`notes/issue47.md`). Not in the observation.
   `python -m star_check` asserts each effect in one boot, `--check` without the host.
 - Observation layout changes must be mirrored by anything that consumes exported policies. `obs_v5` carries the
-  version (`obs_v5.OBS_VERSION`, now `v5.9`; saved in every checkpoint) that exported policies are checked against.
+  version (`obs_v5.OBS_VERSION`, now `v5.10`; saved in every checkpoint) that exported policies are checked against.
 
 ## Licence
 

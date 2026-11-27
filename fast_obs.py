@@ -79,9 +79,12 @@ class FastObsV5(O.ObsV5):
         g[bleed] = front[bleed]
         wrong = (g != UNKNOWN) & (r.random(g.shape) < seg[:, None, None])
         g[wrong] = r.integers(len(SEG), size=int(wrong.sum()))
-        link = r.random((B, N_ENT))                       # identity (v5.6): ObsV5.build's, already batched
-        if who is None: ent[..., O.ID0:O.ID0 + O.N_ID] = 0.0
-        else: O.noisy_id(ent, np.where(here[..., None], who, -1), [e[9] for e in eps], link)
+        link = r.random((B, N_ENT))                       # identity (v5.6) and power cubes (v5.10): ObsV5.build's, already batched
+        cu = r.random((B, N_ENT, 2))
+        if who is None: ent[..., O.ID0:O.ID0 + O.N_ID] = 0.0; ent[..., O.CUB:O.CUB + 2] = 0.0
+        else:
+            wh = np.where(here[..., None], who, -1)
+            O.noisy_id(ent, wh, [e[9] for e in eps], link); O.noisy_cubes(ent, wh, [e[9] for e in eps], cu)
         ent[..., O.LOS:O.LOS + 2] = O.los(ent, g)
         # ---- velocity (vectorised): difference of two noisy detections, 0 for one not matched to the last decision
         sl = np.array([e[10] for e in eps], np.int64)
@@ -145,11 +148,11 @@ def _synthetic(rng, B, n_ids=40):
 
 
 def _who(rng, vec):
-    """a synthetic `who` for _synthetic's rows: enemy-block / projectile rows owned by random players, sides, brawlers"""
-    B = len(vec); w = np.full((B, N_ENT, 3), -1, np.int16); nh = len(O.id_lut()[0])
+    """a synthetic `who` for _synthetic's rows: enemy-block / projectile rows owned by random players, sides, brawlers, cubes"""
+    B = len(vec); w = np.full((B, N_ENT, 4), -1, np.int16); nh = len(O.id_lut()[0])
     for blk, off, K, Fn in ((0, FAIR.EN0, FAIR.EN_K, FAIR.EN_F), (FAIR.EN_K, FAIR.PJ0, FAIR.PJ_K, FAIR.PJ_F)):
         on = vec[:, off:off + K * Fn].reshape(B, K, Fn)[..., 0] > 0.5
-        q = rng.integers(0, 10, (B, K)); w[:, blk:blk + K] = np.stack([q, (q * 7 + 3) % nh, q % 3 if blk else q % 2], -1)
+        q = rng.integers(0, 10, (B, K)); w[:, blk:blk + K] = np.stack([q, (q * 7 + 3) % nh, q % 3 if blk else q % 2, (q * 5) % 13], -1)
         w[:, blk:blk + K][~on] = -1
     return w
 
@@ -157,7 +160,7 @@ def _who(rng, vec):
 def _check(steps=300):
     rng = np.random.default_rng(1)
     a, b = O.ObsV5(seed=5), FastObsV5(seed=5)
-    base = _synthetic(rng, 30); bw = _who(rng, base[0]); n_id = n_gad = 0
+    base = _synthetic(rng, 30); bw = _who(rng, base[0]); n_id = n_gad = n_cub = 0
     for t in range(steps):                               # the same agents drift; random subsets per poll; new agents now and then
         vec, grid, meta, ids = base
         vec = vec + rng.normal(size=vec.shape).astype(np.float32) * 0.01 * (vec != 0)
@@ -170,8 +173,8 @@ def _check(steps=300):
         hy = (rng.random(len(ids2)) < 0.5).astype(np.float32) if t % 3 else None   # hypercharge ready (self 4, v5.8) on 2 of 3
         oa, ob = (m.build(*[y.copy() for y in x], cmd=cmd, who=w, gadget=gd, hyper=hy) for m in (a, b))
         assert same(oa, ob), t
-        n_id += int(oa["ent"][..., O.ID_KNOWN].sum()); n_gad += int(oa["self"][:, 3].sum())
-    assert n_id > 1000 and n_gad > 100, (n_id, n_gad)    # the identity path ran (known rows, wrong picks, links), self 3 set
+        n_id += int(oa["ent"][..., O.ID_KNOWN].sum()); n_gad += int(oa["self"][:, 3].sum()); n_cub += int(oa["ent"][..., O.CUB + 1].sum())
+    assert n_id > 1000 and n_gad > 100 and n_cub > 300, (n_id, n_gad, n_cub)   # identity path ran (known rows, wrong picks, links), self 3 set, cubes read
     # eviction path: > 4096 agents
     a, b = O.ObsV5(seed=6), FastObsV5(seed=6)
     for t in range(250):

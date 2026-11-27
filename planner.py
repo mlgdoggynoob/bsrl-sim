@@ -19,7 +19,8 @@ Strength (intents_v2 2.1): S = hp fraction x (POWER x base hp + 400 c) x (1 + 0.
 max HP, +10 % damage). The HP fraction the observation carries is hp / max hp with the cubes' HP in max hp (host: the
 character's +0x3c8, raised by 400 per cube; live: the HP bar), so fraction x (POWER base + 400 c) = hit points now.
 Mine: base = cond 8 x 10000, c = cond 26 x 10. An enemy: base from its known stats (ent ID0 + 8), else mine; c =
-View.ecubes = my own count as the prior (OBS v5.9 has no enemy cubes column; decide(ecubes=...) overrides it).
+View.ecubes = the row's cube column (obs_v5.CUB) when its count is known (CUB + 1), else my own count as the prior;
+decide(ecubes=...) overrides both.
 R = S_enemy / S_me. Engage test (rule engage, team focus, fight's third party): within 12 tiles and either a FINISH (it
 is below 25 % and in my range: whatever its cubes, no other gate) or R < 0.7, or R < 1.0 in my range with aggressive >=
 1.2; and ammo >= 2/3 (self 1); and not "healing": hp < 0.8 with no enemy in my range blocks a new engage.
@@ -32,39 +33,45 @@ Rules, first match wins (PRI = order; thresholds from the slider weights in cond
                                                                        "gas 4 tiles E: rotating W early"
   3  low_hp        hp < 0.35 + 0.1 x (retreat - 1) and an enemy within 1.2 x its reach -> hide in a bush 1-4 tiles away
                    that is farther from it, else away from it          "hp 30 %, enemy 4 tiles N: disengaging S"
-  4  thrower_wall  a KNOWN thrower (ent col ID0+6) within its range + 1 with a wall between us (col LOS), me no thrower
+  4  super         my super ready, an attack super (cond 9), an enemy in my super range (cond 12) below 50 % (the
+                   observation has no super damage: a likely finish) -> super it, the lowest hp first
+                                                                       "enemy 4 tiles S at 30 %: super"
+  5  thrower_wall  a KNOWN thrower (ent col ID0+6) within its range + 1 with a wall between us (col LOS), me no thrower
                    -> engage it (around the wall) when hp >= 0.6 and (aggressive >= 1.2 or it is < 50 %), else away
                    from it (out of its range)                          "thrower TntDude 6 tiles NE behind a wall: leaving its range SW"
-  5  keep_away     kite >= 0.5, a KNOWN short-range enemy (range <= 5.5 tiles, or melee and <= 8) within its range + 2,
+  6  keep_away     kite >= 0.5, a KNOWN short-range enemy (range <= 5.5 tiles, or melee and <= 8) within its range + 2,
                    my range >= 1.5 x its range -> away from it         "Undertaker (melee, range 3) 4 tiles E: keeping my distance W"
-  6  outclassed    an enemy with R >= 1.5 within its reach + 2 (not a finish) -> away from it
+  7  outclassed    an enemy with R >= 1.5 within its reach + 2 (not a finish) -> away from it
                                                                        "ShotgunGirl 5 tiles E, 6 cubes vs my 1 (x2.5 my strength): staying away W"
-  7  fight         two enemies within 4 tiles of each other, both >= 4 tiles from me, their centre <= 10 tiles, one
+  8  fight         two enemies within 4 tiles of each other, both >= 4 tiles from me, their centre <= 10 tiles, one
                    below 90 % (they are trading) -> third_party >= 1.2, the weaker of the two (lowest strength) < 40 %
                    and passing the ammo gate (or a finish): engage it, else away from their centre
                                                                        "two fighting 6 tiles N, one at 30 %: third-partying"
-  8  endgame       teams left = 2 (cond HUD) and poison in view -> hold a reachable walkable tile 3-4 tiles from the
+  9  endgame       teams left = 2 (cond HUD) and poison in view -> hold a reachable walkable tile 3-4 tiles from the
                    poison, the one farthest from the nearest enemy (- 0.5 x my steps to it)
                                                                        "endgame (2 left), enemy 5 tiles E: holding the gas edge 3 tiles W"
-  9  regroup       team size > 1 and the nearest mate in view farther than 4 + 2 x (1 - leash) tiles (3-6)
+  10 regroup       team size > 1 and the nearest mate in view farther than 4 + 2 x (1 - leash) tiles (3-6)
                                                                        "mate 7 tiles E: regrouping"
-  10 engage        team size > 1 and my nearest mate within 12 tiles: the enemy nearest to that mate if it passes the
+  11 engage        team size > 1 and my nearest mate within 12 tiles: the enemy nearest to that mate if it passes the
                    engage test (focus fire, a 2v1); else the nearest enemy that passes it (finishes first)
                                                                        "enemy 5 tiles E at 40 %: engaging"
-  11 pin           a weaker enemy (R < 0.8) within 2 tiles of the poison and 8 of me -> hold a reachable tile 2 tiles
+  12 pin           a weaker enemy (R < 0.8) within 2 tiles of the poison and 8 of me -> hold a reachable tile 2 tiles
                    from it on its safe side (away from the poison centroid): it must cross me or stay in the gas
                                                                        "enemy 6 tiles N by the gas at 50 %: cutting it off, holding 4 tiles N"
-  12 farm          the cube, else (collect >= 0.5, no enemy within 6 tiles of me) the box with the lowest score =
+  13 check_bush    no enemy in view, ammo >= 2/3, bush_control >= 0.8, no bush check in the last CB_EVERY = 8 s ->
+                   the nearest bush tile 1.5 tiles .. my range away (shoot into it)
+                                                                       "no enemy seen, bush 3 tiles W in range: checking it"
+  14 farm          the cube, else (collect >= 0.5, no enemy within 6 tiles of me) the box with the lowest score =
                    distance + 3 x (enemies within 6 tiles of it) - 2 x (it is nearer a seen map edge than I am, while
                    >= 6 teams are left: edges early); skipped: objects within 1.5 tiles of poison (invalid farm targets)
                    and objects whose nearest enemy is nearer to it than I am and stronger (R >= 1)
                                                                        "cube 3 tiles S: picking up"
-  13 hide          bush_camp >= 1.2, no enemy in view, not in a bush, a reachable bush 1-5 tiles away -> hide there
+  15 hide          bush_camp >= 1.2, no enemy in view, not in a bush, a reachable bush 1-5 tiles away -> hide there
                                                                        "no enemy seen, bush 3 tiles W: hiding"
-  14 explore       no enemy, no box in view, the map edge (out_of_bounds) in view -> move_to a reachable walkable tile ~6
+  16 explore       no enemy, no box in view, the map edge (out_of_bounds) in view -> move_to a reachable walkable tile ~6
                    tiles away from it                                  "map edge 5 tiles W: exploring E"
-  15 none          free play                                           "no plan fits: free play"
-Rules 4 / 5 need the enemy's brawler (ID_KNOWN = 1) and skip unknown enemies; the rest fall back to the unknown readings.
+  17 none          free play                                           "no plan fits: free play"
+Rules 5 / 6 need the enemy's brawler (ID_KNOWN = 1) and skip unknown enemies; the rest fall back to the unknown readings.
 Wall-aware targets: View.steps = BFS steps from my tile over the passable tiles of the grid (walkable, poison and
 UNKNOWN pass; a wall / water / map-edge tile blocks only next to another one (4-neighbour, as _solid: seg noise); 8
 neighbours without corner cutting, overlay.path's rule). Every move_to / hold / hide tile is picked among the tiles
@@ -77,8 +84,8 @@ its identity known. Clean obs (noisy=False): every row counts (static boxes / cu
 "Away from" = avoid(that point, R 8) when it is closer than R - 1 = 7 tiles (avoid is achieved at R: farther would pay its
 bonus for nothing), else move_to a reachable walkable tile ~4 tiles straight away from it.
 Hook (plan): the pick's offset + my true position -> the world target; anchored targets snap to the true object as live
-re-anchors to the nearest detection (design 4.2): engage -> the nearest enemy I see within MATCH tiles, regroup -> the
-nearest mate on my screen, farm -> the nearest box / cube of my fair state2 row within 1.5 tiles, hide -> the nearest
+re-anchors to the nearest detection (design 4.2): engage / super -> the nearest enemy I see within MATCH tiles, regroup -> the
+nearest mate on my screen, farm -> the nearest box / cube of my fair state2 row within 1.5 tiles, hide / check_bush -> the nearest
 true bush tile within 1.5 tiles, move_to / hold -> the nearest truly walkable tile within 1.5 tiles (else the tile as
 seen). Not matched -> kind "none" with the reason + " (target not matched)".
 Preemption (design 4.4, Env.intents at a planner tick while a planner intent is held; random intents are never
@@ -97,8 +104,8 @@ import heapq, sys
 import numpy as np
 import obs_v5 as O, intent as I
 
-RULES = ("gas", "rotate", "low_hp", "thrower_wall", "keep_away", "outclassed", "fight", "endgame", "regroup", "engage", "pin",
-         "farm", "hide", "explore", "none")
+RULES = ("gas", "rotate", "low_hp", "super", "thrower_wall", "keep_away", "outclassed", "fight", "endgame", "regroup", "engage",
+         "pin", "check_bush", "farm", "hide", "explore", "none")
 PRI = {r: k for k, r in enumerate(RULES)}
 TILE = 300.0
 HYST = 2.0                # tiles: preemption / re-target only for a target change larger than this (design 4.4)
@@ -114,6 +121,9 @@ FINISH = 0.25             # an enemy below 25 % in my range is engaged whatever 
                           # dies before its damage bonus matters)
 AMMO_MIN = 2.0 / 3 - 1e-3  # engage with >= 2 of 3 ammo bars (self 1); float32 slack
 HEAL_HP = 0.8             # below this, with no enemy in my range, no new engage (reset and heal first)
+SUPER_HP = 0.5            # super on an enemy in my super range below this (no super damage in the obs: a likely finish)
+CB_EVERY = 8.0            # s: at most one bush check this often (a check_bush intent lasts <= 2 s; the rest of the time
+                          # farm / hide / explore run)
 _C = 12                   # my grid cell (row and column)
 _S = O.SEG.index
 _WALK = np.isin(np.arange(len(O.SEG) + 1), [_S(c) for c in ("floor", "bush", "slow_tile", "fast_tile", "ice")])   # = env_v5._WALK
@@ -196,9 +206,11 @@ def _name(row):
 class View:
     """one agent's observation rows, read for the rules. ecubes (N_ENT,) = cubes held per row (None = the prior)"""
 
-    def __init__(self, self8, ent, grid, cond, sub=(0.5, 0.5), noisy=True, ecubes=None):
+    def __init__(self, self8, ent, grid, cond, sub=(0.5, 0.5), noisy=True, ecubes=None, since_cb=None):
         self.hp, self.ammo, self.inbush = float(self8[0]), float(self8[1]), bool(self8[5] > 0.5)
+        self.sup = bool(self8[2] > 0.5)
         c = np.asarray(cond, np.float64); self.c = c
+        self.srng, self.satk = c[12] * 10.0, bool(c[9] > 0.5)   # own super range (tiles), the super is an attack
         self.w = {k: float(c[i]) for k, i in _SL.items()}
         self.rng = max(c[0] * 10.0, 2.0)          # own range in tiles (floor 2 = env_v5's 600 units)
         self.thrower, self.maxhp = bool(c[6] > 0.5), c[8] * 10000.0
@@ -219,8 +231,9 @@ class View:
         self.thrown, self.melee, self.emax = e[:, O.ID0 + 6] > 0.5, e[:, O.ID0 + 7] > 0.5, e[:, O.ID0 + 8] * 10000.0
         self.wall = e[:, O.LOS] > 0.5
         self.reach = np.where(self.known, np.minimum(np.maximum(self.erng, self.esup), 12.0), self.rng)   # known: range / super
-        # strength (module doc); enemy cubes: the prior = my own count until OBS v5.10's entity column (intents_v2 3.1)
-        self.ecubes = np.full(len(e), self.cubes) if ecubes is None else np.asarray(ecubes, np.float64)
+        # strength (module doc); enemy cubes: the row's count when read (OBS v5.10), else the prior = my own count
+        self.ecubes = (np.where(e[:, O.CUB + 1] > 0.5, e[:, O.CUB] * 10.0, self.cubes) if ecubes is None
+                       else np.asarray(ecubes, np.float64))
         self.smine = strength(self.hp, self.maxhp, self.cubes)
         self.S = strength(self.ehp, np.where(self.known, self.emax, self.maxhp), self.ecubes)
         self.R = self.S / max(self.smine, 1.0)
@@ -231,6 +244,7 @@ class View:
         self.walk = _WALK[g] & (g != _S("poison"))
         self.poison, self.bush, self.edge = _solid(g == _S("poison")), _solid(g == _S("bush")), _solid(g == _S("out_of_bounds"))
         self._steps = None
+        self.since_cb = np.inf if since_cb is None else float(since_cb)   # s since my last bush check
 
     @property
     def steps(self):
@@ -288,8 +302,9 @@ class RulePlanner:
     def __init__(self, noisy=True):
         self.noisy = bool(noisy)
 
-    def decide(self, self8, ent, grid, cond, sub=(0.5, 0.5), ecubes=None):
-        v = View(self8, ent, grid, cond, sub, self.noisy, ecubes)
+    def decide(self, self8, ent, grid, cond, sub=(0.5, 0.5), ecubes=None, since_cb=None):
+        """since_cb = seconds since this agent's last check_bush intent started (None = never; Env: s.it[p]["cb_n"])"""
+        v = View(self8, ent, grid, cond, sub, self.noisy, ecubes, since_cb)
         for r in RULES[:-1]:
             out = getattr(self, "_" + r)(v)
             if out is not None: return out
@@ -367,6 +382,20 @@ class RulePlanner:
         if t is not None:
             return pick("low_hp", "hide", *t, reason="%s: hiding in a bush %s %s" % (why, tiles(np.hypot(*t)), dir8(*t)))
         return self._away(v, "low_hp", ex, ey, why + ": disengaging")
+
+    def _super(self, v):
+        if not (v.sup and v.satk and v.srng > 0): return None
+        ks = [k for k in v.foes if v.d[k] <= v.srng and v.ehp[k] < SUPER_HP]
+        if not ks: return None
+        k = min(ks, key=lambda j: (v.ehp[j], v.d[j]))
+        return pick("super", "super", *v.xy[k], slot=k, reason="%s %s %s at %d %%: super" % (
+            v.name(k), tiles(v.d[k]), dir8(*v.xy[k]), round(100 * v.ehp[k])))
+
+    def _check_bush(self, v):
+        if v.since_cb < CB_EVERY or len(v.foes) or v.ammo < AMMO_MIN or v.w["bush_control"] < 0.8: return None
+        t = v.tile_pick(v.bush & (v.td >= 1.5) & (v.td <= v.rng), v.td)
+        if t is None: return None
+        return pick("check_bush", "check_bush", *t, reason="no enemy seen, bush %s %s in range: checking it" % (tiles(np.hypot(*t)), dir8(*t)))
 
     def _thrower_wall(self, v):
         if v.thrower: return None                        # a thrower answers over the wall itself
@@ -515,7 +544,9 @@ class RulePlanner:
             return dict(kind="none", rule="none", reason="no observation: free play")
         meta = getattr(env, "last_meta", None)
         sub = ((float(meta[b, 0]) % TILE) / TILE, (float(meta[b, 1]) % TILE) / TILE) if meta is not None and b < len(meta) else (0.5, 0.5)
-        pk = self.decide(o["self"][b], o["ent"][b], o["grid"][b], cond[b], sub)
+        st = (getattr(s, "it", None) or {}).get(p) or {}
+        since = (st["n"] - st["cb_n"]) / max(1, 20 // getattr(env, "ticks", 2)) if "cb_n" in st else None   # decisions -> s
+        pk = self.decide(o["self"][b], o["ent"][b], o["grid"][b], cond[b], sub, since_cb=since)
         return self.resolve(env, s, p, b, w, pk)
 
     def resolve(self, env, s, p, b, w, pk):
@@ -524,7 +555,7 @@ class RulePlanner:
         if pk["kind"] == "none": return c
         mx, my = float(w["x"][p]), float(w["y"][p]); x, y = mx + pk["dx"] * TILE, my + pk["dy"] * TILE
         miss = lambda: dict(c, kind="none", reason=pk["reason"] + " (target not matched)")
-        if pk["kind"] in ("engage", "regroup"):
+        if pk["kind"] in ("engage", "regroup", "super"):
             oth = w["up"].copy(); oth[p] = False; mate = w["team"] == w["team"][p]
             ok = oth & (mate & w["screen"][p] if pk["kind"] == "regroup" else ~mate & w["sees"][p])
             d = np.where(ok, np.hypot(w["x"] - x, w["y"] - y) / TILE, np.inf)
@@ -537,14 +568,15 @@ class RulePlanner:
             c["pt"] = (float(xy[int(np.argmin(d)), 0]), float(xy[int(np.argmin(d)), 1])); return c
         if pk["kind"] == "avoid":
             c["pt"] = (x, y); return c
-        mask = s.sl["bush"] if pk["kind"] == "hide" else s.sl["walk"]   # hide: a true bush; move_to / hold: walkable
+        bushy = pk["kind"] in ("hide", "check_bush")
+        mask = s.sl["bush"] if bushy else s.sl["walk"]   # hide / check_bush: a true bush; move_to / hold: walkable
         H, W = mask.shape; tx, ty = int(np.clip(x // TILE, 0, W - 1)), int(np.clip(y // TILE, 0, H - 1))
         if not mask[ty, tx]:
             n = int(np.ceil(SNAP)); y0, x0 = max(ty - n, 0), max(tx - n, 0)
             jj, ii = np.nonzero(mask[y0:ty + n + 1, x0:tx + n + 1]); jj, ii = jj + y0, ii + x0
             dd = np.hypot(ii - tx, jj - ty)
             if len(dd) and dd.min() <= SNAP: k = int(np.argmin(dd)); tx, ty = int(ii[k]), int(jj[k])
-            elif pk["kind"] == "hide": return miss()
+            elif bushy: return miss()
         c["pt"] = ((tx + 0.5) * TILE, (ty + 0.5) * TILE)
         return c
 
@@ -561,11 +593,12 @@ def preempts(old_rule, old_xy, new_rule, new_xy):
 
 # ------------------------------------------------------------------ self-check
 def synth(foes=(), mates=(), boxes=(), cubes=(), hp=1.0, inbush=False, me="Sniper", sliders=None, team=1, left=None,
-          grid=None, sub=(0.5, 0.5), ammo=1.0, mycubes=0):
+          grid=None, sub=(0.5, 0.5), ammo=1.0, mycubes=0, sup=False):
     """synthetic rows of one agent: foes / mates = [(dx, dy) tiles, hp, brawler name or None (unknown), wall, (new)];
     player rows are tracked (velocity 0.01) unless new = True (velocity 0, a first / false detection); boxes / cubes =
-    [(dx, dy)]; grid = (25, 25) seg classes (default all floor); ammo = self 1; mycubes = my cubes held (cond)"""
-    self8 = np.zeros(O.N_SELF, np.float32); self8[0], self8[1], self8[5] = hp, ammo, float(inbush)
+    [(dx, dy)]; grid = (25, 25) seg classes (default all floor); ammo = self 1; mycubes = my cubes held (cond); sup = my
+    super is ready (self 2)"""
+    self8 = np.zeros(O.N_SELF, np.float32); self8[0], self8[1], self8[2], self8[5] = hp, ammo, float(sup), float(inbush)
     ent = np.zeros((O.N_ENT, O.F_ENT), np.float32); k = 0
     def row(cls, xy, h=1.0, name=None, wall=False, new=False):
         nonlocal k
@@ -588,9 +621,9 @@ def synth(foes=(), mates=(), boxes=(), cubes=(), hp=1.0, inbush=False, me="Snipe
 def _check():
     P = RulePlanner(); Fl = _S("floor")
     def run(**kw):
-        sub, ec = kw.pop("sub", (0.5, 0.5)), kw.pop("ecubes", None)
+        sub, ec, cb = kw.pop("sub", (0.5, 0.5)), kw.pop("ecubes", None), kw.pop("since_cb", 0.0)   # default: a bush just checked
         if ec is not None: ec = np.r_[ec, np.zeros(O.N_ENT - len(ec))]   # cubes of the first rows (the foes), the rest 0
-        return P.decide(*synth(**kw), sub=sub, ecubes=ec)
+        return P.decide(*synth(**kw), sub=sub, ecubes=ec, since_cb=cb)
     def grid(**cls):                                     # grid(poison=[(r0, r1, c0, c1)], bush=...): class blocks (rows, cols)
         g = np.full((O.G, O.G), Fl, np.uint8)
         for n, blocks in cls.items():
@@ -662,6 +695,9 @@ def _check():
     pk = want(run(foes=[((5, 0), 1.0, "ShotgunGirl", False)], mycubes=1, ecubes=[6]), "outclassed", "avoid",
               "ShotgunGirl 5 tiles E, 6 cubes vs my 1 (x2.5 my strength): staying away W")
     assert run(foes=[((5, 0), 1.0, "ShotgunGirl", False)], mycubes=1)["rule"] != "outclassed"   # the prior: same cubes, x1.4
+    sv, en, g0, cd = synth(foes=[((5, 0), 1.0, "ShotgunGirl", False)], mycubes=1); en[0, O.CUB:O.CUB + 2] = [0.6, 1]
+    assert P.decide(sv, en, g0, cd) == pk                                                    # v5.10: the row's read count
+    en[0, O.CUB + 1] = 0; assert P.decide(sv, en, g0, cd)["rule"] != "outclassed"             # not read: the prior
     assert run(foes=[((5, 0), 1.0, None, False)], mycubes=3)["rule"] == "none"             # prior: equal cubes cancel (x1.0)
     want(run(hp=0.6, foes=[((8, 0), 1.0, None, False)]), "outclassed", "move_to", "enemy 8 tiles E, 100 % vs my 60 % (x1.7 my strength): staying away W")
     assert run(hp=0.6, foes=[((13, 0), 1.0, None, False)])["rule"] != "outclassed"         # beyond its reach (my 10) + 2
@@ -735,6 +771,18 @@ def _check():
     assert run(grid=gb, sliders={"bush_camp": 1.5}, inbush=True)["rule"] == "none" and run(grid=gb)["rule"] == "none"
     gbw = grid(bush=[(11, 14, 8, 10), (11, 14, 15, 17)], indestructible=[(0, 25, 10, 12)])   # W bush behind a wall: the E one
     assert run(grid=gbw, sliders={"bush_camp": 1.5})["dx"] > 0
+    # super: ready, an attack super (Shelly, super range 7.7), an enemy in it below 50 % -> super it (lowest hp first)
+    want(run(me="ShotgunGirl", sup=True, foes=[((5, 0), 0.4, None, False), ((0, 4), 0.3, None, False)]), "super", "super",
+         "enemy 4 tiles S at 30 %: super", sy=1)
+    assert run(me="ShotgunGirl", foes=[((5, 0), 0.4, None, False)])["rule"] != "super"                  # not ready
+    assert run(me="ShotgunGirl", sup=True, foes=[((5, 0), 0.6, None, False)])["rule"] != "super"        # not low
+    assert run(me="ShotgunGirl", sup=True, foes=[((9, 0), 0.3, None, False)])["rule"] != "super"        # out of super range
+    assert run(sup=True, foes=[((5, 0), 0.3, None, False)])["rule"] != "super"                          # Piper: no attack super
+    # check_bush: no enemy, a bush in my range, not checked in the last CB_EVERY s -> shoot into it (the nearest tile)
+    want(run(grid=gb, since_cb=None), "check_bush", "check_bush", "no enemy seen, bush 3 tiles W in range: checking it", sx=-1)
+    assert run(grid=gb, since_cb=CB_EVERY - 1)["rule"] == "none" and run(grid=gb, since_cb=None, ammo=1 / 3)["rule"] == "none"
+    assert run(grid=gb, since_cb=None, sliders={"bush_control": 0.5})["rule"] == "none"
+    assert run(grid=gb, since_cb=None, foes=[((-9, 0), 1.0, None, False)])["rule"] != "check_bush"
     # 14 explore: the map edge 6 tiles W in view, nothing else -> east
     gx = grid(out_of_bounds=[(0, 25, 0, 7)])
     want(run(grid=gx), "explore", "move_to", "map edge 6 tiles W: exploring E", sx=1)
@@ -746,13 +794,15 @@ def _check():
     rich = dict(team=3, mates=[((7, 0), 1.0, None, False)], cubes=[(0, 3)], sliders={"bush_camp": 1.5})
     order = [("gas", dict(grid=gg, hp=0.3, foes=[((0, -4), 1.0, None, False)])),
              ("rotate", dict(grid=gr, hp=0.3, foes=[((0, -4), 1.0, None, False)])),
-             ("low_hp", dict(hp=0.3, foes=[T, ((0, -4), 1.0, None, False)])),
+             ("low_hp", dict(hp=0.3, me="ShotgunGirl", sup=True, foes=[T, ((0, -4), 0.3, None, False)])),
+             ("super", dict(me="ShotgunGirl", sup=True, hp=0.5, foes=[((4, 0), 0.4, "Undertaker", False), ((0, 4), 0.4, None, False)])),
              ("thrower_wall", dict(hp=0.5, foes=[T, ((4, 0), 1.0, "Undertaker", False)])),
              ("keep_away", dict(foes=[((4, 0), 1.0, "Undertaker", False), ((8, 0), 1.0, None, False)] + F2, hp=0.6)),
              ("outclassed", dict(hp=0.6, foes=[((8, 0), 1.0, None, False)] + F2)),
              ("fight", dict(foes=F2, left=2, grid=ge)), ("endgame", dict(left=2, grid=ge, **rich)),
              ("regroup", dict(foes=[((5, 0), 0.4, None, False)], **rich)), ("engage", dict(foes=[((5, 0), 0.4, None, False)], cubes=[(0, 3)], grid=gp)),
              ("pin", dict(grid=gp, foes=[((0, -6), 0.75, None, False)], cubes=[(3, 0)])),
+             ("check_bush", dict(cubes=[(0, 3)], grid=gb, sliders={"bush_camp": 1.5}, since_cb=None)),
              ("farm", dict(cubes=[(0, 3)], grid=gb, sliders={"bush_camp": 1.5})), ("hide", dict(grid=np.where(gx == Fl, gb, gx), sliders={"bush_camp": 1.5})),
              ("explore", dict(grid=gx))]
     for rule, kw in order:
