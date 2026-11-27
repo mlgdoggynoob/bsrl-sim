@@ -63,7 +63,7 @@ def resolve_trained(names, table):
 
 def spec(net_name, trained, table, team=1, ticks=2, gadgets=False, hyper=False):
     return {"obs_version": O.OBS_VERSION, "gadgets": bool(gadgets), "hyper": bool(hyper), "n_self": O.N_SELF, "n_cond": O.N_COND, "n_int": O.N_INT, "n_s": O.N_S,
-            "n_ent": O.N_ENT, "f_ent": O.F_ENT, "g": O.G, "hid": Mo.HID, "fire": list(O.FIRE), "ticks": ticks,
+            "n_ent": O.N_ENT, "f_ent": O.F_ENT, "g": O.G, "hid": Mo.HID, "fire": list(O.FIRE), "intents": list(O.INTENTS), "ticks": ticks,
             "team_size": team, "sliders": list(O.SLIDERS), "presets": {k: O.preset_vec(k).tolist() for k in O.PRESETS},
             "trained": trained, "heroes": table, "ckpt": net_name}
 

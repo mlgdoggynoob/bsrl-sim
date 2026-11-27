@@ -7,16 +7,17 @@
     o = ob.build(obs["vec"], obs["grid"], env.last_meta, ids, who=env.last_who, gadget=env.gadget(ids), hyper=env.hyper(ids))
                                                      # gadget / hyper: optional
     o["self"] (B, 8)   hp fraction, ammo 0-1, super / gadget / hypercharge ready, in bush, own velocity x, y
-    o["ent"]  (B, 39, 36)  present | class one-hot (ENT) | dx, dy (10 tiles, x right / y down) | vx, vy (tiles/tick) | hp fraction
+    o["ent"]  (B, 39, 38)  present | class one-hot (ENT) | dx, dy (10 tiles, x right / y down) | vx, vy (tiles/tick) | hp fraction
                        | area effects: radius (10 tiles), harms me, helps me, slows me (0 for every other class)
                        | identity (ID0 20..33): brawler_stats (13) of the row's brawler (a player row) or of the projectile's
                          owner + known (1 = identity given; unknown = 13 zeros + 0; summons, boxes, cubes, areas: zeros)
                        | line of sight (LOS 34, 35; enemy / teammate rows): wall_between, water_between on o["grid"]
+                       | power cubes (CUB 36, 37; enemy / teammate player rows): cubes held / 10 (clip 2), known
     o["grid"] (B, 25, 25) uint8  seg class id (SEG) per tile around the player, UNKNOWN outside the camera view
     cond(brawler, sliders, team_size, cubes, left) (30,)  own brawler stats + behaviour weights + team size + HUD numbers
     preset_vec(name) (12,)  the slider weights of a named play-style mode (PRESETS: balanced, bush_camper, aggressive, ...)
-    intent block (N_INT 11): one-hot of INTENTS 1..7 | dx, dy | radius | time left (intent.encode; env_v5.Env.intents)
-    policy input s = cat[self (8), cond (30), intent (11)] (N_S = 49; S_INT = 38 = the block's offset)
+    intent block (N_INT 13): one-hot of INTENTS 1..9 | dx, dy | radius | time left (intent.encode; env_v5.Env.intents)
+    policy input s = cat[self (8), cond (30), intent (13)] (N_S = 51; S_INT = 38 = the block's offset)
 
 Source = the host's state2 vector + grid after nbpc.fair (already camera- and bush-limited). Needs the rl-round
 host `nbhost_rl` (enemy features 14 / 15 = summon / on my team, self 18 = hypercharge fraction, grid channel 0 =
@@ -26,12 +27,18 @@ destroyed wall or bush reads as the open tile it became). Invisibility (v5.9, is
 an invisible enemy brawler (a status's Invisibility, Leon's super until he attacks) farther than 1200 units, or at any
 distance for "full" invisibility, from the enemy rows and grid channel 5, as the real client does not draw it; before
 v5.9 invisible enemies were always in the observation. No shape change.
-Identity (v5.6): `who` (B, N_ENT, 3) int = per row the owner player (-1 none), its brawler's id_lut row (-1) and its side
-(WHO_FOE 0 / WHO_MATE 1 / WHO_ME 2), from env_v5.Env.last_who (the host's state dump, matched to the rows by position).
+Identity (v5.6): `who` (B, N_ENT, 4) int = per row the owner player (-1 none), its brawler's id_lut row (-1), its side
+(WHO_FOE 0 / WHO_MATE 1 / WHO_ME 2) and (v5.10) the owner's power cubes held (-1 none), from env_v5.Env.last_who (the host's state dump, matched to the rows by position).
 Clean: every row with an owner is known. Noisy (NOISE id_*, per episode = per battle): a player's identity is known or
 not, and a known enemy may be given a wrong brawler, both FIXED per player for the battle (live keeps them per track);
 a projectile row's owner is linked per row and decision. who=None: every identity unknown. Summons stay unknown (live
 cannot tie a bear / turret to its owner's countdown name).
+Power cubes (v5.10): CUB = the cubes held by the owner of an enemy / teammate player row (who[..., 3]: NbePlayer
+cubes_total, 0 after a team knock-out as the HUD shows it) / 10, clip 2; CUB + 1 = known. Live: the number the client
+draws next to a player's HP bar, read per track by BSRL's HUD OCR. Clean: every player row with an owner is known.
+Noisy (NOISE cube_*): a player's count is never read with a chance fixed per player for the battle (live: a track whose
+number the OCR never reads), and a read count is off by one (+-1, not below 0) with a per-decision chance. A 3-column
+who (before v5.10) or who=None: every count unknown. Summons, projectiles, boxes and items: 0, 0.
 Line of sight: LOS_N samples on the straight line from my tile centre to the row's (noisy) position, my tile and its
 tile left out; wall_between = a projectile-blocking class (_BLOCK_PJ), water_between = movement-only (_BLOCK_MV), on the
 grid the policy gets (seg / HUD / bleed noise included; UNKNOWN blocks nothing); computed per frame before the latency.
@@ -70,17 +77,20 @@ SLIDERS = ("bush_camp", "collect", "protect", "retreat", "kite", "peek", "focus"
 # + sliders leash / gas_safe at the end of cond (COND_SLIDERS); v5.5: + the intent block (N_INT) at the end of s;
 # v5.7: the fire head gained "gadget" (a 4th class, gated by self 3; no input shape change); v5.8: + "hypercharge" (a 5th,
 # gated by self 4 = the host's "can activate now", no longer the state2 fraction being full; no input shape change);
-# v5.9: invisible enemies are left out beyond their reveal distance (host encode.c; no shape change)
-OBS_VERSION = "v5.9"
+# v5.9: invisible enemies are left out beyond their reveal distance (host encode.c; no shape change);
+# v5.10: + 2 power-cube columns (CUB) at the end of each entity row, + intent kinds super / check_bush (the block's one-hot
+# grows by 2 before dx, dy: model.pad_param inserts their zero columns into a v5.9 checkpoint's vec.0)
+OBS_VERSION = "v5.10"
 FIRE = ("none", "attack", "super", "gadget", "hypercharge")   # fire head classes = NbeAction.fire codes 0-4 (host env.c apply_actions)
 FIRE_READY = (None, None, 2, 3, 4)               # self column that must be >= 0.5 for the class to be allowed (model.mask_fire)
 FIRE_AIM = (False, True, True, True, False)      # the aim head counts for the class (the host takes the gadget's aim as its
                                                  # direction; the hypercharge has none)
-# per-second goals (intent.py, behaviour design 4): block = one-hot of kinds 1..7 (none = all zeros) | dx, dy (10-tile
+# per-second goals (intent.py, behaviour design 4): block = one-hot of kinds 1..9 (none = all zeros) | dx, dy (10-tile
 # units, clip +-2.5) | radius / 10 tiles | time left 1 -> 0. s = cat[self, cond, intent]: at the tail, so an older
 # checkpoint's vec.0 zero-pads those columns and free play (none) is exactly its input; v5.6: + identity (14) and line of
 # sight (2) columns at the end of each entity row (model inserts their zero input weights before the lead columns)
-INTENTS = ("none", "move_to", "avoid", "hold", "engage", "farm", "regroup", "hide")
+INTENTS = ("none", "move_to", "avoid", "hold", "engage", "farm", "regroup", "hide", "super", "check_bush")
+N_INT_V59 = 7 + 4                        # intent block width v5.5 .. v5.9 (7 kinds; model.pad_param widens it)
 N_INT = len(INTENTS) - 1 + 4
 I_XY, I_RAD, I_LEFT = len(INTENTS) - 1, len(INTENTS) + 1, len(INTENTS) + 2   # block columns after the one-hot
 N_SELF, N_ENT, G = 8, F.EN_K + F.PJ_K + F.BX_K + F.IT_K, 25
@@ -89,7 +99,9 @@ F_ENT_V52 = 1 + len(ENT) + 5             # entity row width up to v5.2 (model.lo
 F_ENT_V55 = 1 + len(ENT) + 9             # entity row width v5.3 .. v5.5
 N_ID = 13 + 1                            # identity block: brawler_stats (13) + known
 ID0, ID_KNOWN, LOS = F_ENT_V55, F_ENT_V55 + 13, F_ENT_V55 + N_ID   # LOS = wall_between, LOS + 1 = water_between
-F_ENT = LOS + 2
+F_ENT_V59 = LOS + 2                      # entity row width v5.6 .. v5.9
+CUB = F_ENT_V59                          # CUB = cubes held / 10, CUB + 1 = known (v5.10)
+F_ENT = CUB + 2
 WHO_FOE, WHO_MATE, WHO_ME = 0, 1, 2      # who[..., 2]: side of the row's owner seen from the observer
 N_COND = 13 + len(SLIDERS) + 3 + 2      # + own cubes, teams / players left (Showdown HUD; BSRL brain/hud.py live)
 N_COND_V53 = 28                          # cond width up to v5.3 (10 sliders); the 2 newer sliders sit at the end
@@ -127,7 +139,10 @@ NOISE = {"jitter": (0.0, 0.039),   # box centre sigma, 10-tile units (measured .
                                        # shows the players on screen then; a track lost and re-found keeps its name)
          "id_known_mate": (0.8, 1.0),  # the same for a teammate (lobby / countdown show the team; on screen together)
          "id_wrong": (0.0, 0.05),      # chance per known enemy and battle that it is given a wrong brawler (OCR / name match)
-         "pj_owner_known": (0.3, 1.0)} # chance per projectile row and decision that it is linked to its shooter (by origin)
+         "pj_owner_known": (0.3, 1.0), # chance per projectile row and decision that it is linked to its shooter (by origin)
+         # power cubes (v5.10). GUESSES until BSRL's per-track cube OCR is measured live:
+         "cube_known": (0.5, 1.0),     # chance per player and battle that its cube number is ever read (small text, HUD OCR <= 1 Hz)
+         "cube_misread": (0.0, 0.1)}   # chance per read row and decision that the count is off by one (+-1, not below 0)
 
 # measured miss chance per class, det_v6 vs labels on 1000 val frames (HISTORY 61), ENT order
 DROP_CLS = np.array([.079, .085, .198, .101, .032, .241, .527, .457, .449, .263], np.float32)
@@ -209,9 +224,9 @@ def area_feats(code, side):
 
 def from_state2(vec, grid, meta, who=None, derived=True, gadget=None, hyper=None):
     """fair state2 vec (B, 436), grid (B, 6, 25, 25), meta (B, 5) = x, y, tick, W, H (MAEnv.last_meta), who (B, N_ENT, 3)
-    (module doc; None = identities unknown), gadget (B,) the gadget can be used now (env_v5.Env.gadget; None = 0), hyper
+    (module doc; None = identities and cube counts unknown), gadget (B,) the gadget can be used now (env_v5.Env.gadget; None = 0), hyper
     (B,) the hypercharge can be activated now (env_v5.Env.hyper; None = 0) -> clean
-    obs (every row with an owner known). derived=False: identity and line-of-sight columns left 0 (the noisy build
+    obs (every row with an owner known). derived=False: identity, line-of-sight and cube columns left 0 (the noisy build
     computes them itself)"""
     B = len(vec)
     s = np.zeros((B, N_SELF), np.float32)
@@ -253,6 +268,7 @@ def from_state2(vec, grid, meta, who=None, derived=True, gadget=None, hyper=None
     if who is not None:
         w = np.asarray(who); ok = (w[..., 1] >= 0) & (ent[..., 0] > 0.5)
         ent[..., ID0:ID0 + 13] = id_lut()[1][np.where(ok, w[..., 1], -1)]; ent[..., ID_KNOWN] = ok
+        cube_cols(ent, cubes_held(ent, w))
     ent[..., LOS:LOS + 2] = los(ent, g)
     return {"self": s, "ent": ent, "grid": g}
 
@@ -289,7 +305,8 @@ def id_draws(n, r):
     offset (1 .. n_heroes - 1, never the true one). Keys missing from the noise dict: identity perfect"""
     nh = len(id_lut()[0])
     return (r.uniform(*n.get("id_known", (1, 1))), r.uniform(*n.get("id_known_mate", (1, 1))), r.uniform(*n.get("id_wrong", (0, 0))),
-            r.uniform(*n.get("pj_owner_known", (1, 1))), r.random(16), r.random(16), r.integers(1, max(nh, 2), 16))
+            r.uniform(*n.get("pj_owner_known", (1, 1))), r.random(16), r.random(16), r.integers(1, max(nh, 2), 16),
+            r.uniform(*n.get("cube_known", (1, 1))), r.uniform(*n.get("cube_misread", (0, 0))), r.random(16))
 
 
 _PJ_ROW = (np.arange(N_ENT) >= F.EN_K) & (np.arange(N_ENT) < F.EN_K + F.PJ_K)   # ent slots of the projectile block
@@ -309,6 +326,34 @@ def noisy_id(ent, who, eps_id, link):
     given = np.where(wrong, (hero + tk(pick)) % max(nh, 1), hero)
     known = (hero >= 0) & (w[..., 0] >= 0) & (ent[..., 0] > 0.5) & kp & (~_PJ_ROW[None] | (side == WHO_ME) | (link < ppj[:, None]))
     ent[..., ID0:ID0 + 13] = lut[np.where(known, given, -1)]; ent[..., ID_KNOWN] = known
+
+
+_PLAYER_C = [1 + ENT.index("enemy"), 1 + ENT.index("teammate")]
+
+
+def cubes_held(ent, who):
+    """(B, N_ENT) int64 cubes held per player row with an owner (who[..., 3]), -1 = none (a 3-column who: all -1)"""
+    w = np.asarray(who)
+    if w.shape[-1] < 4: return np.full(w.shape[:-1], -1, np.int64)
+    pl = (ent[..., 0] > 0.5) & (ent[..., _PLAYER_C].sum(-1) > 0.5) & (w[..., 0] >= 0)
+    return np.where(pl, w[..., 3], -1).astype(np.int64)
+
+
+def cube_cols(ent, c):
+    """CUB columns in place from cubes held c (B, N_ENT) (-1 = unknown)"""
+    ent[..., CUB] = np.where(c >= 0, np.minimum(c, 20) / 10.0, 0.0); ent[..., CUB + 1] = c >= 0
+
+
+def noisy_cubes(ent, who, eps_id, u):
+    """CUB columns in place on noisy rows: eps_id = per row of the batch its id_draws tuple, u (B, N_ENT, 2) uniforms of
+    this decision. A player's count is read or never read for the whole battle (episode draws); a read one is off by one
+    with the per-decision chance (u[..., 0]; u[..., 1] picks the sign)"""
+    c = cubes_held(ent, who)
+    pk, pm = (np.array([e[i] for e in eps_id], np.float32) for i in (7, 8))
+    uc = np.stack([e[9] for e in eps_id]); q = np.clip(np.asarray(who)[..., 0], 0, 15).astype(np.int64)
+    c = np.where(np.take_along_axis(uc, q, 1) < pk[:, None], c, -1)
+    off = np.where(u[..., 0] < pm[:, None], np.where(u[..., 1] < 0.5, -1, 1), 0)
+    cube_cols(ent, np.where(c >= 0, np.maximum(c + off, 0), -1))
 
 
 def _cam(meta):
@@ -363,7 +408,7 @@ class ObsV5:
     def build(self, vec, grid, meta, ids, cmd=None, who=None, gadget=None, hyper=None):
         """cmd (B, 2) tiles / tick (sim_plan A2, train_fast --cmd-vel): own velocity = the commanded move, as the agent gets
         it live (BSRL brain / play_live: move direction x brawler speed); entity velocities then carry the same error
-        (live: matched position difference + commanded own velocity). Noisy path only. who (B, N_ENT, 3): the rows'
+        (live: matched position difference + commanded own velocity). Noisy path only. who (B, N_ENT, 4): the rows'
         owners (env_v5.Env.last_who; module doc), None = every identity unknown. gadget (B,): from_state2's (self 3; like
         the rest of self it reaches the policy with the episode's latency), hyper (B,): from_state2's (self 4, the same)."""
         o = from_state2(vec, grid, meta, who, derived=self.noise is None or not len(ids), gadget=gadget, hyper=hyper)
@@ -402,8 +447,11 @@ class ObsV5:
         wrong = (g != UNKNOWN) & (r.random(g.shape) < seg[:, None, None])
         g[wrong] = r.integers(len(SEG), size=int(wrong.sum()))
         link = r.random((B, N_ENT))                       # identity (v5.6): projectile owner links of this decision
-        if who is None: ent[..., ID0:ID0 + N_ID] = 0.0
-        else: noisy_id(ent, np.where(here[..., None], who, -1), [e[9] for e in eps], link)   # false detections: unknown
+        cu = r.random((B, N_ENT, 2))                      # power cubes (v5.10): misreads of this decision
+        if who is None: ent[..., ID0:ID0 + N_ID] = 0.0; ent[..., CUB:CUB + 2] = 0.0
+        else:
+            wh = np.where(here[..., None], who, -1)        # false detections: unknown
+            noisy_id(ent, wh, [e[9] for e in eps], link); noisy_cubes(ent, wh, [e[9] for e in eps], cu)
         ent[..., LOS:LOS + 2] = los(ent, g)               # on the noisy rows / grid of this frame
         # velocity as the agent gets it: the difference of two noisy detections, 0 for one not matched to the last decision
         on, cls = ent[..., 0] > 0.5, ent[..., 1:1 + len(ENT)].argmax(-1)
@@ -537,7 +585,7 @@ def _check():
     assert len(FIRE) == len(FIRE_READY) == len(FIRE_AIM) and FIRE[:3] == ("none", "attack", "super") and FIRE_READY[3] == 3
     oh = from_state2(vec, grid, meta, hyper=np.array([0, 1]))    # self 4 from the host's state, not the fraction
     assert oh["self"][0, 4] == 0 and oh["self"][1, 4] == 1 and np.array_equal(np.delete(oh["self"], 4, 1), np.delete(o["self"], 4, 1))
-    assert FIRE[4] == "hypercharge" and FIRE_READY[4] == 4 and not FIRE_AIM[4] and OBS_VERSION == "v5.9"
+    assert FIRE[4] == "hypercharge" and FIRE_READY[4] == 4 and not FIRE_AIM[4] and OBS_VERSION == "v5.10"
     e = o["ent"][0]; cls = lambda k: ENT[int(e[k, 1:1 + len(ENT)].argmax())]
     got = [(k, cls(k)) for k in np.nonzero(e[:, 0])[0]]
     assert got == [(0, "enemy"), (1, "teammate"), (2, "enemy_summon"), (3, "teammate_summon"), (9, "teammate_projectile"),
@@ -619,10 +667,11 @@ def _check():
     pv = np.stack([preset_vec(k) for k in PRESETS])
     assert pv.shape == (len(PRESETS), len(SLIDERS)) and pv.min() >= 0 and pv.max() <= 2 and (preset_vec("balanced") == 1).all()
     assert preset_vec("bush_camper")[SLIDERS.index("bush_camp")] == 2 and len({tuple(r) for r in pv}) == len(PRESETS)
-    assert N_INT == 11 and len(INTENTS) == 8 and INTENTS[0] == "none" and N_S == N_SELF + N_COND + N_INT == 49 and S_INT == 38
-    assert (I_XY, I_RAD, I_LEFT) == (7, 9, 10) and OBS_VERSION == "v5.9"
-    assert (F_ENT_V55, ID0, ID_KNOWN, LOS, F_ENT) == (20, 20, 33, 34, 36)
+    assert N_INT == 13 and len(INTENTS) == 10 and INTENTS[0] == "none" and N_S == N_SELF + N_COND + N_INT == 51 and S_INT == 38
+    assert (I_XY, I_RAD, I_LEFT) == (9, 11, 12) and OBS_VERSION == "v5.10" and N_INT_V59 == 11 and INTENTS[8:] == ("super", "check_bush")
+    assert (F_ENT_V55, ID0, ID_KNOWN, LOS, F_ENT_V59, CUB, F_ENT) == (20, 20, 33, 34, 36, 36, 38)
     _check_id(vec, grid, meta)
+    _check_cubes(vec, grid, meta)
     print("obs_v5 ok (%s): %d brawlers, %d thrown, %d melee, cond %d, intent %d, s %d, ent %dx%d" % (
         OBS_VERSION, len(hs), st[:, 6].sum(), st[:, 7].sum(), N_COND, N_INT, N_S, N_ENT, F_ENT))
 
@@ -652,7 +701,7 @@ def _check_id(vec, grid, meta):
     g2 = g.copy(); g2[0, 12, 14] = _S("bush"); g2[0, 12, 13] = UNKNOWN                   # a box: no line; a rope fence up-left
     assert not los(en, g2)[0, 0].any() and los(en, g2)[0, 1, 1] == 1 and _BLOCK_PJ[[_S("destructible_wall"), _S("fragile_wall"), _S("bouncer")]].all()
     assert not _BLOCK_PJ[[_S("water"), _S("rope_fence"), _S("bush"), UNKNOWN]].any() and _BLOCK_MV.sum() == 2
-    assert np.array_equal(o["ent"][..., LOS:], los(o["ent"], o["grid"])) and o["ent"][0, 0, LOS] == 1   # enemy 0: the Indestructible at 12, 13
+    assert np.array_equal(o["ent"][..., LOS:LOS + 2], los(o["ent"], o["grid"])) and o["ent"][0, 0, LOS] == 1   # enemy 0: the Indestructible at 12, 13
     # noisy: per battle fixed identity, per decision projectile links
     q0 = {k: (0.0, 0.0) for k in NOISE if not k.startswith(("id_", "pj_"))}; q0["latency"] = (0, 0)
     nz = dict(q0, id_known=(0.5, 0.5), id_known_mate=(0.9, 0.9), id_wrong=(1, 1), pj_owner_known=(0.5, 0.5))
@@ -679,6 +728,35 @@ def _check_id(vec, grid, meta):
     assert not ObsV5(noise=nz).build(v1, g1, m1, [16])["ent"][..., ID0:ID0 + N_ID].any()
     perfect = ObsV5(noise=q0, seed=1).build(v1, g1, m1, [16], who=W)["ent"][0]                # no id_* keys: identity perfect
     assert np.array_equal(perfect[:, ID0:ID0 + N_ID], from_state2(v1, g1, m1, W)["ent"][0, :, ID0:ID0 + N_ID])
+
+
+def _check_cubes(vec, grid, meta):
+    """v5.10 power cubes: held / 10 (clip 2) + known on enemy / teammate player rows with an owner, 0 elsewhere and for a
+    3-column who; noisy: read or never read per player for the battle, +-1 misreads per decision (never below 0)"""
+    W = np.full((1, N_ENT, 4), -1, np.int16); v1, g1, m1 = vec[:1], grid[:1], meta[:1]
+    W[0, 0] = [3, id_row("Sniper"), WHO_FOE, 7]; W[0, 1] = [5, id_row("BullDude"), WHO_MATE, 25]
+    W[0, 2] = [4, -1, WHO_FOE, 3]; W[0, 10] = [3, id_row("Sniper"), WHO_FOE, 7]   # a summon row, a projectile row: no count
+    e = from_state2(v1, g1, m1, W)["ent"][0]
+    assert np.allclose(e[:3, CUB:CUB + 2], [[0.7, 1], [2.0, 1], [0, 0]]) and not e[3:, CUB:].any(), e[:4, CUB:]
+    assert np.array_equal(e[:, :CUB], from_state2(v1, g1, m1, W[..., :3])["ent"][0, :, :CUB])   # nothing else changes
+    assert not from_state2(v1, g1, m1, W[..., :3])["ent"][..., CUB:].any() and not from_state2(v1, g1, m1)["ent"][..., CUB:].any()
+    q0 = {k: (0.0, 0.0) for k in NOISE if not k.startswith(("id_", "pj_", "cube_"))}; q0["latency"] = (0, 0)
+    perfect = ObsV5(noise=q0, seed=1).build(v1, g1, m1, [16], who=W)["ent"][0]                # no cube_* keys: counts perfect
+    assert np.array_equal(perfect[:, CUB:], e[:, CUB:])
+    ob = ObsV5(noise=dict(q0, cube_known=(0.5, 0.5), cube_misread=(0.5, 0.5)), seed=5); kn, mis = [], []
+    for aid in range(16, 16 + 16 * 400, 16):              # 400 battles of agent 0, 6 decisions each
+        ks = []
+        for t in range(6):
+            o = ob.build(v1, g1, m1, [aid], who=W)["ent"][0]; ks.append(o[:2, CUB + 1].copy())
+            assert not o[2:, CUB:].any()
+            if o[0, CUB + 1]: assert np.round(o[0, CUB] * 10) in (6, 7, 8); mis.append(np.round(o[0, CUB] * 10) != 7)
+            if o[1, CUB + 1]: assert np.round(o[1, CUB] * 10) in (19, 20)           # 25 +-1 still clips at 20
+        ks = np.array(ks); assert (ks == ks[:1]).all(); kn.append(ks[0])            # read or not: fixed for the battle
+    kn = np.array(kn)
+    assert 0.44 < kn[:, 0].mean() < 0.56 and 0.44 < kn[:, 1].mean() < 0.56 and 0.44 < np.mean(mis) < 0.56, (kn.mean(0), np.mean(mis))
+    z = np.zeros((1, N_ENT), np.int64); z[0, 0] = 0; W0 = W.copy(); W0[0, 0, 3] = 0
+    o = ObsV5(noise=dict(q0, cube_known=(1, 1), cube_misread=(1, 1)), seed=2).build(v1, g1, m1, [16], who=W0)["ent"][0]
+    assert o[0, CUB + 1] == 1 and o[0, CUB] in (0.0, np.float32(0.1))   # 0 - 1 stays 0
 
 
 def _live(decisions=300):

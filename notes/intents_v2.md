@@ -206,3 +206,34 @@ thrower_wall engage has no ammo gate (not in the plan). Live census not run (no 
 **Deferred.** check_bush before farming a box next to a bush (3.2); the enemy cubes column (3.1: replace the one
 `ecubes` line); duo / trio drop caps in the finish value; `resolve` still snaps world targets without a true-map path
 check (overlay draws its own path on the true walk grid).
+
+## As-built notes for PR B (OBS v5.10, sim side)
+
+**Cubes (3.1).** `obs_v5.CUB` (col 36) = cubes held / 10 (clip 2), col 37 = known, on enemy / teammate player rows only.
+`Env.who` grew a 4th column, the owner's cubes held (the HUD count `Env._hud` keeps per poll, `cubes_total`), so every
+`build(..., who=env.last_who)` call site gets the counts without a new argument; a 3-column `who` (older recordings) or
+`who=None` leaves them unknown. Noise (`NOISE`, guesses until the live reader is measured): `cube_known` 0.5-1.0 = chance
+per player and battle that its number is ever read, `cube_misread` 0-0.1 = per read row and decision, off by +-1 (never
+below 0). The draws ride on `id_draws` (3 more per episode) and one `(B, N_ENT, 2)` uniform per decision after the
+identity links; `fast_obs` makes the same draws in the same order (self-check bit-equal). The planner reads the row's
+count when known, else the prior (my count).
+
+**Intents (3.2).** `INTENTS` += super (8), check_bush (9); `N_INT` 11 -> 13, the one-hot grows before dx, dy.
+`model.pad_param` inserts the two new columns into a v5.9 `vec.0` at `S_INT + 7` (also Adam moments); entity rows
+36 -> 38 pad like v5.6. Self-check: a v5.9 checkpoint acts the same whatever the cube / new-kind columns hold.
+- super: target an enemy (anchored), r = 0.8 x own super range (`sl["srange"]` from brawler_stats[12]). Fired = the
+  host's `super_charge` drops from `super_max`; achieved = within 2 s my damage dealt and the target's damage taken in
+  the same step (the host has no per-source damage: shortcut); fired and 2 s without that, or the target down first:
+  invalid. Readiness is checked at the pick (obs self 2 = state2 vec 5), not by the reward.
+- check_bush: a bush tile in my range (static), r = 0.8 x own range, max 2 s. Shot = the step's action fire 1 with its
+  aim within 15 deg of the tile and an ammo bar spent (`pl.ammo` dropped). Enemies hidden on / next to the tile at the
+  shot (in a bush, not seen by me): the intent waits <= 2 s for one to take my damage (+0.05), else ends with the
+  shot's 0.03. Bush gone: invalid; no shot by 2 s: timeout.
+- Planner rules (15 -> 17): `super` right after low_hp (ready, an Attack-type super, an enemy in super range below 50 %:
+  the observation has no super damage, so "would drop below 0" became a low-HP proxy; the lob-over-a-wall case is not
+  built); `check_bush` before farm (no enemy in view, ammo >= 2/3, bush_control >= 0.8, nearest bush tile 1.5 .. range
+  tiles, at most once per `CB_EVERY` = 8 s: `decide(since_cb=)`, the env hook reads it from the intent state's `cb_n`).
+- `export_policy` spec gains `intents` (the kind names), so the bot can refuse a block it does not know.
+
+**Not done here.** The aux heads into the planner (3.3) wait for a run with `--aux-w`. Host checks (`test_fast`, a smoke
+run) are not run in this PR; the BSRL side (spec / adapter / policy + the enemy cube OCR) is in the bsrl repo.

@@ -305,7 +305,8 @@ def slider_state(tiles, W, H, brawlers, rng, n=10, w=None, mode="uniform"):
     # own attack range (units); floor 600 = 2 tiles, the shortest real melee reach (Rock has no CastingRange)
     rg = [max(float(O.brawler_stats(b)[0]) * 3000, 600.0) if b else 2400.0 for b in (list(brawlers) + [None] * n)[:n]]
     w = sample_sliders(rng, n, mode) if w is None else np.broadcast_to(np.asarray(w, np.float64), (n, len(SL))).copy()
-    return slider_map({"w": w, "range": np.array(rg),
+    sr = [float(O.brawler_stats(b)[12]) * 3000 if b else 0.0 for b in (list(brawlers) + [None] * n)[:n]]   # super range (units)
+    return slider_map({"w": w, "range": np.array(rg), "srange": np.array(sr),
                        "hid": np.zeros(n, bool), "low": np.zeros(n, bool), "hp": np.full(n, np.nan),
                        "held": np.zeros(n), "was": np.zeros(n, bool), "mhit": np.zeros(n),
                        "checked": np.zeros((n, H, W), bool), "sum": np.zeros((n, len(SL))), "sumw": np.zeros((n, len(SL))),
@@ -511,15 +512,16 @@ class Env(MAEnv):
         return super()._flags() | P.F_STATE | (P.F_REC if self.record else 0) | (P.F_MAP if getattr(self, "_map_now", False) else 0)
 
     def who(self, ids, vec):
-        """(B, N_ENT, 3) int16 per observation row (obs_v5 `who`): owner player index, its brawler's obs_v5.id_lut row,
-        side (obs_v5.WHO_FOE / WHO_MATE / WHO_ME); -1 = none. From the host's snap2 dump of this response (the state the
+        """(B, N_ENT, 4) int16 per observation row (obs_v5 `who`): owner player index, its brawler's obs_v5.id_lut row,
+        side (obs_v5.WHO_FOE / WHO_MATE / WHO_ME), the owner's power cubes held (obs v5.10: the HUD count of this poll,
+        NbePlayer.cubes_total, 0 after a team knock-out); -1 = none. From the host's snap2 dump of this response (the state the
         encoder wrote the rows from; characters [0] id, [1] data id, [2] owner player, [3, 4] x, y, [6] hp, [18] not a
         brawler class; projectiles [2] owner, [3, 4] x, y; players [0] index, [1] team, [2] character, [3] controlled),
         matched to the fair rows by position: a row's dx, dy are float32((x - my x) / 3000) of exactly one dump row (an
         exact tie of two objects takes the first in dump order). Enemy-block rows that are brawlers (feature 14 = 0) match
         the players' brawlers, projectile rows the projectiles; summons, boxes, items: -1. The brawler = the character's
         data id (the tag's pick if its character is gone, e.g. a projectile of an eliminated player)."""
-        B = len(ids); out = np.full((B, O.N_ENT, 3), -1, np.int16)
+        B = len(ids); out = np.full((B, O.N_ENT, 4), -1, np.int16)
         if not B: return out
         ids = np.asarray(ids, np.int64); by = {s.battle: s for s in self.I}
         for bat in np.unique(ids >> 4):
@@ -533,6 +535,8 @@ class Env(MAEnv):
             bid[pl[ok, 0]] = np.where((pl[ok, 3] != 0) & (pl[ok, 3] != -2 ** 31), pl[ok, 3], pl[ok, 2])
             own = ch[:, 2]; br = (ch[:, 18] == 0) & (own >= 0) & (own < 16) & (ch[:, 0] == bid[np.clip(own, 0, 15)])
             hero = np.array([O.id_row(c) for c in ((s.cfg.get("tag") or {}).get("chr") or [""] * 10)] + [-1] * 16, np.int64)[:16]
+            held = np.full(16, -1, np.int64)               # cubes per player: the HUD numbers of this poll (_hud)
+            if getattr(s, "hud", None): held[:len(s.hud[0])] = s.hud[0][:16]
             for c in np.flatnonzero(br):                 # the character on the map names the brawler
                 r_ = O.id_row_of_data(ch[c, 1])
                 if r_ >= 0: hero[own[c]] = r_
@@ -555,7 +559,7 @@ class Env(MAEnv):
                 if blk == 0: hit &= e[:, :, 14:15] < 0.5         # summons stay unknown
                 got = hit.any(2); q = oc[hit.argmax(2)]
                 side = np.where(q == p[:, None], O.WHO_ME, np.where(team[q] == team[p][:, None], O.WHO_MATE, O.WHO_FOE))
-                w = np.stack([q, hero[q], side], -1); w[~got] = -1
+                w = np.stack([q, hero[q], side, held[q]], -1); w[~got] = -1
                 out[rows, blk:blk + K] = w
         return out
 
@@ -752,15 +756,17 @@ class Env(MAEnv):
         x, y, team = w["x"], w["y"], w["team"]; oth = w["up"].copy(); oth[p] = False
         foes = [[q, x[q], y[q]] for q in np.flatnonzero(oth & (team != team[p]) & w["sees"][p])]
         mates = [[q, x[q], y[q]] for q in np.flatnonzero(oth & (team == team[p]) & w["screen"][p])]
-        boxes = cubes = np.zeros((0, 2))
+        boxes = cubes = np.zeros((0, 2)); sup, ammo = False, 1.0
         v = getattr(self, "last_vec", None)
         if v is not None and b < len(v):
+            sup, ammo = bool(v[b, 5] >= 1.0), float(min(v[b, 2], 1.0))   # obs self 2 / self 1 (super ready, ammo)
             bx = v[b, FAIR.BX0:FAIR.BX0 + FAIR.BX_K * FAIR.BX_F].reshape(FAIR.BX_K, FAIR.BX_F)
             it = v[b, FAIR.IT0:FAIR.IT0 + FAIR.IT_K * FAIR.IT_F].reshape(FAIR.IT_K, FAIR.IT_F)
             at = lambda blk: np.stack([x[p] + blk[:, 1] * FAIR.R, y[p] + blk[:, 2] * FAIR.R], 1)
             boxes = at(bx[bx[:, 0] > 0.5]); cubes = at(it[(it[:, 0] > 0.5) & (it[:, 3] > 0.5)])
         return {"me": (x[p], y[p]), "range": float(s.sl["range"][p]), "W": w["W"], "H": w["H"], "ring": w["ring"],
-                "walk": s.sl["walk"], "bush": s.sl["bush"], "foes": foes, "mates": mates, "boxes": boxes, "cubes": cubes}
+                "walk": s.sl["walk"], "bush": s.sl["bush"], "foes": foes, "mates": mates, "boxes": boxes, "cubes": cubes,
+                "super": sup, "super_range": float(s.sl.get("srange", np.zeros(10))[p]), "ammo": ammo}
 
     def _choose(self, s, p, b, w, o, cond):
         """a steered agent's planner tick with no active intent -> an intent.new candidate or None (none for this second).
@@ -797,8 +803,10 @@ class Env(MAEnv):
     def _intent_start(self, s, p, st, c, w):
         tx, ty = (w["x"][c["q"]], w["y"][c["q"]]) if c.get("q", -1) >= 0 else c["pt"]
         d0 = np.hypot(tx - w["x"][p], ty - w["y"][p]) / 300.0
-        st["act"] = I.new(c, d0, s.sl["range"][p] / 300.0, steps_per_s=max(1, 20 // self.ticks)); st["cnt"][c["kind"]][0] += 1
+        st["act"] = I.new(c, d0, s.sl["range"][p] / 300.0, steps_per_s=max(1, 20 // self.ticks),
+                          super_t=s.sl.get("srange", np.zeros(10))[p] / 300.0); st["cnt"][c["kind"]][0] += 1
         st["act"]["rule"] = c.get("rule")                # the planner rule (None: a random intent, never preempted)
+        if c["kind"] == "check_bush": st["cb_n"] = st["n"]   # planner: the last bush check (its cooldown)
 
     def _raw_has(self, s, r, p, pt, obj):
         """is a box / cube still at pt (within 1 tile)? From agent p's raw state2 row of this response (the nearest 6 boxes /
@@ -830,6 +838,13 @@ class Env(MAEnv):
                     ev["in_range"] = d <= it["range"]
                     if dk[p] > 0 and ev["in_range"] and te[q] > 0: it["hit_t"] = t
                     if not up[q]: got = pl[p].kills > 0 or t - it["hit_t"] <= I.HIT_S * sps; lost = not got
+                elif k == "super":
+                    full = pl[p].super_max > 0 and pl[p].super_charge >= pl[p].super_max
+                    if it["fire_t"] is None and not full: it["fire_t"] = t       # fired (ready at the pick: candidates / planner)
+                    if it["fire_t"] is not None:
+                        if dk[p] > 0 and te[q] > 0: got = True                    # shortcut: my damage + its damage, same step
+                        elif not up[q] or t - it["fire_t"] > I.HIT_S * sps: lost = True
+                    elif not up[q]: lost = True
                 elif not up[q]: lost = True
             else:
                 seen = k != "farm" or bool(I.on_screen(x[p], y[p], px, py, w["W"]))   # unseen rule: anchored targets (players, farm objects)
@@ -841,6 +856,20 @@ class Env(MAEnv):
                         if not self._raw_has(s, r, p, (px, py), "box"): got = t - it["box_t"] <= I.HIT_S * sps; lost = not got
                     elif pl[p].cubes > 0 and d <= I.PICK: got = True
                     elif not self._raw_has(s, r, p, (px, py), "cube"): lost = True
+                elif k == "check_bush":
+                    if not s.sl["bush"][gy, gx]: lost = True
+                    a = getattr(s, "acts", {}).get(p); am = int(pl[p].ammo)
+                    if a is not None and int(a[1]) == 1 and am < it.get("ammo", -1):   # fire 1 and an ammo bar spent
+                        to = np.degrees(np.arctan2(py - y[p], px - x[p]))
+                        if abs((float(a[2]) - to + 180.0) % 360.0 - 180.0) <= I.SPEC["check_bush"]["ang"]:
+                            ev["shot"] = True; en = up & (team != team[p]) & ~w["sees"][p] & w["inb"]
+                            it["hide_q"] = [int(e) for e in np.flatnonzero(en & (np.abs(w["tx"] - gx) <= 1) & (np.abs(w["ty"] - gy) <= 1))]
+                            it["shot_at"] = t
+                    it["ammo"] = am
+                    hq = it.get("hide_q") or []
+                    if hq and dk[p] > 0 and any(te[e] > 0 for e in hq): got = True
+                    ev["wait"] = bool(hq) and t - it.get("shot_at", t) <= I.HIT_S * sps
+                    seen = True                                                    # a static tile: never lost unseen
                 elif k == "hide":
                     if not s.sl["bush"][gy, gx]: lost = True
                     en = up & (team != team[p])
@@ -927,7 +956,8 @@ def _check():
     from types import SimpleNamespace as NS
     def players(**over):
         pl = [NS(x=1650 + 3000 * (p % 5), y=1650 + 6000 * (p // 5), hp=3000, max_hp=4000, damage_dealt=0, bomb_damage=0, damage_taken=0,
-                 box_damage=0, cubes=0, cubes_total=0, gas_damage=0, in_gas=0, kills=0, reserved=[0, 0, p, 0], alive=1, eliminated=0) for p in range(10)]
+                 box_damage=0, cubes=0, cubes_total=0, gas_damage=0, in_gas=0, kills=0, reserved=[0, 0, p, 0], alive=1, eliminated=0,
+                 super_charge=0, super_max=1000, ammo=3000) for p in range(10)]
         for k, v in over.items(): setattr(pl[int(k[1])], k[3:], v)
         return pl
     cub, left = Env._hud(None, NS(cfg={"tag": {"groups": [1, 1, 1, 2, 2, 2, 3, 3, 3, 0]}}),   # cond's HUD numbers
@@ -1174,7 +1204,7 @@ def _check_aux(players, tiles, bush, NS):
 def _check_who(NS):
     """Env.who on a synthetic snap2 dump + the fair rows the encoder would write from it (dx, dy = float32 of the offset
     / 3000): brawlers -> owner / tag brawler (or the character's data id) / side; summons, boxes, items none; projectiles
-    their owner (mine = WHO_ME); my own brawler is never a row; a vacant slot none"""
+    their owner (mine = WHO_ME); my own brawler is never a row; a vacant slot none; cubes held from the HUD numbers"""
     chr_ = ["Sniper", "BullDude", "ShotgunGirl", "Gunslinger", "RocketGirl", "Sniper", "BullDude", "Sniper", "Sniper", "Sniper"]
     team = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]; NIL = -2 ** 31; cd = lambda n: D.table("characters.csv")[n][0]
     pl = [[i, team[i], 100 + i, NIL if i != 4 else 400, 0, 1, 0, 0] for i in range(10)]   # player 4 controls character 400
@@ -1186,7 +1216,8 @@ def _check_who(NS):
     pj = [[500 + k, 0, q, 3000 + 100 * k, 5000, 0] + [0] * 12 for k, q in enumerate([0, 2, 1, 7])]
     a = np.zeros(8192, np.int32); a[[0, 3, 4, 5, 6]] = [0x4e423253, 10, len(ch), len(pj), 0]
     flat = np.array(sum(pl, []) + sum(ch, []) + sum(pj, []), np.int32); a[8:8 + len(flat)] = flat
-    env = Env.__new__(Env); env.I = [NS(battle=1, inst=NS(state_i32=a), cfg={"tag": {"chr": chr_}})]
+    held = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    env = Env.__new__(Env); env.I = [NS(battle=1, inst=NS(state_i32=a), cfg={"tag": {"chr": chr_}}, hud=(held, 9))]
     vec = np.zeros((1, 436), np.float32); mx, my = xy[0]; f = lambda v, m: np.float32((v - m) / FAIR.R)
     rows = [(xy[2], 0, 0), (xy[1], 0, 1), (xy[4], 0, 0), ((3300, 6300), 1, 0)]        # (position, summon, on my team): players 2, 1, 4, the summon
     for k, ((x, y), summ, mate) in enumerate(rows):
@@ -1194,14 +1225,14 @@ def _check_who(NS):
     for k, r in enumerate(pj): o = FAIR.PJ0 + k * FAIR.PJ_F; vec[0, o:o + 3] = [1, f(r[3], mx), f(r[4], my)]; vec[0, o + 5] = r[2] == 0
     o = FAIR.BX0; vec[0, o:o + 3] = [1, f(3600, mx), f(6300, my)]
     w = env.who(np.array([16]), vec)[0]
-    assert w.shape == (O.N_ENT, 3) and w.dtype == np.int16
-    assert w[0].tolist() == [2, O.id_row("ShotgunGirl"), O.WHO_FOE] and w[1].tolist() == [1, O.id_row("BullDude"), O.WHO_MATE], w[:3]
-    assert w[2].tolist() == [4, O.id_row("Gunslinger"), O.WHO_FOE] and (w[3] == -1).all() and (w[4:9] == -1).all()
+    assert w.shape == (O.N_ENT, 4) and w.dtype == np.int16
+    assert w[0].tolist() == [2, O.id_row("ShotgunGirl"), O.WHO_FOE, 2] and w[1].tolist() == [1, O.id_row("BullDude"), O.WHO_MATE, 1], w[:3]
+    assert w[2].tolist() == [4, O.id_row("Gunslinger"), O.WHO_FOE, 4] and (w[3] == -1).all() and (w[4:9] == -1).all()
     side = [O.WHO_ME, O.WHO_FOE, O.WHO_MATE, O.WHO_FOE]
-    assert [w[FAIR.EN_K + k].tolist() for k in range(4)] == [[q, O.id_row(chr_[q]), sd] for q, sd in zip([0, 2, 1, 7], side)], w[9:13]
+    assert [w[FAIR.EN_K + k].tolist() for k in range(4)] == [[q, O.id_row(chr_[q]), sd, q] for q, sd in zip([0, 2, 1, 7], side)], w[9:13]
     assert (w[FAIR.EN_K + 4:] == -1).all()                                            # vacant projectile slots, boxes, items
     vec[0, FAIR.EN0 + 1:FAIR.EN0 + 3] = [0, 0]                                       # a row at my own spot: never my brawler
-    assert (env.who(np.array([16]), vec)[0, 0] == -1).all() and env.who(np.zeros(0, np.int64), vec[:0]).shape == (0, O.N_ENT, 3)
+    assert (env.who(np.array([16]), vec)[0, 0] == -1).all() and env.who(np.zeros(0, np.int64), vec[:0]).shape == (0, O.N_ENT, 4)
 
 
 def _check_intents(players, tiles, NS):
@@ -1253,6 +1284,24 @@ def _check_intents(players, tiles, NS):
     st["act"] = I.new(dict(kind="farm", q=-1, pt=(1650.0 + 900, 1650.0), obj="box"), 3.0)
     tr = step(mk(p0_box_damage=1000)); assert np.isclose(tr[0][0], 0.25 * 0.03) and st["act"] is not None   # box part (capped)
     raw[0, o:o + 5] = 0; tr = step(mk()); assert np.isclose(tr[0][0], 0.25 * 0.03) and st["cnt"]["farm"][1] == 1   # broken by me
+    # super on p1 (10 tiles right): fired (charge full -> 0), then my damage + its damage -> achieved; a miss: invalid after 2 s
+    su = lambda: I.new(dict(kind="super", q=1, pt=None), 10.0, 10.0, steps_per_s=10, super_t=8.0)
+    st["act"] = su(); step(mk(p0_super_charge=1000)); step(mk()); assert st["act"]["fire_t"] == 2
+    tr = step(mk(p0_damage_dealt=900, p1_damage_taken=900)); assert st["cnt"]["super"][1] == 1 and tr[0][0] >= 0.25 * 0.05
+    st["act"] = su(); step(mk(p0_super_charge=1000)); n_inv = st["cnt"]["super"][3]
+    for _ in range(25): step(mk())
+    assert st["act"] is None and st["cnt"]["super"][3] == n_inv + 1
+    # check_bush: a bush tile 4 tiles right; fire 1 toward it with an ammo bar spent -> achieved; aimed 90 deg off: no shot;
+    # an enemy hidden on it: the hit pays the extra bonus
+    s.sl["bush"][5, 9] = True; bt = (9.5 * 300, 5.5 * 300); cb = lambda: I.new(dict(kind="check_bush", q=-1, pt=bt), 4.0, 8.0, steps_per_s=10)
+    st["act"] = cb(); s.acts = {0: [0, 0, 0, 0]}; step(mk()); s.acts = {0: [0, 1, 90, 0]}; step(mk(p0_ammo=2000))
+    assert st["act"] is not None and st["act"]["shot_t"] is None                                         # aimed down: not at it
+    s.acts = {0: [0, 1, 2, 0]}; tr = step(mk(p0_ammo=1000)); assert st["act"] is None and st["cnt"]["check_bush"][1] == 1 and np.isclose(tr[0][0], 0.25 * 0.03)
+    hid = dict(p1_x=int(bt[0]), p1_y=int(bt[1]))
+    st["act"] = cb(); s.acts = {0: [0, 0, 0, 0]}; step(mk(**hid)); s.acts = {0: [0, 1, 0, 0]}; step(mk(p0_ammo=2000, **hid))
+    assert st["act"] is not None and st["act"]["hide_q"] == [1]                                          # waits for the hit
+    tr = step(mk(p0_damage_dealt=500, p1_damage_taken=500, **hid)); assert st["act"] is None and np.isclose(tr[0][0], 0.25 * 0.08), tr[0][0]
+    s.acts = {}
     st["act"] = mv(); st["cnt"]["move_to"][0] += 1
     tr = step(mk(p0_eliminated=1)); assert tr[0][0] == 0 and st["cnt"]["move_to"][3] >= 1                  # knocked out: invalid
     row = env.episodes[-1]; got = sum(t.get("i_rew", 0.0) for a, _, _, t, _ in env._trans if a == 16)
