@@ -674,6 +674,12 @@ def _check():
         o_ = torch.optim.Adam(net.parameters(), lr=1e-3)
         for _ in range(10): l, _ = imit_nll(net, b, "cpu"); o_.zero_grad(); l.backward(); o_.step()      # fits a fixed batch
         assert imit_nll(net, b, "cpu")[0].item() < l0.item()
+        I_ = argparse.Namespace(imit_data=d, imit_updates=2, imit_w=0.0, imit_chunks=4, imit_burn=6, seq=4, seed=1,
+                                bc_lr=1e-3, epochs=2)   # the shared helpers train_ppo and train_fast call
+        ds2, ib = imit_open(I_); assert ds2.n == ds.n and ib()["w"].shape[:1] == (4,)
+        o_ = torch.optim.Adam(net.parameters(), lr=1.0); imit_pretrain(I_, net, o_, list(net.parameters()), ib, "cpu")
+        assert o_.param_groups[0]["lr"] == 1e-3                                                          # lr set to --bc-lr
+    assert imit_open(argparse.Namespace(imit_data="", imit_updates=0, imit_w=0.0, seed=1))[0] is None   # off by default
     print("train_ppo helpers ok")
 
 
