@@ -269,6 +269,18 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   battle is built (character ids restart; an old entry kept a new summon from getting its area). Frank's and Griff's masks were
   stale (both already worked). Notes:
   `notes/issue64.md`. `python -m super_audit --gadget`, `python -m gadget_check`.
+- `summons_dashes.patch` (issue #46 batches 3b and 4, a diff on top of `masked_seven.patch`): `gadget.c`'s SUMMON kind
+  places a spawn row's characters.csv summon with libg's summon factory 0xb56e00 (Penny's barrel, Bea's honey pot, Grom's
+  watchtower, Janet's speaker, Stu's booster and Leon's clone at the brawler; Tara's shadows, Charlie's spiders and Ruffs'
+  sandbags CustomValue1 of them CustomValue2 out; Tara's go after CustomValue3 ticks, Ruffs' get CustomValue4 % of his max
+  HP; Grom's tower answers the bush hiding through `gadget_summon_vision`), and Rico's Type 76 row is a SHOT (libg bursts
+  the container). The CHARGE kind runs a gadget's Charge skill (Wendy, Glowy, Bolt, Brock, Max, Shelly; Angelo's
+  activate_skill) through `env.c`'s new `env_charge_start`: the native charge with the skill's ChargeType (jumps and
+  flights straight over walls), no super slot or contact damage, the skill's areas at take-off / landing, its
+  ActivationSelfStatusEffects (Max's shield) and Reload flag (Shelly). DASH rows get their AreaEffect at the start (Maisie's
+  stun) and SubType 3's ammo (Clancy), and DASH / CHARGE are not ready mid-charge. `superfix.c`: a summon's damage area
+  takes the summoner's weapon Damage and its Dot area hits every 20 ticks (Janet). Notes: `notes/issue46_b34.md`.
+  `python -m super_audit --gadget`, `python -m gadget_check`.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc` (now `engine/py/nbpc`),
   so one `nbpc` package holds the host side and the environment side.
 - The game download link removed from bulletlabels' `setup.sh` (`engine/setup.sh`) (this repo's `setup.sh` downloads it instead).

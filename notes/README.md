@@ -30,4 +30,5 @@ docstrings and comments are the spec.
 | `behaviour_design.md` | sliders, intents, planner, scenarios, enemy identity: the approved design + as-built notes (steps C, S, D, BI, E, the #9 port) | #10, #11 |
 | `cloud_runs.md` | #48 runs r48-r51 on a 4-core CPU container: settings, what broke, keeping a run alive | this branch |
 | `findings.md` | loose measurements and owner decisions with no issue of their own; BrawlAPI | this branch |
+| `issue46_b34.md` | #46 batches 3b and 4: the summon gadgets (SUMMON) and the Charge-skill gadgets (CHARGE), Maisie's stun and Clancy's reload on their dashes; live numbers, guesses | this branch |
 | `issue64.md` | #64 the last seven masked gadgets (Bo, Max, Frank, Griff, Leon, Damian, Starr Nova): causes, fixes, live numbers | this branch |

@@ -15,8 +15,16 @@
  * Implemented kinds (RE-IMPLEMENTED, not the game's server code, which is compiled out):
  *   DASH  type 2 (the 7 dash rows: Cannon Girl, Maisie, Twins, Crab, Digger, Lightyear, Skater): the brawler moves
  *         CustomValue1 units (600..1300) along the aim at CustomValue2 u/s (2000..3500) with the native charge mover
- *         (env.c env_dash_start). Movement only: a row's extras (Maisie's damage area, Skater's taunt, CustomValue3/4) are
- *         not applied, and the "requires ..." conditions (MissingTargetText) are not checked.
+ *         (env.c env_dash_start). Extras (issue #46 batch 4): a row's AreaEffect at the start point (Maisie's MaisieDashArea,
+ *         a Stun area: superfix_cc stuns the enemies in it for its CustomValue, 10 ticks), and SubType 3's CustomValue3 / 100
+ *         ammo bars back (Clancy). Not applied: Bonnie's and Moe's knockback and damage (CustomValue3 / 4), Moe's wall
+ *         breaking, Ollie's taunt (CustomObject), the Twins' dash to each other and heal, and the "requires ..." conditions
+ *         (MissingTargetText).
+ *   CHARGE  an empty Type with a Skill whose BehaviorType is Charge (Brock, Max, Shelly, Glowy, Bolt, Wendy), and
+ *         activate_skill (52) naming a Charge skill in CustomObject (Angelo; issue #46 batch 4; published DASH): the skill's
+ *         own charge with its ChargeType and speed through env.c env_charge_start, its areas at take-off / landing, its
+ *         ActivationSelfStatusEffects (Max's shield while dashing) and its Reload flag (Shelly's full reload). See the
+ *         CHARGE block for the distances and the guesses.
  *   HEAL  type 8, SubType 2 (Bibi's Vitamin Booster, Byron's Shot in the Arm) and 4 (Meg's, only in her mech: characters.csv
  *         UniqueProperty 2 through 0xab3d04, as env.c mech_pop): heals CustomValue1 % of max hp per second (the card texts
  *         say "per second for N seconds") for ActiveTicks ticks, at most up to max hp, ended by the brawler's death or a
@@ -47,7 +55,10 @@
  *         row with DamageOnlyWithOneProj (Emz's spray) damages each target with one projectile of the volley only, through
  *         the attack path's sibling list (volley). The skill's timing (ActiveTime, MsBetweenAttacks waves) is not read:
  *         g_waves lists the cards whose description names more waves (Colt's Gunslinger_Reload: two shots, issue #55).
- *         Not applied: TwoGuns, AttackPattern. A skill with UseWeaponAmmo (Frank's Pull, Shelly's Clay Pigeons, ...) needs
+ *         Not applied: TwoGuns, AttackPattern. Type 76 aim_with_gadget_collision (Rico's Multiball Launcher) is a SHOT too: the
+ *         type only bends the client's aim line; the container its shot leaves bursts into bouncing bullets when it is
+ *         destroyed by libg itself (issue #46 batch 3b: a live run, TrickshotDudeAccessoryExplosion and its 8 bullets through
+ *         spawnfix.c's BulletExplosion). A skill with UseWeaponAmmo (Frank's Pull, Shelly's Clay Pigeons, ...) needs
  *         and spends one weapon ammo bar per fire [?] (shot_ready, issue #64).
  *   REWIND  Max's Speedy_Rewind (card 23000311 only; published PROJECTILE; issue #64): the skill's bolt at the aim, whose
  *         end spawns its SpeedyRewindArea (libg); when the area runs out (3 s), or at a second fire while it is up (the
@@ -64,6 +75,11 @@
  *   ITEM  spawn rows whose CustomObject is an items.csv row (Belle's trap, Gale's Twister; SPAWN): the item at the brawler
  *         through the item factory 0xb55684, with the main attack's Damage x CustomValue1 % as its damage; Gale's WindWall
  *         also gets env's repel zone (env_repel_zone), which this libg lacks.
+ *   SUMMON  spawn rows whose CustomObject is a characters.csv row, SubType 1 / 2 / 5 (issue #46 batch 3b; SPAWN): the summon
+ *         from libg's summon factory 0xb56e00 at the brawler (1: Penny, Bea, Grom, Janet, Stu; 2: Leon's clone) or
+ *         CustomValue1 of them CustomValue2 out (5: Tara and Charlie around the brawler, Ruffs' sandbags in an arc towards the
+ *         aim with CustomValue4 % of his max HP); Tara's shadows go after CustomValue3 ticks, Grom's watchtower answers the
+ *         bush hiding (gadget_summon_vision). See the SUMMON block for the guesses.
  *   SUPER charge_ulti (R-T; published SUPER): the super charge to CustomValue1 % of its maximum.
  *   BUOY  ulti_change SubType 1 with CustomValue5 (Buzz's Reserve Buoy; SUPER): the super filled, ready only while it is not
  *         full. The card's catch, a next torpedo that does not stun: the host's grapple (superfix_moves.c, Buzz's pull and
@@ -93,13 +109,13 @@
  *   SELF  the gadgets that act on the brawler itself (issue #46, gadget_self.c; published STATUS, Hank's and Lou's SHIELD):
  *         statuses in superfix's store (Jacky, Bonnie, Hank, Lou, Willow, Juju, Kit's box, Surge x2, Trunk, Moe), Draco's
  *         Last Stand, Sandy's sleep, Tara's and Buzz's bush vision. Its header lists what each one does and the guesses.
- * Readiness: a kind may have a ready() test (NEXT: not while a modifier is pending; HEAL: Meg out of her mech, Byron without
+ * Readiness: a kind may have a ready() test (DASH / CHARGE: alive and not already in a charge; NEXT: not while a modifier is pending; HEAL: Meg out of her mech, Byron without
  * ammo; SHOT: a UseWeaponAmmo skill without an ammo bar; BUOY: the super full; SELF: an effect still running, a form gate); while it fails the gadget publishes a
  * cooldown of at least 1 and a fire is refused without spending a use. Cooldown: the accessory's +0xc4, else the Skill's
  * BonusSkillCooldown (getter 0xb0d878, the gadget value of the skill), else its Cooldown (ms / 50). A skill gadget whose
  * skill has MaxCharge > 1 (Shelly's Clay Pigeons, Colette's lifesteal shot: 3, "can be fired 3 times before cooldown")
  * fires that many times per cooldown, the skill's own Cooldown (ms) apart [?]; the cooldown starts after the last one.
- * Every other gadget publishes kind NONE (not usable): summons / turrets, the Charge skills (Brock's jump, Max's dash, ...),
+ * Every other gadget publishes kind NONE (not usable): the other summons / turrets (meteor, air strike, ...),
  * weapon / super swaps, the masked rows (g_masked), the not-doable cards below, ... Each player gets GAD_USES uses per
  * battle (unlimited by default, as in the live game since February 2025) and the accessory's cooldown between uses.
  * The accessory's Type parses to the int at +0x24 (0xb2731c: dash 2, spin_shoot 3, heal 8, spawn 9, vision 12,
@@ -142,6 +158,7 @@ void hook_enter(Module *m, uint64_t off, void (*fn)(uint64_t *ctx));
 extern int32_t g_div_gadget[NBE_MAXP];   /* env.c: the RESET's requested gadget cards (offline.c puts them in the configs) */
 void *env_obj_by_id(void *sim, int id);  /* env.c */
 int env_dash_start(uint8_t *ch, int tx, int ty, int speed);   /* env.c: -> path length, 0 = no dash */
+int env_charge_start(uint8_t *ch, int tx, int ty, int speed, int type, int push, void *area_start, void *area_end, int straight);
 /* gadget_self.c: the SELF kinds (statuses, shields, sleep, last stand, vision) */
 int gself_kind(void *ad, int type); int gself_published(int sk); int gself_ready(void *sim, int pid, uint8_t *ch, void *ad, int sk);
 int gself_fire(void *sim, int pid, uint8_t *ch, void *ad, int card, int sk, int tick);
@@ -152,9 +169,10 @@ void gself_note_tick(void *sim, int tick); void gself_clear(void); void gself_ro
                            * cooldown is the accessory's (accessories.csv Cooldown, e.g. Bibi 400 ticks = the 20 s of the
                            * Feb 2026 notes). NB_GAD_USES=3 restores the old 3 uses per battle (issue #22). */
 #define REP_MAX 20        /* REPEAT / SPIN: shots per use at most (Gene 100 / 5) */
+#define SUM_MAX 8         /* SUMMON: summons per use at most (the SubType 5 rows have CustomValue1 3) */
 #define TICKS_PER_S 20    /* 50 ms ticks */
 enum { ACC_PLAIN = 0, ACC_DASH = 2, ACC_SPIN = 3, ACC_HEAL = 8, ACC_SPAWN = 9, ACC_REPEAT = 13, ACC_HEAL_SELF = 50,
-       ACC_CHARGE_ULTI = 56, ACC_HEAL_TAKEN = 58 };   /* the `mov w8, #N` per Type string in 0xb2731c (spin_shoot 3, ...) */   /* accessory +0x24 type enum (0xb2731c's Type parser; 0 = empty Type) */
+       ACC_CHARGE_ULTI = 56, ACC_HEAL_TAKEN = 58, ACC_AIM_GADGET = 76 };   /* the `mov w8, #N` per Type string in 0xb2731c (spin_shoot 3, ...) */   /* accessory +0x24 type enum (0xb2731c's Type parser; 0 = empty Type) */
 
 typedef int (*AdGet)(void *ad);
 static int ad_get(void *ad, uint64_t getter) { return ((AdGet)B(getter))(ad); }
@@ -162,6 +180,7 @@ static int ad_get(void *ad, uint64_t getter) { return ((AdGet)B(getter))(ad); }
 #define AD_ACTIVE_TICKS 0xa932c8
 #define AD_CV1 0xa933d0
 #define AD_CV2 0xa933e0
+#define AD_CV3 0xa933f0
 #define AD_ACT_DELAY 0xa932b8   /* ActivationDelay (column index at 0x123f000+1952, the getters' pattern) */
 #define AD_AREA 0x70            /* AccessoryData +0x70: AreaEffect -> AreaEffectData (0xa92568 stores it) */
 #define AD_SHIELD_PCT 0xa93368  /* ShieldPercent (column index at 0x123f000+0x7fc, the getters' pattern; issue #55) */
@@ -198,6 +217,9 @@ struct Gad {
     int rep_charge;                                        /* SPIN: super charge per enemy hit (CustomValue6, Darryl 1000) */
     int burst_id, burst_left, burst_next, burst_gap, burst_deg;   /* SHOT waves after the first (g_waves): char id, volleys
                                                                    * still to fire, next tick, ticks between, angle */
+    int sum_id[SUM_MAX], sum_n, sum_until;                 /* SUMMON: the last use's summons (char ids), and the tick they are
+                                                            * retired at (CustomValue3 lifetime; 0 = none) */
+    int vis_id, vis_team, vis_r;                           /* SUMMON with a Vision area (Grom): the tower, its team, radius */
     double dist;                                           /* the fire's super_dist (0, 1] (0 = full range): thrown shots
                                                             * and AimableArea areas land this share of CastingRange out */
     int hp_prev, hp_lost[100];                        /* damage taken per tick (ring by tick % 100), for HEAL_TAKEN */
@@ -210,13 +232,26 @@ struct Gad {
 static Gad g_gad[NBE_MAXP]; static int g_rep_log;
 static long g_fired[8], g_areas, g_areas_lost;
 
-/* ---- DASH */
+/* ---- DASH (and CHARGE's ready) */
+static int max_ammo(uint8_t *ch, uint8_t **sk0);
+#define DASH_RELOAD 3   /* dash SubType 3 (Clancy's Crab_Dash): CustomValue3 / 100 ammo bars refilled (card value code 72); Digger_Dash's
+                         * CustomValue3 (SubType 4) is its knockback, not ammo */
+static long g_dash_areas, g_dash_reloads;
 static int dash_classify(void *ad, int type) { return type == ACC_DASH && ad_get(ad, AD_CV1) > 0 && ad_get(ad, AD_CV2) > 0; }
+static int dash_ready(void *sim, Gad *g, uint8_t *ch) { (void)sim; (void)g; return ch && I32(ch, 0x3c4) > 0 && !U8(ch, 0x490); }   /* not mid-charge */
 static int dash_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
     (void)sim; (void)tick;
     int dist = ad_get(g->ad, AD_CV1), spd = ad_get(g->ad, AD_CV2), X = I32(ch, 0x38), Y = I32(ch, 0x3c);
     double r = deg * M_PI / 180;
-    return env_dash_start(ch, (int)floor(X + dist * cos(r) + 0.5), (int)floor(Y + dist * sin(r) + 0.5), spd) > 0;
+    if (env_dash_start(ch, (int)floor(X + dist * cos(r) + 0.5), (int)floor(Y + dist * sin(r) + 0.5), spd) <= 0) return 0;
+    void *ar = PTR(g->ad, AD_AREA);   /* Maisie's MaisieDashArea (a Stun area: superfix_cc stuns for its CustomValue ticks) where she starts */
+    if (ar && PTR(ch, 0x20)) { ((void *(*)(void *, void *, int, int, int, int, void *))B(0xb35c40))(ch, ar, X, Y, 0, 2, NULL); g_dash_areas++; }
+    int cv3 = ad_get(g->ad, AD_CV3);
+    if (ad_get(g->ad, AD_SUBTYPE) == DASH_RELOAD && cv3 > 0) {   /* Clancy: CustomValue3 x 10 ammo (1000 = one bar), capped at full */
+        uint8_t *sk0; int mx = max_ammo(ch, &sk0);
+        if (sk0) { int a = I32(sk0, 0x18) + cv3 * 10; I32(sk0, 0x18) = a < mx ? a : mx; g_dash_reloads++; }
+    }
+    return 1;
 }
 
 /* ---- HEAL (over time) */
@@ -319,7 +354,6 @@ static int sd_max_charge(void *sd) { return ((int (*)(void *, int))B(0xcf6a18))(
 #define BT_AIM_AREA 28
 #define AD_SKILL 0x80          /* AccessoryData +0x80: Skill -> SkillData* (createReferences 0xa92474, lookup 0xad2b7c) */
 #define AD_CUSTOM_OBJ 0xa933a8 /* -> String* of CustomObject's first ';' token (not resolved by createReferences) */
-#define AD_CV3 0xa933f0
 #define AD_CV4 0xa93400
 #define AD_CV6 0xa93420    /* CustomValue6 (the getter after CustomValue5's 0xa93410; value code 10 reads it / 40 as a percent) */
 #define SKILL_ATTACK_SD(ch) ((void *(*)(void *))B(0xb35c00))(ch)   /* env.c SKILL_ATTACK */
@@ -407,8 +441,8 @@ static int volley(void *sim, uint8_t *ch, void *pd, double deg, int n, double sp
 
 /* ---- SHOT: the gadget's own skill (Type empty, Skill set, BehaviorType not Charge) fires its projectile */
 static void *skill_proj(void *sd) { void **a = sd ? PTR(sd, SD_PROJ) : NULL; return a && I32(sd, SD_PROJ + 0xc) > 0 ? a[0] : NULL; }
-static int shot_classify(void *ad, int type) {
-    void *sd = type == ACC_PLAIN ? PTR(ad, AD_SKILL) : NULL;
+static int shot_classify(void *ad, int type) {   /* Type 76 aim_with_gadget_collision (Rico): only the client's aim line */
+    void *sd = type == ACC_PLAIN || type == ACC_AIM_GADGET ? PTR(ad, AD_SKILL) : NULL;
     return sd && !PTR(ad, AD_AREA) && I32(sd, SD_BEHAVIOR) == BT_ATTACK && skill_proj(sd);
 }
 /* SHOT gadgets that fire more than one wave (issue #55: python -m desc_audit compares the description): card, waves,
@@ -784,6 +818,151 @@ static int item_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
     return it != NULL;
 }
 
+/* ---- SUMMON: spawn rows whose CustomObject is a characters.csv row (issue #46 batch 3b; published SPAWN). The placement by
+ * SubType is server code (the activation 0xb27c58 is `ret`, and no client reader of SubType handles spawn 9), so it is
+ * RE-IMPLEMENTED here; the summon itself comes from libg's summon factory 0xb56e00, called with the arguments the
+ * projectile-end summon 0xb77344 passes (the path that places Nita's bear or Bo's totem), the projectile's own words 0:
+ *   SubType 1 (Penny's barrel, Bea's pot, Grom's tower, Janet's speaker, Stu's booster) and 2 (Leon's clone): one at the brawler.
+ *   SubType 5: CustomValue1 summons CustomValue2 units out, each spot pulled back along the line from the brawler onto a
+ *     walkable one (superfix_valid_spot): around the brawler from the aim (Tara's shadows, Charlie's spiders) [?] the start
+ *     angle; a row with CustomValue4 (Ruffs) in an arc towards the aim, SUM_ARC degrees apart, each with CustomValue4 % of
+ *     the brawler's max HP (the card's "<VALUE2>% of Ruffs' max health", value code 4 = CustomValue4); a row with
+ *     CustomValue3 (Tara: "disappear after <VALUE1> seconds", code 30 = CustomValue3 / 20) retires its summons after
+ *     CustomValue3 ticks, the way superfix_moves.c retires R-T's legs (HP 0, the retired flag).
+ * The factory's w3 0 lets libg move a summon off a blocked spot by itself (0xc6be08). MaxSpawns is the use's count with the
+ * "kill the oldest" byte of 0xb77344 (owner CharacterData ExtraMinions < 1): a new use replaces the last one's summons that
+ * still live [?] (no data column says so). A summon keeps its power-1 table HP (as superfix.c's summons; Ruffs' sandbags
+ * take theirs from the brawler) [?]: against power-11 brawlers it lasts about half as long. What a summon then does is libg's and the earlier rounds': its area
+ * (superfix_summon_area: Bea's slow, Stu's speed, Janet's damage), its HP loss (HealthPromilleLostPerSecond), its AI (the
+ * character tick's minion branches). Grom's Vision area (type 27) has no client reader: gadget_summon_vision answers
+ * env.c's bush hiding (through gadget_self.c's gadget_vision) for a living tower of the team, within its area's Radius. */
+#define SUM_ARC 35            /* Ruffs: degrees between two sandbags, 2 asin(CollisionRadius 120 / CustomValue2 400): they touch [?] */
+#define AREA_VISION 27        /* AreaEffectData +0x118 Vision (the parser 0xa96980) */
+typedef void *(*summon_t)(void *, int, int, int, int, int, int, int, void *, uint64_t, uint64_t, uint64_t, uint64_t,
+                          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+static long g_summons, g_summons_lost, g_sum_retired, g_vis_hits;
+static void *custom_char(void *ad) { return lookup_by_name(0xad2b60, ((void *(*)(void *))B(AD_CUSTOM_OBJ))(ad)); }
+static uint64_t geti_ch(uint64_t fn, void *o) { return (uint64_t)(uint32_t)((int (*)(void *))B(fn))(o); }
+/* one summon of data cd for brawler ch at (x, y): 0xb77344's call (0xb775a0..0xb77624) with the projectile's words 0 / NULL:
+ * stack +8 player, +16 team, +24 the third id word, +32 owner id (the brawler's getters 0xb6a754 / 0xb6a818 / 0xb6a884 /
+ * 0xb6a5d4), +40 kill the oldest over maxn, +48 0xab3268(cd) > 0, +64 the brawler's byte +0xaf1, +128 / +136 CharacterData
+ * +634 == 0, +144 -1, +160 / +168 NULL (the factory then takes the player's modifier container, 0xbb1d18) */
+static void *summon_at(void *sim, uint8_t *ch, uint8_t *cd, int x, int y, int maxn) {
+    uint8_t *ocd = ((void *(*)(void *))B(0xb6a384))(ch); uint64_t z = 0, nf = !U8(cd, 634);
+    uint64_t kill = !ocd || I32(ocd, 636) < 1, big = ((int (*)(void *))B(0xab3268))(cd) > 0;
+    uint8_t *s = ((summon_t)B(0xb56e00))(cd, x, y, 0, 1, maxn, 0, 0, sim, geti_ch(0xb6a754, ch), geti_ch(0xb6a818, ch),
+                                         geti_ch(0xb6a884, ch), geti_ch(0xb6a5d4, ch), kill, big, z, (uint64_t)U8(ch, 0xaf1), z, z, z, z,
+                                         z, z, z, nf, nf, (uint64_t)-1, z, z, z, z);
+    if (s) g_summons++; else g_summons_lost++;
+    if (g_summons + g_summons_lost <= 12)
+        LOG("[gadget] summon data %d at %d,%d (brawler at %d,%d) -> %d at %d,%d, owner %d, hp %d / %d\n", I32(cd, 0x20), x, y, I32(ch, 0x38),
+            I32(ch, 0x3c), s ? I32(s, 8) : -1, s ? I32(s, 0x38) : 0, s ? I32(s, 0x3c) : 0, s ? I32(s, 0x80) : -1, s ? I32(s, 0x3c4) : 0, s ? I32(s, 0x3c8) : 0);
+    return s;
+}
+static int summon_classify(void *ad, int type) {
+    if (type != ACC_SPAWN || !custom_char(ad)) return 0;
+    int sub = ad_get(ad, AD_SUBTYPE);
+    return sub == 1 || sub == 2 || (sub == 5 && ad_get(ad, AD_CV1) > 0 && ad_get(ad, AD_CV2) > 0);
+}
+static int summon_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+    if (I32(ch, 0x3c4) <= 0 || !PTR(ch, 0x20)) return 0;
+    uint8_t *cd = custom_char(g->ad); if (!cd) return 0;
+    int sub = ad_get(g->ad, AD_SUBTYPE), n = sub == 5 ? ad_get(g->ad, AD_CV1) : 1, R = sub == 5 ? ad_get(g->ad, AD_CV2) : 0;
+    int cv3 = ad_get(g->ad, AD_CV3), cv4 = ad_get(g->ad, AD_CV4), X = I32(ch, 0x38), Y = I32(ch, 0x3c);
+    n = n < 1 ? 1 : n > SUM_MAX ? SUM_MAX : n; g->sum_n = 0; g->sum_until = 0;
+    for (int k = 0; k < n; k++) {
+        double a = (cv4 > 0 ? deg + (k - (n - 1) / 2.0) * SUM_ARC : deg + 360.0 * k / n) * M_PI / 180;
+        int x = (int)floor(X + R * cos(a) + 0.5), y = (int)floor(Y + R * sin(a) + 0.5);
+        if (R > 0 && superfix_valid_spot) superfix_valid_spot(sim, X, Y, &x, &y);   /* not across a wall */
+        uint8_t *s = summon_at(sim, ch, cd, x, y, n);
+        if (!s) continue;
+        if (cv4 > 0 && sub == 5) { int hp = (int)((int64_t)I32(ch, 0x3c8) * cv4 / 100); if (hp > 0) { I32(s, 0x3c8) = hp; I32(s, 0x3c4) = hp; } }
+        g->sum_id[g->sum_n++] = I32(s, 8);
+        uint8_t *ar = PTR(cd, 0xb8);   /* CharacterData +0xb8 AreaEffect (superfix_summon_area) */
+        if (ar && I32(ar, 0x118) == AREA_VISION) {
+            uint8_t *p = player_of(sim, g->pid); g->vis_id = I32(s, 8); g->vis_r = I32(ar, 0x12c); g->vis_team = p ? I32(p, 12) : I32(ch, 0x84);
+        }
+    }
+    if (g->sum_n && sub == 5 && cv3 > 0) g->sum_until = tick + cv3;
+    return g->sum_n > 0;
+}
+static void retire_char(uint8_t *c) { I32(c, 0x3c4) = 0; U8(c, 3273) = 1; }   /* 0xb4ffec's end, as superfix_moves.c retire() */
+static void summon_tick(void *sim, Gad *g, int tick) {   /* CustomValue3 lifetime (Tara's shadows) */
+    if (tick < g->sum_until) return;
+    for (int k = 0; k < g->sum_n; k++) {
+        uint8_t *c = env_obj_by_id(sim, g->sum_id[k]);
+        if (c && VTOF(c) == VT_CHAR && I32(c, 0x3c4) > 0) { retire_char(c); g_sum_retired++; }
+    }
+    g->sum_until = 0;
+}
+/* gadget_self.c's gadget_vision (env.c's bush hiding): does a living Vision summon of team `team` see (x, y) */
+int gadget_summon_vision(void *sim, int team, int x, int y) {
+    for (int i = 0; sim && i < NBE_MAXP; i++) {
+        Gad *g = &g_gad[i]; if (!g->vis_id || g->vis_team != team) continue;
+        uint8_t *c = env_obj_by_id(sim, g->vis_id);
+        if (!c || VTOF(c) != VT_CHAR || I32(c, 0x3c4) <= 0) { g->vis_id = 0; continue; }
+        long dx = x - I32(c, 0x38), dy = y - I32(c, 0x3c);
+        if (dx * dx + dy * dy <= (long)g->vis_r * g->vis_r) { g_vis_hits++; return 1; }
+    }
+    return 0;
+}
+
+/* ---- CHARGE (issue #46 batch 4; published DASH): an empty Type with a Skill whose BehaviorType is Charge (Brock, Max, Shelly,
+ * Glowy, Bolt, Wendy) or activate_skill (52) with the Charge skill named by CustomObject (Angelo's InsectMan_Fly): the skill's
+ * charge through env.c env_charge_start (the native charge mover with the real ChargeType, no super slot, no contact damage).
+ * Distance: a jump (ChargeType 11) without AlwaysCastAtMaxRange (Bolt, Brock: "jumps to a target location") lands where aimed
+ * (aimed_range of CastingRange); every other one goes the full CastingRange [?] (Glowy's and Max's dashes, Angelo's flight:
+ * 1800 u at 2000 u/s is the card's "for 1 second"). The airborne types (11, 20: libg's 0xb5033c airborne set) go straight
+ * over walls and water, landing on walkable ground [?]. Areas: AreaEffectObject once at take-off (Brock's blast, Angelo's
+ * drain), AreaEffectObject2 at the landing with AreaEffect2AtEndOfCharge (Brock, Bolt, Glowy's heal). Extras at the fire:
+ * each ActivationSelfStatusEffects entry on the brawler (Max's SpeedyGadgetDashShield, ShieldPercent 100, CancelOnChargeEnd:
+ * libg's charge tick calls the stub 0xba3274 where a charge ends (0xb3e16c), superfix_status.c's my_charge_end ends it there,
+ * and env.c's charge_end ends it for a gadget's charge too: superfix_status_charge_end),
+ * and the skill's Reload flag (Shelly) refills the weapon ammo to full [?] (at the start). Bolt's landing area
+ * (DestroysEnvironment) breaks walls through libg's area apply. Not modelled: Bolt's "loses all speed when landing",
+ * Angelo's drain heal-back (the area's DamageDrain damages, nothing heals him; server code) and its PushbackStrengthSelf,
+ * the ChargePushback contact (0 for all these skills). Cooldown: the Batch 0 rule (BonusSkillCooldown; Angelo's row Cooldown 360). */
+enum { ACC_ACTIVATE_SKILL = 52 };   /* `mov w8, #0x34` at 0xb27928 after the "activate_skill" compare */
+#define SD_CHARGE_SPEED 0xb0d848   /* ChargeSpeed (u/s; column word 0x1241000+888) */
+#define SD_CHARGE_TYPE 0xb0dc34    /* ChargeType (+892) */
+#define SD_CHARGE_PUSH 0xb0dd3c    /* ChargePushback (+880) */
+#define SD_AREA2_AT_END 0xb0de50   /* AreaEffect2AtEndOfCharge (bool, +936) */
+#define SD_MAX_RANGE 0xb0df98      /* AlwaysCastAtMaxRange (bool, +1056) */
+#define SD_AREA2 0xa8              /* SkillData +0xa8 AreaEffectObject2 (AreaEffectData*) */
+#define SD_SELF_ST 0x1d0           /* ActivationSelfStatusEffects: StatusEffectData* array, count at +0x1dc (0xb8072c reads them) */
+#define SD_RELOAD 0x23b            /* BooleanAttributes "Reload" (the loader's strb at 0xb0bd80) */
+#define BT_CHARGE 2
+#define CT_JUMP 11                 /* ChargeType of the jumps (Bolt, Brock, Wendy) */
+#define CT_FLY 20                  /* Angelo's flight */
+static long g_charges, g_charge_sts, g_charge_reloads;
+static void *charge_skill(void *ad, int type) {
+    void *sd = type == ACC_PLAIN ? PTR(ad, AD_SKILL)
+             : type == ACC_ACTIVATE_SKILL ? lookup_by_name(0xad2b7c, ((void *(*)(void *))B(AD_CUSTOM_OBJ))(ad)) : NULL;
+    return sd && I32(sd, SD_BEHAVIOR) == BT_CHARGE && sd_get(sd, SD_CHARGE_SPEED) > 0 ? sd : NULL;
+}
+static int charge_classify(void *ad, int type) { return charge_skill(ad, type) != NULL; }
+static int charge_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+    (void)tick;
+    void *sd = charge_skill(g->ad, g->type); if (!sd || !dash_ready(sim, g, ch)) return 0;
+    int ty = sd_get(sd, SD_CHARGE_TYPE), cr = sd_get(sd, SD_RANGE) * 100, maxr = sd_get(sd, SD_MAX_RANGE) & 1;
+    int R = ty == CT_JUMP && !maxr ? aimed_range(cr, g->dist) : cr, X = I32(ch, 0x38), Y = I32(ch, 0x3c);
+    double r = deg * M_PI / 180;
+    void *a1 = PTR(sd, SD_AREA), *a2 = PTR(sd, SD_AREA2), *aend = (sd_get(sd, SD_AREA2_AT_END) & 1) ? a2 : NULL;
+    int len = env_charge_start(ch, (int)floor(X + R * cos(r) + 0.5), (int)floor(Y + R * sin(r) + 0.5), sd_get(sd, SD_CHARGE_SPEED), ty,
+                               sd_get(sd, SD_CHARGE_PUSH), a1, aend, ty == CT_JUMP || ty == CT_FLY);
+    if (len <= 0) return 0;
+    void **st = PTR(sd, SD_SELF_ST); int nst = I32(sd, SD_SELF_ST + 0xc);
+    int pid = ((int (*)(void *))B(0xb6a754))(ch), team = ((int (*)(void *))B(0xb6a820))(ch);
+    for (int k = 0; st && k < nst && k < 8; k++) if (st[k]) {   /* as the skill start's loop 0xb8072c..0xb807ac, through the add wrapper */
+        ((void (*)(void *, void *, int, int, void *, void *, int, int, int, int, int))B(0xb35dd0))(ch, st[k], pid, team, ch, ch, 0, 0, -1, -1, 0);
+        g_charge_sts++; }
+    if (U8(sd, SD_RELOAD)) { uint8_t *sk0; int mx = max_ammo(ch, &sk0); if (sk0) { I32(sk0, 0x18) = mx; g_charge_reloads++; } }
+    if (g_charges++ < 10) LOG("[gadget] charge type %d: %d u of %d along %.0f deg at %d u/s, areas %p / %p, self statuses %d, reload %d\n", ty, len, R,
+                              deg, sd_get(sd, SD_CHARGE_SPEED), a1, aend, nst, U8(sd, SD_RELOAD));
+    return 1;
+}
+
 /* ---- SUPER: charge_ulti (R-T): the super charge (player +0x54) to CustomValue1 % of its maximum (+0x58) */
 static int super_classify(void *ad, int type) { return type == ACC_CHARGE_ULTI && ad_get(ad, AD_CV1) > 0; }
 static int super_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
@@ -1048,7 +1227,8 @@ static int self_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
 }
 
 static const GadImpl g_impl[] = {
-    {NBE_GAD_DASH, dash_classify, dash_fire},
+    {NBE_GAD_DASH, dash_classify, dash_fire, dash_ready},
+    {NBE_GAD_DASH, charge_classify, charge_fire, dash_ready},
     {NBE_GAD_HEAL, heal_classify, heal_fire, heal_ready},
     {NBE_GAD_SPAWN, area_classify, area_fire},
     {NBE_GAD_PROJECTILE, rewind_classify, rewind_fire, NULL, rewind_again},
@@ -1057,6 +1237,7 @@ static const GadImpl g_impl[] = {
     {NBE_GAD_PROJECTILE, auto_aim_classify, auto_aim_fire},
     {NBE_GAD_PROJECTILE, rep_classify, rep_fire},
     {NBE_GAD_SPAWN, item_classify, item_fire},
+    {NBE_GAD_SPAWN, summon_classify, summon_fire},
     {NBE_GAD_SUPER, super_classify, super_fire},
     {NBE_GAD_HEAL, heal_now_classify, heal_now_fire},
     {NBE_GAD_STATUS, next_classify, next_fire, next_ready},
@@ -1099,6 +1280,12 @@ void gadget_clear(void) {
     if (g_rewinds) LOG("[gadget] rewind: %ld bolts, %ld reactivations, %ld rewinds, %ld dropped (death / changed), %ld areas spawned by the host\n", g_rewinds, g_rewind_again, g_rewind_done, g_rewind_drop, g_rewind_own);
     if (g_armed_summon + g_armed_item) LOG("[gadget] shots carrying a summon %ld / an item %ld\n", g_armed_summon, g_armed_item);
     g_rewinds = g_rewind_again = g_rewind_done = g_rewind_drop = g_rewind_own = g_armed_summon = g_armed_item = 0;
+    if (g_summons + g_summons_lost) LOG("[gadget] summons: %ld spawned, %ld refused by the factory, %ld retired at their lifetime; vision answers %ld\n",
+                                        g_summons, g_summons_lost, g_sum_retired, g_vis_hits);
+    g_summons = g_summons_lost = g_sum_retired = g_vis_hits = 0;
+    if (g_charges + g_dash_areas + g_dash_reloads) LOG("[gadget] charges %ld (self statuses %ld, reloads %ld); dash areas %ld, dash reloads %ld\n",
+                                                       g_charges, g_charge_sts, g_charge_reloads, g_dash_areas, g_dash_reloads);
+    g_charges = g_charge_sts = g_charge_reloads = g_dash_areas = g_dash_reloads = 0;
     g_rep_charged = 0; memset(g_rshot, 0, sizeof g_rshot); memset(g_rshot_k, 0, sizeof g_rshot_k);
     memset(g_gad, 0, sizeof g_gad); g_nsleep = 0; gself_clear();
 }
@@ -1158,6 +1345,7 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
         if (g_gad[i].rep_n) rep_tick(sim, &g_gad[i], tick);
         if (g_gad[i].burst_left) burst_tick(sim, &g_gad[i], tick);
         if (g_gad[i].rw_ch) rewind_tick(sim, &g_gad[i], tick);
+        if (g_gad[i].sum_until) summon_tick(sim, &g_gad[i], tick);
         if (g_gad[i].im && g_gad[i].type == ACC_HEAL_TAKEN) taken_tick(sim, &g_gad[i], tick);
         if (g_gad[i].im && g_gad[i].type == ACC_NEXT) next_tick(sim, &g_gad[i], tick);
         if (g_gad[i].im && g_gad[i].im->ready) g_gad[i].not_ready = !g_gad[i].im->ready(sim, &g_gad[i], char_of(sim, i));

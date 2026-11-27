@@ -693,7 +693,8 @@ int g_native_charge = 1; static long g_native_charges;
 #define CHARGE_LAND_WALL_R 300   /* El Primo: tiles around the landing point ([?] radius unknown: LuchadorUlti has no area, the
                                   * wiki only says "in a radius around him"; one tile ring) */
 #define CHARGE_LAND_R 200        /* Bonnie (type 16): her landing hit, CannonGirlExplosion's Radius ([?] the server's rule is compiled out) */
-typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; void *hit_st; int dx, dy; } ChargeJob;
+typedef struct { int id, owner, dmg, start_tick, nhit, ulti, type, push, tx, ty; void *area1, *area_end, *old550, *area2; int hit[32]; void *hit_st; int dx, dy;
+                 int gad; } ChargeJob;   /* gad: a gadget's charge (env_charge_start) */
 static ChargeJob g_cj[NBE_MAXP]; static int g_ncj; static long g_charge_hits, g_charge_pushes, g_charge_areas, g_charge_walls, g_charge_heals;
 /* knockback 0xb49834(victim, srcX, srcY, strength, a4..a7, 10 stack slots, the last = pusher's owner index): pushes the victim
  * 6 * strength u away from (srcX, srcY) over 10 ticks (half for CollisionRadius >= 150), the call the game's own charge sweep
@@ -987,6 +988,7 @@ static void charge_end_event(uint8_t *ch, uint8_t *a) {
     if (g_charge_end_events++ < 10) LOG("[env] charge-end event: character %d, end area %d\n", I32(ch, 8), I32(PTR(a, 0x10), 0x20));
 }
 int hyper_card_live(void *ch, int type, int idx);   /* hyper.c: Value<idx> of ch's hypercharge card of that type, -1 if none */
+void superfix_status_charge_end(uint8_t *ch) __attribute__((weak));   /* superfix_status.c: CancelOnChargeEnd statuses end */
 static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge flag dropped: landing / end of the dash */
     if (j->area1 && j->type != 2 && j->type != 16 && j->type != 22) PTR(ch, 0x550) = j->old550;
     if (I32(ch, 0x3c4) <= 0) return;
@@ -994,7 +996,11 @@ static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge f
     if (j->type == 3) charge_break(sim, ch, x, y, CHARGE_LAND_WALL_R);
     if (j->area1 && j->type == 2) charge_area(sim, ch, j->area1, x, y);
     if (j->area_end) { uint8_t *ea = charge_area(sim, ch, j->area_end, x, y);   /* AreaEffect2AtEndOfCharge: Bull's slow, Nori, Ollie, Damian */
-        if (ea && I32(ch, 0x3c4) > 0) charge_end_event(ch, ea); }
+        if (ea && I32(ch, 0x3c4) > 0 && !j->gad) charge_end_event(ch, ea); }
+    if (j->gad) {   /* a gadget's charge: its end area and its CancelOnChargeEnd statuses (Max's shield) only; no super
+                     * charge-end listeners, hypercharge refill or pull */
+        if (superfix_status_charge_end) superfix_status_charge_end(ch);
+        return; }
     if (j->type == 16) charge_land(sim, j, ch, x, y);
     /* Stu's hypercharge (overcharge_ulti_recharge_on_charge 261, Roller_overcharge 4000: "Stu's Super can be used continuously
      * while Hypercharged"; RE-IMPLEMENTED: no card-value reader asks for type 261, the code is the server's): a dash that ends
@@ -1842,6 +1848,41 @@ int env_dash_start(uint8_t *ch, int tx, int ty, int speed) {
     U8(ch, 0x490) = 1; I32(ch, 0x508) = 1; I32(ch, 0x6d8) = 0;
     return I32(ch, 0x41c);
 }
+/* gadget.c's CHARGE kind (issue #46 batch 4: the gadgets whose Skill is a Charge skill, Brock's and Bolt's jumps, Max's and
+ * Shelly's dashes, ...): the native charge as native_charge_start runs it, with the skill's real ChargeType (+0x508: libg's
+ * per-type height curve, and 0xb5033c's "not hittable in the air" for the airborne types 11 / 20), but no active-skill slot
+ * (+0x6d8 = 0: a brawler whose super is a charge does not run that super's hit processing), no contact damage, no trail
+ * (+0x550 untouched) and no super charge-end event. area_start is spawned once at take-off (Brock's and Angelo's
+ * AreaEffectObject), area_end at the landing (charge_end: AreaEffectObject2 with AreaEffect2AtEndOfCharge). straight: a
+ * straight path over walls and water (+0x98d / +0x98e for the mover, as Bull's), its end pulled back onto walkable ground
+ * [?] the server's jump rule; the live game's jumps cross walls. Without --native-charge 1 there is no job (movement only).
+ * -> the path length (0 = no charge: the brawler is down, already in a charge, or the mover laid no path) */
+int env_charge_start(uint8_t *ch, int tx, int ty, int speed, int type, int push, void *area_start, void *area_end, int straight) {
+    if (!ch || !E.sim || I32(ch, 0x3c4) <= 0 || speed <= 0 || U8(ch, 0x490)) return 0;
+    void *sim = E.sim; int x0 = I32(ch, 0x38), y0 = I32(ch, 0x3c);
+    if (straight) {
+        double L = hypot(tx - x0, ty - y0); int ok = 0;
+        for (double t = L; t > 0; t -= 50) { int px = jround(x0 + (tx - x0) * t / L), py = jround(y0 + (ty - y0) * t / L);
+            if (charge_walkable(sim, px, py)) { tx = px; ty = py; ok = 1; break; } }
+        if (!ok) return 0;
+    }
+    uint8_t s98d = U8(ch, 0x98d), s98e = U8(ch, 0x98e);
+    if (straight) { U8(ch, 0x98d) = 1; U8(ch, 0x98e) = 1; }
+    ((void (*)(void *, int, int, uint64_t, unsigned, unsigned, int))B(0xb4790c))(ch, tx, ty, 1, (unsigned)speed, 0, 0);
+    U8(ch, 0x98d) = s98d; U8(ch, 0x98e) = s98e;
+    if (I32(ch, 0x41c) <= 0) return 0;
+    U8(ch, 0x490) = 1; I32(ch, 0x508) = type; I32(ch, 0x6d8) = 0;
+    if (g_native_charge == 1 && g_ncj < NBE_MAXP) {
+        int id = I32(ch, 8), k; for (k = 0; k < g_ncj && g_cj[k].id != id; k++) {}
+        if (k == g_ncj) g_ncj++;
+        g_cj[k] = (ChargeJob){id, I32(ch, 0x80), 0, I32(sim, 0x10), 0, 0, type, push, -1000000, -1000000, NULL, area_end, PTR(ch, 0x550),
+                              NULL, {0}, NULL, tx - x0, ty - y0, 1};
+        if (area_start) charge_area(sim, ch, area_start, x0, y0);
+    }
+    static int nlog; if (nlog++ < 20) LOG("[env] gadget charge type %d%s: path %d u, ticks %d..%d, areas %p %p\n", type,
+        straight ? " (straight)" : "", I32(ch, 0x41c), I32(ch, 0x28), I32(ch, 0x2c), area_start, area_end);
+    return I32(ch, 0x41c);
+}
 static void gadget_input(void *sim, int pidx, uint8_t *ch, double deg, double dist) {   /* dist: super_dist (0 = full range) */
     if (gadget_use(sim, pidx, ch, deg, dist, I32(sim, 0x10))) return;
     double r = deg * M_PI / 180; apply_input(sim, pidx, 8, jround(1000 * cos(r)), jround(1000 * sin(r)), NULL);
@@ -2153,6 +2194,7 @@ void env_on_build(void *battle, void *sim) {   /* a new battle was built: forget
     g_lead_n = 0; g_lead_skip = 0;
     gadget_clear();   /* gadget round: the old battle's accessories are freed; its table must not reach the intro ticks */
     if (superfix_summon_area_clear) superfix_summon_area_clear();   /* issue #64: character ids restart in the new battle */
+    g_ncj = 0;   /* a charge job left by an episode that ended mid-charge would end on a new battle's character of that id */
     int gen = E.gen + 1, hr = E.have_reset, seed = E.reset_seed, gas = E.gas_on, act = E.act_tick, sa = E.seed_applied, rr = E.reset_req;
     int ga_ok = E.gas_args_ok, a4 = E.ga4, a5 = E.ga5, a7 = E.ga7, s0 = E.gs0;
     NbeCmd cur = E.cur;

@@ -41,7 +41,8 @@
  *          heal (Interruptable).
  *   VISION vision 12 (Tara SubType 0: her team sees every enemy in a bush; Buzz SubType 1: enemies in a bush within
  *          BUZZ_VISION_R of him) for ActiveTicks: env.c's bush hiding (emulate_client_flags) asks gadget_vision. The
- *          observation's shape is unchanged.
+ *          observation's shape is unchanged. gadget_vision also answers for Grom's watchtower (gadget.c SUMMON,
+ *          gadget_summon_vision: a living Vision summon of the team, within its area's Radius).
  * Every status kind needs superfix's status store (superfix_status_live): without it they classify as not usable.
  * NB_GAD_SELF=0 turns them all off (kind NONE). NB_GAD_DBG=1 logs the fires and their effects. */
 #include "nbhost.h"
@@ -273,13 +274,16 @@ void gself_root_post(uint8_t *victim, int removed) {
     }
 }
 
-/* env.c's bush hiding: is an enemy at world (x, y) seen into its bush by player li's team (a Tara or Buzz vision running) */
+/* env.c's bush hiding: is an enemy at world (x, y) seen into its bush by player li's team (a Tara or Buzz vision running,
+ * or a Grom watchtower: gadget.c) */
 static void *g_sim; static int g_now;
+int gadget_summon_vision(void *sim, int team, int x, int y) __attribute__((weak));   /* gadget.c SUMMON */
 int gadget_vision(int li, int x, int y) {
     if (!g_sim || li < 0 || li >= NBE_MAXP) return 0;
     int np = I32(g_sim, 0x7c); void **ps = PTR(g_sim, 0x70);
     if (!ps || li >= np || np > 64 || !ps[li]) return 0;
     int team = I32(ps[li], 12);
+    if (gadget_summon_vision && gadget_summon_vision(g_sim, team, x, y)) return 1;
     for (int i = 0; i < NBE_MAXP && i < np; i++) {
         Self *s = &g_self[i];
         if (s->sk != SK_VISION || s->until <= g_now || !ps[i] || I32(ps[i], 12) != team) continue;
