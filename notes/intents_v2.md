@@ -106,9 +106,23 @@ this repo's game files or host measurements, not from guides.
   on the target in that step), `planner`, `overlay` text, `export_policy` spec, BSRL `brain/spec.py` / `adapter.py` /
   `policy.py` (refuses other versions) + the cube OCR.
 
-### 3.3 Order and gates
+### 3.3 The prediction heads into the planner (owner, 2026-11-27)
+The model already has aux heads (`model.py`, step C, trained only with `--aux-w` > 0; labels from the sim's true state):
+`fut` = each enemy slot's position 1 s ahead, `bush` = P(an enemy hidden in a bush within 5 tiles) per 45-degree sector,
+`hit` = P(I take enemy damage in the next 1 s), `gas` = gas margin. r51 ran with `--aux-w 0`: its heads are untrained.
+- Train them: the next run has `--aux-w 0.1 --vlive 1`; check them on the `bush_memory` scenario and with per-head
+  losses / calibration (`fut` error in tiles vs "stays where seen", `bush` / `hit` calibration bins) in scorecard.
+- Export: `export_policy` writes `fut`, `bush`, `hit` as extra ONNX outputs (acting still ignores them; `NONACT`), and the
+  BSRL bot passes them to its planner.
+- Planner input grows by these outputs (a design change: the rules read the policy's rows + its predictions, live alike):
+  `check_bush` aims at the bush sector with the highest `bush` probability (none below 0.3: no check); `engage` / `pin`
+  aim at the `fut` position; `low_hp` / `outclassed` fire earlier when `hit` > 0.5; `rotate` uses `gas` when no poison
+  is in view.
+- Gate: use a head only after its calibration check passes; until then the rule keeps its row-only reading.
+
+### 3.4 Order and gates
 1. PR A (no bump) -> review -> merge.
-2. Intent fine-tune from the best r51 checkpoint with PR A's planner: does `evalp_plan` rank better than free play,
+2. Intent fine-tune from the best r51 checkpoint with PR A's planner (and `--aux-w 0.1 --vlive 1`, 3.3): does `evalp_plan` rank better than free play,
    and the follow rate per kind. If following does not help, fix that before adding kinds.
 3. PR B (v5.10), with the BSRL catch-up in the bsrl repo (needs it attached with push access).
 4. Step F (value-based intent choice), once an intent-trained policy with `--vlive 1` exists.
