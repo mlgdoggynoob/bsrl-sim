@@ -1,8 +1,9 @@
 # charge supers (bsrl-sim issue #5): ChargePushback, Bull's wall-breaking lane, El Primo's landing break, trail / take-off /
 # end-of-charge areas and env zones for HotAndDot (Berry) and EdgeCrossing (Damian) in native/loader/env.c. Applies on top
 # of training_round.patch, fair_view.patch, live_state.patch and gadgets.patch; paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
-index fa1e4f0..ba3e51d 100644
+index 3bb5f71..5e70939 100644
 --- a/native/loader/env.c
 +++ b/native/loader/env.c
 @@ -456,20 +456,137 @@ static void sf_spawn_box(void *sim, void *itemData, int x, int y, int owner) {
@@ -218,10 +219,10 @@ index fa1e4f0..ba3e51d 100644
          return;
      }
      void *sim = E.sim; int W, Hh; if (!map_wh(sim, &W, &Hh)) return; W *= 300; Hh *= 300;
-@@ -803,6 +945,7 @@ static void pre_snapshot(void *sim) {   /* 0xb63b0c, once per tick: storm hits,
-     E.ngq = 0;
+@@ -805,6 +947,7 @@ static void pre_snapshot(void *sim) {   /* 0xb63b0c, once per tick: storm hits,
      if (E.njobs) sf_tick(sim);
      if (g_ncj) charge_contact_tick(sim);   /* diversity round: env charge contact (only after a native charge start) */
+     gadget_tick(sim, I32(sim, 0x10));      /* gadget round: heals over time */
 +    if (g_nzone) zone_tick(sim);
      int ntj = E.ntj; TickJob tj[64]; memcpy(tj, E.tj, ntj * sizeof *tj); E.ntj = 0;
      for (int i = 0; i < ntj; i++) {

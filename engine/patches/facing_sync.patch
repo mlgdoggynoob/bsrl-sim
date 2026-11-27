@@ -4,6 +4,7 @@
 # copy (+0x9c / +0x98) around every client update; the offline snapshot never sends them, so every brawler faced the camera.
 # Rendering only. Off unless NBHOST_FACING=1 (policy_video.py sets it), so training hosts are unchanged. The state column
 # (snap2 r[9], +0x328) is left as it was.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index 65e5fb9..8107b0d 100644
 --- a/native/loader/env.c

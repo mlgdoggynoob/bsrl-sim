@@ -8,6 +8,7 @@
 # what is compiled out: LowHealthDamage and ConsumableShield (env.c my_root), ForestSpeed (env.c rec_move, a bush change
 # re-sends the move), ReloadSpeed (superfix_status.c my_reload_pct); NB_GEARS=0 turns those four off. build.sh: gear.c.
 # Notes: notes/issue51.md. Paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/battle_fix.c b/native/loader/battle_fix.c
 index 62e2eee..4cb05c6 100644
 --- a/native/loader/battle_fix.c

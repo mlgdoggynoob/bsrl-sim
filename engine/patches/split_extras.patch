@@ -14,6 +14,7 @@
 # rings up to 900 u [?], then the nearest walkable tile) when the legs' spot is blocked, and a head left on a blocked tile
 # when his legs went is put there too (head_land, its tracking reset per battle). Paths relative to engine/.
 # Since #62: split_hit also skips Alli's current-HP boost (stalk_boost) and Poco's overheal shield (hyper_shield_absorb).
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index 22bba01..284c6bd 100644
 --- a/native/loader/env.c

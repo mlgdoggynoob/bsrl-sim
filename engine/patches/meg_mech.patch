@@ -4,6 +4,7 @@
 # duo / trio knock-out, her super is reset, and she takes no other hit in that tick. Knocked out as small Meg she respawns in
 # her mech. hyper.c: hyper_char_changed hands a running hypercharge to the new form of any character change. Paths relative
 # to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index 5e05555..2a94187 100644
 --- a/native/loader/env.c

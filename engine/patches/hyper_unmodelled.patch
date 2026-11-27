@@ -11,6 +11,7 @@
 # spawnfix.c: ring BulletAngleOffset and chained areas take the parent's angle (Grom's X burst breaks diagonal walls;
 # NB_SPAWNFIX_ANGLE=0 off); Buzz's projectile-end call. superfix_items.c: Squeak's blomb blow (0xb6e388 stub) and fuse.
 # superfix.c: Pam's turret overheal.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index 284c6bd..bcae502 100644
 --- a/native/loader/env.c

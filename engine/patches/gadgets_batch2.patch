@@ -2,6 +2,7 @@
 # SHOT (the gadget skill's projectiles through 0xb78190), SKILL AREA, REPEAT / SPIN volleys, ITEM (item factory 0xb55684),
 # SUPER (R-T, new NBE_GAD_SUPER, mirrored in nbpc/proto.py), HEAL_NOW (0xb41554: Kit, Kenji); skill gadgets take their
 # skill's Cooldown; eight rows masked (g_masked). Check: python -m super_audit --gadget [--gadget-slot 1], python -m gadget_check
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/gadget.c b/native/loader/gadget.c
 index af980a3..93b24b1 100644
 --- a/native/loader/gadget.c

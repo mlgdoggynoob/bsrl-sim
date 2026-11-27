@@ -9,6 +9,7 @@
 # (ZN_TOTEM); superfix_items.c: pick-up heal items (type 72, Damian's microphone) give their StatusEffectAlly to the
 # picker; superfix.c / env.c: the summon-area table is emptied at a new battle (an old entry with a recycled character id
 # kept a new summon from getting its area).
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index 898feed..c88e547 100644
 --- a/native/loader/env.c

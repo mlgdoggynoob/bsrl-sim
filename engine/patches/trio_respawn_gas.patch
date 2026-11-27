@@ -2,6 +2,7 @@
 # the gas gets no spawn protection (env.c respawn_tick; Trio Showdown page, since 04/09/24; NB_GAS_RULES=0 off); NB_SD_DBG=1
 # logs every respawn's gas / protect decision for showdown_check.
 # Applies on top of every earlier patch; paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index bc335d5..5ea5be2 100644
 --- a/native/loader/env.c

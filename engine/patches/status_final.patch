@@ -8,6 +8,7 @@
 # summon Hot area's heal. spawnfix.c: MeepleWallSpawn 42 / GladiatorWallSpawn 55 walls. gadget.c: Fang's sweep, Painter's
 # push and Meeple's RageQuit as AREA gadgets. env.c my_charge: Edgar's super charge percent.
 # Paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index 53b1ab2..5fb5756 100644
 --- a/native/loader/env.c

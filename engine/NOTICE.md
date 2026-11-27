@@ -24,7 +24,11 @@ other nbrl-env scripts are vision-data and earlier training tools, kept as they 
 - `training_round.patch`, `fair_view.patch`, `live_state.patch`, `gadgets.patch`: in that order, on top of
   bulletlabels @ `52184b2` (SETUP.md lists what each does). Their paths are bulletlabels' (`vendor/nbpc/...` is
   `py/nbpc/...` here).
-- `charge.patch`: on top of those, with paths relative to `engine/` (SETUP.md lists what it does).
+- `gadgets_dash_heal.patch`: the part of the gadget work that landed after the fold (`gadget.c`'s dash and heal kinds); the
+  tree at the fold held an earlier `gadget.c`, and `gadgets.patch` (the whole work, bulletlabels' paths) records the later one.
+- Every other patch (`charge.patch` and on; SETUP.md lists what each does) has paths relative to `engine/`.
+- `series` is the order they replay in, on `engine/` as it was at commit 7ac04b9 (the fold); `check_chain.sh` replays it
+  with no fuzz and compares the result with the working tree. The four bulletlabels-path patches are not replayed.
 - `maenv.py` and `fair.py` copied from nbrl-env's `py/nbpc` into bulletlabels' `vendor/nbpc`.
 - The game download link removed from bulletlabels' `setup.sh` (the top-level `setup.sh` downloads it instead).
 - The merge into this tree: files moved as listed above, path names updated in comments, `labeller/rc.py` (`py/` on
@@ -32,4 +36,5 @@ other nbrl-env scripts are vision-data and earlier training tools, kept as they 
   versions). Nothing the sim runs changed. nbrl-env's old scripts put their own folder first on `sys.path`, so they
   now import the merged `nbpc` instead of nbrl-env's older copy.
 
-New changes: keep them small and add a patch here (paths relative to `engine/`, on top of the earlier patches).
+New changes: keep them small and add a patch here (paths relative to `engine/`, recorded as the diff from the tree the
+series leaves to the tree with your change), add its name at the end of `series`, and run `patches/check_chain.sh`.

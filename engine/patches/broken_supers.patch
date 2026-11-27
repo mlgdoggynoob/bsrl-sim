@@ -5,8 +5,9 @@
 # ChangeCharacter super (bl at 0xb7d010, Bonnie's return to Clyde). superfix_status.c: superfix_status_cancel (Kenji's
 # hide ends at the slash). env.c's env_char_changed moves the power cubes to the new form of a changed character.
 # Paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
-index bc335d5..0c4bf44 100644
+index 5ea5be2..50c68e2 100644
 --- a/native/loader/env.c
 +++ b/native/loader/env.c
 @@ -214,6 +214,20 @@ static int sd_group_size(int i) {
@@ -175,7 +176,7 @@ index bc335d5..0c4bf44 100644
          return;
      }
      void *sim = E.sim; int W, Hh; if (!map_wh(sim, &W, &Hh)) return; W *= 300; Hh *= 300;
-@@ -2349,6 +2436,9 @@ void env_install(void) {
+@@ -2354,6 +2441,9 @@ void env_install(void) {
      hook_enter(g_libg, 0xeaa9f0, frame_hook);
      o_snapw = hook_replace(g_libg, 0xb63b0c, my_snapw);
      hook_enter(g_libg, 0xb475cc, sf_start_hook);

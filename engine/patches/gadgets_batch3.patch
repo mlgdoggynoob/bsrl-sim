@@ -28,6 +28,7 @@
 # skill gadgets with MaxCharge > 1 (Shelly, Colette) fire that many times per cooldown; Willow's dive without
 # invisibility; FishTank_Slow masked; the skill Cooldown fallback read as ms; Byron's readiness counts his attacks still
 # queued for the next step start (env.c env_pending_attacks). Notes: notes/issue46.md. Paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/build.sh b/native/loader/build.sh
 index d09f608..645b6cf 100755
 --- a/native/loader/build.sh
@@ -721,135 +722,6 @@ index f697b69..4216e0e 100644
  }
 +
 +void gadget_install(void) { next_install(); }   /* env.c's install, once at startup: the NEXT kind's hooks */
-diff --git a/native/loader/superfix_cc.c b/native/loader/superfix_cc.c
-index 8420123..b2d4931 100644
---- a/native/loader/superfix_cc.c
-+++ b/native/loader/superfix_cc.c
-@@ -61,8 +61,6 @@ static void stun(uint8_t *ch, int ticks, const char *why) {
-     if (I32(ch, CH_STUN_TICKS) < ticks) I32(ch, CH_STUN_TICKS) = ticks;   /* the longer stun wins (no stacking) */
-     if (g_superfix_dbg) LOG("[superfix] cc: stun ch %d for %d ticks (%s), tick %d\n", I32(ch, 8), ticks, why, now_tick(ch));
- }
--/* superfix_moves.c: Buzz's landing stun, Kit's hypercharged super */
--void superfix_cc_stun(uint8_t *ch, int ticks, const char *why) { if (on()) stun(ch, ticks, why); }
- typedef struct { uint8_t *ch; int id, until; } Sil;
- #define SIL_MAX 64
- static Sil g_sil[SIL_MAX]; static int g_nsilrec;
-@@ -79,6 +77,13 @@ static void silence(uint8_t *ch, int ticks, const char *why) {
-     if (g_sil[k].until < t + ticks) g_sil[k].until = t + ticks;
-     if (g_superfix_dbg) LOG("[superfix] cc: silence ch %d for %d ticks (%s), tick %d\n", I32(ch, 8), ticks, why, t);
- }
-+/* superfix_moves.c (Buzz's landing stun, Kit's hypercharged super) and gadget.c (next-attack stuns and sleeps): -> 1 = the stun
-+ * was applied (superfix on, a living character without CcImmunity) */
-+int superfix_cc_stun(uint8_t *ch, int ticks, const char *why) {
-+    if (!on() || !is_char(ch) || ticks <= 0 || I32(ch, 0x3c4) <= 0) return 0;
-+    if (U8(ch, CH_CCIMM)) { g_nimm++; return 0; }
-+    stun(ch, ticks, why); return 1;
-+}
- /* superfix_status.c's aggregate asks every tick */
- int superfix_cc_silenced(uint8_t *ch, int t) {
-     if (!g_cc_on) return 0;
-diff --git a/native/loader/superfix_moves.c b/native/loader/superfix_moves.c
-index 1513368..80e2b5e 100644
---- a/native/loader/superfix_moves.c
-+++ b/native/loader/superfix_moves.c
-@@ -301,7 +301,7 @@ typedef int (*rad_t)(void *);
- static int char_radius(uint8_t *c) { void **vt = *(void ***)c; return ((rad_t)vt[88 / 8])(c); }   /* vtable +88: CollisionRadius (0xb6d974) */
- typedef struct { uint8_t *ch, *tgt; int id, tick; } GrHit;
- static GrHit g_grh[8]; static int g_ngrh;
--typedef struct { uint8_t *ch; int id, x0, y0, start; } GrJob;
-+typedef struct { uint8_t *ch; int id, x0, y0, start, nostun; } GrJob;
- static GrJob g_gr[16]; static int g_ngr;
- static long g_gr_char, g_gr_wall, g_gr_land, g_gr_stun, g_gr_reload;
- static void grapple_hit(uint64_t *ctx) {   /* enter 0xb5c180(owner, hit character): the hit of a UniqueProperty 5 projectile */
-@@ -318,7 +318,8 @@ static int is_oc_proj(uint8_t *ch, void *d) {   /* d is in the brawler's super's
-     return 0;
- }
- int env_dash_start(uint8_t *ch, int tx, int ty, int speed);   /* env.c: the native charge mover, no contact job */
--void superfix_cc_stun(uint8_t *ch, int ticks, const char *why);
-+int superfix_cc_stun(uint8_t *ch, int ticks, const char *why);
-+int gadget_buoy_nostun(uint8_t *ch) __attribute__((weak));   /* gadget.c: Buzz's Reserve Buoy, "his next Super does not stun" */
- static int walkable_now(void *sim, int x, int y);
- /* spawnfix.c's projectile end (0xb75998): a grapple that stopped (reason 3: on a character it does not pierce; 2 / 4: the
-  * other stops of the projectile tick 0xb70650..0xb70668, the wall in a live trace: Buzz's torpedo at the wall tile) pulls
-@@ -327,8 +328,11 @@ static int walkable_now(void *sim, int x, int y);
-  * hits a wall": player +0x54 = max +0x58) */
- void superfix_grapple_end(uint8_t *pr, int reason) {
-     uint8_t *d = pr ? PTR(pr, 0x10) : NULL, *ch = pr ? PTR(pr, 0xe0) : NULL;
--    if (!mode() || !pr || reason < 2 || reason > 4 || I32(pr, 0x90) != 0) return;   /* 1: range end (a miss: no pull) */
-+    if (!mode() || !pr || I32(pr, 0x90) != 0) return;
-     if (!d || I32(d, 0x234) != 5 || !ch || VTOF(ch) != VT_CHAR || I32(ch, 0x3c4) <= 0) return;   /* ProjectileData UniqueProperty (getter 0xafab98) */
-+    static uint8_t *nlast; static int nlast_start, nostun;   /* issue #46: the torpedo after a Reserve Buoy, hit or miss */
-+    if (pr != nlast || I32(pr, 0x28) != nlast_start) { nlast = pr; nlast_start = I32(pr, 0x28); nostun = gadget_buoy_nostun && gadget_buoy_nostun(ch); }
-+    if (reason < 2 || reason > 4) return;   /* 1: range end (a miss: no pull) */
-     static uint8_t *last; static int last_start;
-     if (pr == last && I32(pr, 0x28) == last_start) return;
-     last = pr; last_start = I32(pr, 0x28);
-@@ -360,7 +364,7 @@ void superfix_grapple_end(uint8_t *pr, int reason) {
-     if (len > 0) {
-         for (k = 0; k < g_ngr && g_gr[k].ch != ch; k++) {}
-         if (k == g_ngr && g_ngr < 16) g_ngr++;
--        if (k < 16) g_gr[k] = (GrJob){ch, I32(ch, 8), x0, y0, now};
-+        if (k < 16) g_gr[k] = (GrJob){ch, I32(ch, 8), x0, y0, now, nostun};
-     }
-     if (g_superfix_dbg) LOG("[superfix] grapple char %d: %s at %d,%d, pull %d u%s\n", I32(ch, 8), t ? "character" : "wall", tx, ty, len,
-                             !t && is_oc_proj(ch, d) ? ", super given back" : "");
-@@ -373,13 +377,14 @@ static int grapple_tick(GrJob *j) {   /* 0 = job over: the pull ended -> the lan
-     double dist = hypot(x - j->x0, y - j->y0); if (dist > GR_FULL) dist = GR_FULL;
-     int ticks = GR_STUN_MIN + (int)((GR_STUN_MAX - GR_STUN_MIN) * dist / GR_FULL);
-     void **v = objs(sim, &n);
--    for (int i = 0; i < n; i++) {
-+    for (int i = 0; i < n && !j->nostun; i++) {   /* nostun: the first super after a Reserve Buoy (gadget.c) */
-         uint8_t *c = v[i]; if (!enemy(ch, c) || I32(c, 0x84) == I32(ch, 0x84)) continue;
-         long dx = I32(c, 0x38) - x, dy = I32(c, 0x3c) - y; if (dx * dx + dy * dy > (long)GR_STUN_R * GR_STUN_R) continue;
-         superfix_cc_stun(c, ticks, "grapple landing"); hits++;
-     }
-     g_gr_land++; g_gr_stun += hits;
--    if (g_superfix_dbg) LOG("[superfix] grapple landing char %d at %d,%d after %.0f u: %d stunned for %d ticks\n", j->id, x, y, dist, hits, ticks);
-+    if (g_superfix_dbg) LOG("[superfix] grapple landing char %d at %d,%d after %.0f u: %d stunned for %d ticks%s\n", j->id, x, y, dist, hits, ticks,
-+                            j->nostun ? " (Reserve Buoy: no stun)" : "");
-     return 0;
- }
- 
-diff --git a/native/loader/superfix_status.c b/native/loader/superfix_status.c
-index 15b552c..8b2d0c0 100644
---- a/native/loader/superfix_status.c
-+++ b/native/loader/superfix_status.c
-@@ -70,7 +70,7 @@ enum { SE_DUR = 0x98, SE_RATE = 0xa0, SE_SRCDEATH = 0xa8, SE_FIRST = 0xab, SE_ST
-        SE_SPD_BP = 0xf8, SE_SPD_BA = 0xfc, SE_SPD_RP = 0x100, SE_SPD_RA = 0x104, SE_DMG_BP = 0x108, SE_DMG_RP = 0x118,
-        SE_RECV_BP = 0x11c, SE_RECV_BA = 0x120,
-        /* issue #19 leftovers (stores at 0xba4198 / 0xba41c4 / 0xba42a0 / 0xba4478; Fear is a BooleanAttributes word, 0xba4bc8) */
--       SE_LIFESTEAL = 0x10c, SE_SRC_LIFESTEAL = 0x110, SE_RELOAD = 0x124,
-+       SE_LIFESTEAL = 0x10c, SE_SRC_LIFESTEAL = 0x110, SE_RELOAD = 0x124, SE_CHARGE = 0xc4 /* UltiChargeBoostPercent (#46) */,
-        /* DamageBoostTargetCurrentHealthPercent (store 0xba41f0), CancelOnChargeEnd (byte, store 0xba3ac0) */
-        SE_HPBOOST = 0x114, SE_CANCEL_CHARGE_END = 0xa6,
-        /* bytes */
-@@ -520,11 +520,15 @@ int superfix_status_taunt(uint8_t *ch, int *x, int *y) {
- }
- 
- /* issue #19 final: Edgar's hypercharged super area (EnragerOverchargeSuper): extra percent on the super charge his hits
-- * give (env.c my_charge), 0 = none */
-+ * give (env.c my_charge), 0 = none. Issue #46: plus the UltiChargeBoostPercent (+0xc4) of every status in the store, as the
-+ * table gives it: Surge's PowerLevelerExtraUltiCharge 30 and Moe's gadget 50, and also two non-gadget rows that were stored
-+ * with no effect before, RockWeaponDamageBoost 50 and DaredevilSpUltiChargeRate 30 */
- int superfix_status_charge_pct(uint8_t *ch) {
-     if (!g_superfix || !mode() || !is_char(ch)) return 0;
--    return zone_get(ch, ZN_CHARGE, now_tick(ch));
-+    return zone_get(ch, ZN_CHARGE, now_tick(ch)) + st_field(ch, SE_CHARGE, NULL);
- }
-+static int g_st_on;
-+int superfix_status_live(void) { return g_superfix && g_st_on; }   /* issue #46: gadget_self.c puts statuses in this store */
- 
- /* StatusEffect (type 36) areas, from superfix.c's area tick hook (0xb28c0c) */
- typedef struct { void *a, *d; int start, end, next, n; } AreaRec;
-@@ -849,7 +853,7 @@ void superfix_status_install(void) {
-     hook_replace(g_libg, 0xba3230, (void *)my_status_add);
-     hook_replace(g_libg, 0xba3260, (void *)my_status_remove);
-     hook_replace(g_libg, 0xba3264, (void *)my_status_remove);
--    hook_enter(g_libg, 0xb3941c, on_char_update);
-+    hook_enter(g_libg, 0xb3941c, on_char_update); g_st_on = 1;
-     if (*(uint32_t *)B(0xba3274) == 0xd65f03c0 && *(uint32_t *)B(0xb3e16c) == 0x94019442)   /* ret; bl 0xba3274 */
-         hook_replace(g_libg, 0xba3274, (void *)my_charge_end);
-     else LOG("[superfix] status: charge-end notify 0xba3274 bytes differ, CancelOnChargeEnd left out\n");
 diff --git a/native/loader/gadget_self.c b/native/loader/gadget_self.c
 new file mode 100644
 index 0000000..0cd3617
@@ -1163,3 +1035,132 @@ index 0000000..0cd3617
 +    memset(g_self, 0, sizeof g_self); memset(g_fired, 0, sizeof g_fired);
 +    g_clamps = g_inverts = g_cancels = g_ammo = g_sleeps = g_woken = g_vision_hits = 0; g_sim = NULL;
 +}
+diff --git a/native/loader/superfix_cc.c b/native/loader/superfix_cc.c
+index 8420123..b2d4931 100644
+--- a/native/loader/superfix_cc.c
++++ b/native/loader/superfix_cc.c
+@@ -61,8 +61,6 @@ static void stun(uint8_t *ch, int ticks, const char *why) {
+     if (I32(ch, CH_STUN_TICKS) < ticks) I32(ch, CH_STUN_TICKS) = ticks;   /* the longer stun wins (no stacking) */
+     if (g_superfix_dbg) LOG("[superfix] cc: stun ch %d for %d ticks (%s), tick %d\n", I32(ch, 8), ticks, why, now_tick(ch));
+ }
+-/* superfix_moves.c: Buzz's landing stun, Kit's hypercharged super */
+-void superfix_cc_stun(uint8_t *ch, int ticks, const char *why) { if (on()) stun(ch, ticks, why); }
+ typedef struct { uint8_t *ch; int id, until; } Sil;
+ #define SIL_MAX 64
+ static Sil g_sil[SIL_MAX]; static int g_nsilrec;
+@@ -79,6 +77,13 @@ static void silence(uint8_t *ch, int ticks, const char *why) {
+     if (g_sil[k].until < t + ticks) g_sil[k].until = t + ticks;
+     if (g_superfix_dbg) LOG("[superfix] cc: silence ch %d for %d ticks (%s), tick %d\n", I32(ch, 8), ticks, why, t);
+ }
++/* superfix_moves.c (Buzz's landing stun, Kit's hypercharged super) and gadget.c (next-attack stuns and sleeps): -> 1 = the stun
++ * was applied (superfix on, a living character without CcImmunity) */
++int superfix_cc_stun(uint8_t *ch, int ticks, const char *why) {
++    if (!on() || !is_char(ch) || ticks <= 0 || I32(ch, 0x3c4) <= 0) return 0;
++    if (U8(ch, CH_CCIMM)) { g_nimm++; return 0; }
++    stun(ch, ticks, why); return 1;
++}
+ /* superfix_status.c's aggregate asks every tick */
+ int superfix_cc_silenced(uint8_t *ch, int t) {
+     if (!g_cc_on) return 0;
+diff --git a/native/loader/superfix_moves.c b/native/loader/superfix_moves.c
+index 1513368..80e2b5e 100644
+--- a/native/loader/superfix_moves.c
++++ b/native/loader/superfix_moves.c
+@@ -301,7 +301,7 @@ typedef int (*rad_t)(void *);
+ static int char_radius(uint8_t *c) { void **vt = *(void ***)c; return ((rad_t)vt[88 / 8])(c); }   /* vtable +88: CollisionRadius (0xb6d974) */
+ typedef struct { uint8_t *ch, *tgt; int id, tick; } GrHit;
+ static GrHit g_grh[8]; static int g_ngrh;
+-typedef struct { uint8_t *ch; int id, x0, y0, start; } GrJob;
++typedef struct { uint8_t *ch; int id, x0, y0, start, nostun; } GrJob;
+ static GrJob g_gr[16]; static int g_ngr;
+ static long g_gr_char, g_gr_wall, g_gr_land, g_gr_stun, g_gr_reload;
+ static void grapple_hit(uint64_t *ctx) {   /* enter 0xb5c180(owner, hit character): the hit of a UniqueProperty 5 projectile */
+@@ -318,7 +318,8 @@ static int is_oc_proj(uint8_t *ch, void *d) {   /* d is in the brawler's super's
+     return 0;
+ }
+ int env_dash_start(uint8_t *ch, int tx, int ty, int speed);   /* env.c: the native charge mover, no contact job */
+-void superfix_cc_stun(uint8_t *ch, int ticks, const char *why);
++int superfix_cc_stun(uint8_t *ch, int ticks, const char *why);
++int gadget_buoy_nostun(uint8_t *ch) __attribute__((weak));   /* gadget.c: Buzz's Reserve Buoy, "his next Super does not stun" */
+ static int walkable_now(void *sim, int x, int y);
+ /* spawnfix.c's projectile end (0xb75998): a grapple that stopped (reason 3: on a character it does not pierce; 2 / 4: the
+  * other stops of the projectile tick 0xb70650..0xb70668, the wall in a live trace: Buzz's torpedo at the wall tile) pulls
+@@ -327,8 +328,11 @@ static int walkable_now(void *sim, int x, int y);
+  * hits a wall": player +0x54 = max +0x58) */
+ void superfix_grapple_end(uint8_t *pr, int reason) {
+     uint8_t *d = pr ? PTR(pr, 0x10) : NULL, *ch = pr ? PTR(pr, 0xe0) : NULL;
+-    if (!mode() || !pr || reason < 2 || reason > 4 || I32(pr, 0x90) != 0) return;   /* 1: range end (a miss: no pull) */
++    if (!mode() || !pr || I32(pr, 0x90) != 0) return;
+     if (!d || I32(d, 0x234) != 5 || !ch || VTOF(ch) != VT_CHAR || I32(ch, 0x3c4) <= 0) return;   /* ProjectileData UniqueProperty (getter 0xafab98) */
++    static uint8_t *nlast; static int nlast_start, nostun;   /* issue #46: the torpedo after a Reserve Buoy, hit or miss */
++    if (pr != nlast || I32(pr, 0x28) != nlast_start) { nlast = pr; nlast_start = I32(pr, 0x28); nostun = gadget_buoy_nostun && gadget_buoy_nostun(ch); }
++    if (reason < 2 || reason > 4) return;   /* 1: range end (a miss: no pull) */
+     static uint8_t *last; static int last_start;
+     if (pr == last && I32(pr, 0x28) == last_start) return;
+     last = pr; last_start = I32(pr, 0x28);
+@@ -360,7 +364,7 @@ void superfix_grapple_end(uint8_t *pr, int reason) {
+     if (len > 0) {
+         for (k = 0; k < g_ngr && g_gr[k].ch != ch; k++) {}
+         if (k == g_ngr && g_ngr < 16) g_ngr++;
+-        if (k < 16) g_gr[k] = (GrJob){ch, I32(ch, 8), x0, y0, now};
++        if (k < 16) g_gr[k] = (GrJob){ch, I32(ch, 8), x0, y0, now, nostun};
+     }
+     if (g_superfix_dbg) LOG("[superfix] grapple char %d: %s at %d,%d, pull %d u%s\n", I32(ch, 8), t ? "character" : "wall", tx, ty, len,
+                             !t && is_oc_proj(ch, d) ? ", super given back" : "");
+@@ -373,13 +377,14 @@ static int grapple_tick(GrJob *j) {   /* 0 = job over: the pull ended -> the lan
+     double dist = hypot(x - j->x0, y - j->y0); if (dist > GR_FULL) dist = GR_FULL;
+     int ticks = GR_STUN_MIN + (int)((GR_STUN_MAX - GR_STUN_MIN) * dist / GR_FULL);
+     void **v = objs(sim, &n);
+-    for (int i = 0; i < n; i++) {
++    for (int i = 0; i < n && !j->nostun; i++) {   /* nostun: the first super after a Reserve Buoy (gadget.c) */
+         uint8_t *c = v[i]; if (!enemy(ch, c) || I32(c, 0x84) == I32(ch, 0x84)) continue;
+         long dx = I32(c, 0x38) - x, dy = I32(c, 0x3c) - y; if (dx * dx + dy * dy > (long)GR_STUN_R * GR_STUN_R) continue;
+         superfix_cc_stun(c, ticks, "grapple landing"); hits++;
+     }
+     g_gr_land++; g_gr_stun += hits;
+-    if (g_superfix_dbg) LOG("[superfix] grapple landing char %d at %d,%d after %.0f u: %d stunned for %d ticks\n", j->id, x, y, dist, hits, ticks);
++    if (g_superfix_dbg) LOG("[superfix] grapple landing char %d at %d,%d after %.0f u: %d stunned for %d ticks%s\n", j->id, x, y, dist, hits, ticks,
++                            j->nostun ? " (Reserve Buoy: no stun)" : "");
+     return 0;
+ }
+ 
+diff --git a/native/loader/superfix_status.c b/native/loader/superfix_status.c
+index 15b552c..8b2d0c0 100644
+--- a/native/loader/superfix_status.c
++++ b/native/loader/superfix_status.c
+@@ -70,7 +70,7 @@ enum { SE_DUR = 0x98, SE_RATE = 0xa0, SE_SRCDEATH = 0xa8, SE_FIRST = 0xab, SE_ST
+        SE_SPD_BP = 0xf8, SE_SPD_BA = 0xfc, SE_SPD_RP = 0x100, SE_SPD_RA = 0x104, SE_DMG_BP = 0x108, SE_DMG_RP = 0x118,
+        SE_RECV_BP = 0x11c, SE_RECV_BA = 0x120,
+        /* issue #19 leftovers (stores at 0xba4198 / 0xba41c4 / 0xba42a0 / 0xba4478; Fear is a BooleanAttributes word, 0xba4bc8) */
+-       SE_LIFESTEAL = 0x10c, SE_SRC_LIFESTEAL = 0x110, SE_RELOAD = 0x124,
++       SE_LIFESTEAL = 0x10c, SE_SRC_LIFESTEAL = 0x110, SE_RELOAD = 0x124, SE_CHARGE = 0xc4 /* UltiChargeBoostPercent (#46) */,
+        /* DamageBoostTargetCurrentHealthPercent (store 0xba41f0), CancelOnChargeEnd (byte, store 0xba3ac0) */
+        SE_HPBOOST = 0x114, SE_CANCEL_CHARGE_END = 0xa6,
+        /* bytes */
+@@ -520,11 +520,15 @@ int superfix_status_taunt(uint8_t *ch, int *x, int *y) {
+ }
+ 
+ /* issue #19 final: Edgar's hypercharged super area (EnragerOverchargeSuper): extra percent on the super charge his hits
+- * give (env.c my_charge), 0 = none */
++ * give (env.c my_charge), 0 = none. Issue #46: plus the UltiChargeBoostPercent (+0xc4) of every status in the store, as the
++ * table gives it: Surge's PowerLevelerExtraUltiCharge 30 and Moe's gadget 50, and also two non-gadget rows that were stored
++ * with no effect before, RockWeaponDamageBoost 50 and DaredevilSpUltiChargeRate 30 */
+ int superfix_status_charge_pct(uint8_t *ch) {
+     if (!g_superfix || !mode() || !is_char(ch)) return 0;
+-    return zone_get(ch, ZN_CHARGE, now_tick(ch));
++    return zone_get(ch, ZN_CHARGE, now_tick(ch)) + st_field(ch, SE_CHARGE, NULL);
+ }
++static int g_st_on;
++int superfix_status_live(void) { return g_superfix && g_st_on; }   /* issue #46: gadget_self.c puts statuses in this store */
+ 
+ /* StatusEffect (type 36) areas, from superfix.c's area tick hook (0xb28c0c) */
+ typedef struct { void *a, *d; int start, end, next, n; } AreaRec;
+@@ -849,7 +853,7 @@ void superfix_status_install(void) {
+     hook_replace(g_libg, 0xba3230, (void *)my_status_add);
+     hook_replace(g_libg, 0xba3260, (void *)my_status_remove);
+     hook_replace(g_libg, 0xba3264, (void *)my_status_remove);
+-    hook_enter(g_libg, 0xb3941c, on_char_update);
++    hook_enter(g_libg, 0xb3941c, on_char_update); g_st_on = 1;
+     if (*(uint32_t *)B(0xba3274) == 0xd65f03c0 && *(uint32_t *)B(0xb3e16c) == 0x94019442)   /* ret; bl 0xba3274 */
+         hook_replace(g_libg, 0xba3274, (void *)my_charge_end);
+     else LOG("[superfix] status: charge-end notify 0xba3274 bytes differ, CancelOnChargeEnd left out\n");

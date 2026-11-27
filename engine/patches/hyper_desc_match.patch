@@ -10,8 +10,9 @@
 # hyper.c: Carl's flame trail, Gus's spirits, Alli (card 319), Melodie's card object (0xb39704), Ruffs' overcharged area
 #   byte, Poco's overheal shield, Shade's dead centre, Kaze's centre repeat.
 # spawnfix.c: a weak call from on_explode (Gus).
+# Re-recorded for the linear chain (series): applies with -p0 on the tree the patches before it in series leave.
 diff --git native/loader/env.c native/loader/env.c
-index 909f6fe..66df5d4 100644
+index 2e0edd8..22bba01 100644
 --- native/loader/env.c
 +++ native/loader/env.c
 @@ -84,7 +84,7 @@ static fn_b422d0 o_root;                          /* trampoline: calls the origi
@@ -102,7 +103,7 @@ index 909f6fe..66df5d4 100644
      if (!pop && ow >= 0 && I32(victim, 0x3c4) <= 0 && resp_mate(E.sim, ow)) {   /* knocked out while a teammate lives */
          E.resp_at[ow] = I32(E.sim, 0x10) + RESP_TICKS; E.resp_ai[ow] = U8(victim, 0x469); E.resp_n++;
          /* area round: it loses its power cubes (Duo Showdown: a respawned brawler starts at 0 cubes) and their +400 max HP
-@@ -735,6 +769,69 @@ static void charge_break(void *sim, uint8_t *ch, int x, int y, int r) {
+@@ -751,6 +785,69 @@ static void charge_break(void *sim, uint8_t *ch, int x, int y, int r) {
      void *m = PTR(sim, 0x68); if (!m) return;
      ((fn_circ)B(0xa53b60))(m, x, y, r, 0, I32(ch, 0x80), I32(ch, 0x84), 0, 0, PTR(ch, 0x20)); g_charge_walls++;
  }
@@ -172,7 +173,7 @@ index 909f6fe..66df5d4 100644
  static int dig_ok(void);
  static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type, int dmg, int push, void *area1, void *area_end,
                                  void *area2) {
-@@ -748,10 +845,18 @@ static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type
+@@ -764,10 +861,18 @@ static void native_charge_start(uint8_t *ch, int tx, int ty, int speed, int type
          if (L >= 50 && hypot(tx - lx, ty - ly) < 50) { lx = tx; ly = ty; }
          tx = lx; ty = ly;
      }
@@ -193,7 +194,7 @@ index 909f6fe..66df5d4 100644
      ((void (*)(void *, int, int, uint64_t, unsigned, unsigned, int))B(0xb4790c))(ch, tx, ty, 1, (unsigned)speed, 0, 0);
      U8(ch, 0x98d) = s98d; U8(ch, 0x98e) = s98e;
      if (I32(ch, 0x41c) <= 0) return;
-@@ -813,14 +918,34 @@ static void charge_land(void *sim, ChargeJob *j, uint8_t *ch, int x, int y) {
+@@ -829,14 +934,34 @@ static void charge_land(void *sim, ChargeJob *j, uint8_t *ch, int x, int y) {
      }
      if (pl_) I32(pl_, 0x54) = charge0;
  }
@@ -229,7 +230,7 @@ index 909f6fe..66df5d4 100644
      /* a negative ChargePushback pulls (LuchadorUlti's OverchargedChargePushback -100, the hypercharged super the game passes
       * as the start's x5): every enemy the charge hit is drawn to the landing point by the game's knockback, which for a
       * negative strength moves the victim min(6 * |strength|, its distance) u toward the source (0xb49ba8..0xb49bc8, 0xb49cd0) */
-@@ -837,7 +962,6 @@ static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge f
+@@ -853,7 +978,6 @@ static void charge_end(void *sim, ChargeJob *j, uint8_t *ch) {   /* the charge f
   * cream"; RE-IMPLEMENTED: no libg call site reads this card type): with each trail scoop the game drops, Value more of the
   * same area, the e-th Value3 u from it at e x Value2 degrees from the dash direction (one more scoop 400 u to the dash's left).
   * [?] the server's placement: compiled out; Value2 read as an angle, Value3 as a distance. */
@@ -237,7 +238,7 @@ index 909f6fe..66df5d4 100644
  #define CT_PAINTER 273   /* overcharge_painter (the card Type enum) */
  static void painter_scoops(void *sim, ChargeJob *j, uint8_t *ch) {
      int n = hyper_card_live(ch, CT_PAINTER, 1), deg = hyper_card_live(ch, CT_PAINTER, 2), off = hyper_card_live(ch, CT_PAINTER, 3);
-@@ -881,7 +1005,9 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
+@@ -897,7 +1021,9 @@ static void charge_contact_tick(void *sim) {   /* pre-snapshot, once per tick */
              /* a super's hits do not recharge that super (as the leap bombs: sf_explode restores the owner's charge) */
              int np_; void **ps_ = players(sim, &np_); uint8_t *pl_ = j->owner >= 0 && j->owner < np_ ? ps_[j->owner] : NULL;
              int charge0 = pl_ ? I32(pl_, 0x54) : 0;
@@ -247,7 +248,7 @@ index 909f6fe..66df5d4 100644
              /* Colette's hypercharged dash: her spirit's hit follows on the same enemy (hyper.c hyper_spirit_damage) */
              int sp = j->dmg > 0 && j->ulti && I32(c, 0x3c4) > 0 && I32(c, 0x84) != I32(ch, 0x84) ? hyper_spirit_damage(ch, d) : 0;
              if (sp > 0) o_root(c, j->owner, sp, sp, 0, ch, NULL, 1, x, y, NULL, 0, 0, 0, 1, 0, 0, 0);
-@@ -1005,7 +1131,8 @@ static void sf_start_hook(uint64_t *ctx) {   /* 0xb475cc (the one-instruction re
+@@ -1021,7 +1147,8 @@ static void sf_start_hook(uint64_t *ctx) {   /* 0xb475cc (the one-instruction re
      double dist = hypot(lx - x0, ly - y0), per = speed / 20.0 > 1 ? speed / 20.0 : 1; int T = (int)ceil(dist / per); if (T < 1) T = 1;
      int slot = -1; for (int i = 0; i < E.njobs; i++) if (E.jobs[i].id == id) slot = i;
      if (slot < 0) { if (E.njobs >= NBE_MAXP) return; slot = E.njobs++; }
@@ -257,7 +258,7 @@ index 909f6fe..66df5d4 100644
      E.sf_started++; sf_stop(ch);
      if (item) {
          int owner = I32(ch, 0x80);
-@@ -1020,7 +1147,11 @@ static void sf_tick(void *sim) {
+@@ -1036,7 +1163,11 @@ static void sf_tick(void *sim) {
          j->t++; double f = (double)j->t / j->T; if (f > 1) f = 1;
          I32(ch, 0x38) = jround(j->x0 + (j->x1 - j->x0) * f); I32(ch, 0x3c) = jround(j->y0 + (j->y1 - j->y0) * f);
          I32(ch, 0x40) = f < 1 ? jround(700 * 4 * f * (1 - f)) : 0;
@@ -270,7 +271,7 @@ index 909f6fe..66df5d4 100644
      }
  }
  static int leaping(int id) { for (int i = 0; i < E.njobs; i++) if (E.jobs[i].id == id) return 1; return 0; }
-@@ -1044,6 +1175,9 @@ static void sf_explode(void *sim, Bomb *b) {
+@@ -1060,6 +1191,9 @@ static void sf_explode(void *sim, Bomb *b) {
          v = objvec(sim, &n);
      }
      if (pl) I32(pl, 0x54) = charge0;
@@ -280,7 +281,7 @@ index 909f6fe..66df5d4 100644
      E.sf_pops++;
  }
  static void sf_bomb_state(void *sim) {   /* afterState: detect popped bombs (LEAP_BOMB: normal and hypercharged) */
-@@ -1366,9 +1500,11 @@ static void pre_snapshot(void *sim) {   /* 0xb63b0c, once per tick: storm hits,
+@@ -1382,9 +1516,11 @@ static void pre_snapshot(void *sim) {   /* 0xb63b0c, once per tick: storm hits,
      E.ngq = 0;
      if (E.njobs) sf_tick(sim);
      if (g_ncj) charge_contact_tick(sim);   /* diversity round: env charge contact (only after a native charge start) */
@@ -292,7 +293,7 @@ index 909f6fe..66df5d4 100644
      int ntj = E.ntj; TickJob tj[64]; memcpy(tj, E.tj, ntj * sizeof *tj); E.ntj = 0;
      for (int i = 0; i < ntj; i++) {
          if (tj[i].kind == 1) sf_spawn_box(sim, tj[i].p, tj[i].a, tj[i].b, tj[i].c);
-@@ -1428,6 +1564,7 @@ static void hyper_tick(void *sim) {   /* hypercharge round: drain / end (hyper.c
+@@ -1444,6 +1580,7 @@ static void hyper_tick(void *sim) {   /* hypercharge round: drain / end (hyper.c
          if (hyper_active(ps[i]) && hyper_tick_player(i, ps[i], c, c && I32(c, 0x3c4) > 0 && !waiting(i))) E.sent_valid[i] = 0;
          hyper_unswap(i, c);   /* the normal super back after a hypercharged one (hyper.c) */
          int alive = c && I32(c, 0x3c4) > 0 && !waiting(i);   /* gear round: the shield's regeneration; a bush change re-sends the move */
@@ -300,7 +301,7 @@ index 909f6fe..66df5d4 100644
          if (gear_tick_player(i, c, alive, c && alive && gear_has(i, 0) ? bush_at(sim, I32(c, 0x38), I32(c, 0x3c)) : 0)) E.sent_valid[i] = 0;
      }
  }
-@@ -1941,19 +2078,21 @@ static void emulate_client_flags(void *sim, int32_t *a) {
+@@ -1957,19 +2094,21 @@ static void emulate_client_flags(void *sim, int32_t *a) {
  /* issue #19: how far an invisible brawler is seen from (0 = not invisible), per player index, for the encoder. The status
   * aggregate char +0x97c (superfix_status.c: 1 normal / 2 attacks_dont_reveal, 3 full) and Leon's super (a skill with
   * BehaviorType Invisibility, SkillData +0x1a8 == 3, while its instance runs, +8 > 0; BreakInvisibilityOnAttack: an attack

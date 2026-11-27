@@ -2,16 +2,17 @@
 # (env.c gas_tick, NB_GAS_RULES=0 off); Meteors / HealingMushrooms event modifiers as env tick jobs (showdown_mods.c,
 # NB_SD_MODIFIERS=3,5, off by default); WallSpawn tiles closer than the area's Radius, bush-grow areas grow bushes (spawnfix.c).
 # Applies on top of every earlier patch; paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/build.sh b/native/loader/build.sh
-index cde0b74..0af31d7 100755
+index 2124353..d5b8bd7 100755
 --- a/native/loader/build.sh
 +++ b/native/loader/build.sh
 @@ -10,5 +10,5 @@
  set -e
  cd "$(dirname "$0")"
  aarch64-linux-gnu-gcc -O2 -g -ffp-contract=off -fno-omit-frame-pointer -static -D_GNU_SOURCE -Wall -Wno-unused-function -Wno-incompatible-pointer-types \
--  -Wno-int-conversion -fno-strict-aliasing -Iinc -o nbhost_spawnfix2.tmp main.c elfload.c bionic_shim.c android_shim.c jni_fake.c boot.c hook.c offline.c battle_fix.c env.c prof.c encode.c heapcheck.c bar_fix.c gl_client.c gl_client_gen.c spawnfix.c superfix.c superfix_items.c superfix_moves.c superfix_status.c superfix_cc.c gadget.c hyper.c trace.c thunk.S -lm -lpthread
-+  -Wno-int-conversion -fno-strict-aliasing -Iinc -o nbhost_spawnfix2.tmp main.c elfload.c bionic_shim.c android_shim.c jni_fake.c boot.c hook.c offline.c battle_fix.c env.c prof.c encode.c heapcheck.c bar_fix.c gl_client.c gl_client_gen.c spawnfix.c superfix.c superfix_items.c superfix_moves.c superfix_status.c superfix_cc.c gadget.c hyper.c showdown_mods.c trace.c thunk.S -lm -lpthread
+-  -Wno-int-conversion -fno-strict-aliasing -Iinc -o nbhost_spawnfix2.tmp main.c elfload.c bionic_shim.c android_shim.c jni_fake.c boot.c hook.c offline.c battle_fix.c env.c prof.c encode.c heapcheck.c bar_fix.c gl_client.c gl_client_gen.c spawnfix.c superfix.c superfix_items.c superfix_moves.c superfix_status.c superfix_cc.c gadget.c hyper.c star.c trace.c thunk.S -lm -lpthread
++  -Wno-int-conversion -fno-strict-aliasing -Iinc -o nbhost_spawnfix2.tmp main.c elfload.c bionic_shim.c android_shim.c jni_fake.c boot.c hook.c offline.c battle_fix.c env.c prof.c encode.c heapcheck.c bar_fix.c gl_client.c gl_client_gen.c spawnfix.c superfix.c superfix_items.c superfix_moves.c superfix_status.c superfix_cc.c gadget.c hyper.c star.c showdown_mods.c trace.c thunk.S -lm -lpthread
  mv -f nbhost_spawnfix2.tmp nbhost_spawnfix2 && echo "built native/loader/nbhost_spawnfix2"
 diff --git a/native/loader/env.c b/native/loader/env.c
 index c952043..bc335d5 100644

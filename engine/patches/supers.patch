@@ -2,6 +2,7 @@
 # libg's own functions (native/loader/superfix*.c; NB_SUPERFIX=0 turns all of it off). Applies on top of
 # training_round.patch, fair_view.patch, live_state.patch, gadgets.patch, charge.patch, hypercharge.patch and
 # hypercharged_supers.patch (paths relative to engine/).
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/battle_fix.c b/native/loader/battle_fix.c
 index dbc7de6..62e2eee 100644
 --- a/native/loader/battle_fix.c

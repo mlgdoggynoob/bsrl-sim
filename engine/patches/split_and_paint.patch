@@ -7,6 +7,7 @@
 # superfix_status.c: superfix_status_speed adds the split speed. env.c: Berry's paint (DamageScaleType 4) takes its Damage
 # as a percent of his main attack (660 / 330 per second at power 1), and his dash heals teammates by the skill's Damage.
 # Paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index 2a94187..53b1ab2 100644
 --- a/native/loader/env.c

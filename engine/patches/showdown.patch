@@ -1,8 +1,9 @@
 # showdown rules (bsrl-sim issue #21): battles with teams end when one team is left; libg's own death drop is fed the cubes
 # held (character +0x874 mirrors env's count, a trio group capped at 3 = Trio Showdown's 2 cubes); a teammate respawn takes
 # the game's 17 s and comes back with 3 s of spawn protection. Applies on top of every earlier patch; paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
-index 1c7dd3c..14fb964 100644
+index be864a1..ee8cb00 100644
 --- a/native/loader/env.c
 +++ b/native/loader/env.c
 @@ -7,7 +7,7 @@
@@ -14,7 +15,7 @@ index 1c7dd3c..14fb964 100644
   *     super-charge fix, Piper's leap re-implementation + BoxOfBombs + bomb damage, skill block in the air, client
   *     guard, alive guard, bot 'hold'/native control, local_ai.
   *   - soft reset: StartLoading clone re-injected through 0x816ff8 with the seed (+ the B3 determinism patch).
-@@ -147,10 +147,12 @@ static void **players(void *sim, int *n) { *n = I32(sim, 0x7c); if (*n < 0 || *n
+@@ -150,10 +150,12 @@ static void **players(void *sim, int *n) { *n = I32(sim, 0x7c); if (*n < 0 || *n
  static int player_char_id(void *p) { int c = I32(p, 0x1e4); return c ? c : I32(p, 0x10); }
  /* rl round, teammate respawn (duo / trio = rl team groups, div bit 31): a grouped brawler whose hit would knock it out
   * while a teammate lives is kept (hp back to max), parked off the map at the game's own 'unplaced' spot, invulnerable,
@@ -29,7 +30,7 @@ index 1c7dd3c..14fb964 100644
  #define PARK_X (-150)
  #define PARK_Y 150
  static int resp_on(void) { return (int)(g_div_team >> 31); }
-@@ -188,6 +190,24 @@ static void cubes_add(int id) {
+@@ -198,6 +200,24 @@ static void cubes_add(int id) {
      for (int i = 0; i < E.ncube; i++) if (E.cube_id[i] == id) { E.cube_n[i]++; return; }
      if (E.ncube < 64) { E.cube_id[E.ncube] = id; E.cube_n[E.ncube++] = 1; }
  }
@@ -54,7 +55,7 @@ index 1c7dd3c..14fb964 100644
  static int tile_blocks_move(int id) {  /* SF_BLOCK (tiles.csv BlocksMovement rows) */
      static const int rows[] = {1,2,3,4,6,9,10,11,12,13,14,15,16,18,20,21,39,40,41,42,43,44,45,46,53,54,55,56,57,58,59,60,61,62,63,65,66,69,70,71,72,73};
      for (unsigned i = 0; i < sizeof rows / sizeof *rows; i++) if (id == 27000000 + rows[i]) return 1;
-@@ -373,10 +393,13 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
+@@ -393,10 +413,13 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
      if (ow >= 0 && I32(victim, 0x3c4) <= 0 && resp_mate(E.sim, ow)) {   /* knocked out while a teammate lives */
          E.resp_at[ow] = I32(E.sim, 0x10) + RESP_TICKS; E.resp_ai[ow] = U8(victim, 0x469); E.resp_n++;
          /* area round: it loses its power cubes (Duo Showdown: a respawned brawler starts at 0 cubes) and their +400 max HP
@@ -69,7 +70,7 @@ index 1c7dd3c..14fb964 100644
          I32(victim, 0x3c4) = I32(victim, 0x3c8); U8(victim, 0x469) = 0; I32(victim, 0x38) = PARK_X; I32(victim, 0x3c) = PARK_Y;
      }
      E.charge_level = saved_level;
-@@ -847,11 +870,23 @@ static void elimination_tick(void *sim) {
+@@ -880,11 +903,23 @@ static void elimination_tick(void *sim) {
          E.elim_ptr[E.eptr_n++ % NBE_MAXP] = ps[i];
      }
      E.alive = total - E.order_n;
@@ -97,7 +98,7 @@ index 1c7dd3c..14fb964 100644
          int e4 = U8(sim, 0x4ea); U8(sim, 0x121) = 1; if (e4) U8(sim, 0xa1) = 1;
      }
  }
-@@ -891,7 +926,7 @@ static void item_tick(void *sim) {   /* itemTick: credit a power cube when the c
+@@ -924,7 +959,7 @@ static void item_tick(void *sim) {   /* itemTick: credit a power cube when the c
          int pid = I32(best, 8); uint8_t *p = obj_by_id(sim, pid); if (!p) continue;   /* creditCube */
          int mx = I32(p, 0x3c8), hp = I32(p, 0x3c4);
          I32(p, 0x3c8) = mx + 400; I32(p, 0x3c4) = hp + 400;
@@ -106,7 +107,7 @@ index 1c7dd3c..14fb964 100644
      }
      memcpy(E.items, now, nn * sizeof *now); E.nitems = nn;
  }
-@@ -900,14 +935,14 @@ static void item_tick(void *sim) {   /* itemTick: credit a power cube when the c
+@@ -933,14 +968,14 @@ static void item_tick(void *sim) {   /* itemTick: credit a power cube when the c
   * snapshot decoder 0xb2de2c reads from tag 0x84; the character encoder 0xb360ac writes there the simulation's cube count
   * +0x874 (<< 1 under status 0xd5). The offline build sets sim+0x11b = (mode 1 or 2) = 0 (0x9bbbe0), so the native pickup
   * 0xb6b8e0 never credits +0x874 and the counter never shows; env credits cubes itself (item_tick). The two `bl`s that write
@@ -123,7 +124,7 @@ index 1c7dd3c..14fb964 100644
      ((void (*)(void *, int, int))B(which ? 0xc75a98 : 0xc75a0c))(wr, v, tag);
  }
  static void cube_counter_install(void) {
-@@ -960,6 +995,9 @@ static void respawn_tick(void *sim) {
+@@ -993,6 +1028,9 @@ static void respawn_tick(void *sim) {
          if (tick >= E.resp_at[i]) {
              E.resp_at[i] = 0; E.resp_done++; I32(c, 0x38) = I32(m, 0x38); I32(c, 0x3c) = I32(m, 0x3c);
              I32(c, 0x3c4) = I32(c, 0x3c8); U8(c, 0x469) = E.resp_ai[i]; sf_stop(c);

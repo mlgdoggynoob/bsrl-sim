@@ -4,6 +4,7 @@
 # shots (gadget_rep_shot), NB_REP_DBG, targets() no longer reads an unset distance (Mico's crash, Gene's lost target);
 # hyper.c: circle_travel spirals a REPEAT gadget shot without a ring radius (Bea; R-T's lasers unchanged), its comments
 # fixed (+0x498 is never written); superfix_items.c: FUSE_TYPES fixed (type 25).
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/gadget.c b/native/loader/gadget.c
 index 4216e0e..179b136 100644
 --- a/native/loader/gadget.c

@@ -1,6 +1,7 @@
 # area gadgets (bsrl-sim issue #3, a diff on top of gadgets.patch and the later patches): gadget.c's AREA kind, the gadgets
 # that only drop their AreaEffect at the brawler (published as NBE_GAD_SPAWN), spawned with libg's 0xb35c40 after the row's
 # ActivationDelay. Rosa's GrowBush (WallSpawn) and Meeple's RageQuit (HpBasedStun) are left out. Check: python -m super_audit --gadget
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/gadget.c b/native/loader/gadget.c
 index 84922b1..af980a3 100644
 --- a/native/loader/gadget.c
