@@ -27,6 +27,7 @@ docstrings and comments are the spec.
 | `issue49.md` | #49 Brawl TV imitation rows, step 4 (trainer side) | #75 |
 | `issue47.md` | #47 star powers: what the host re-implements (`starfx.c`), the vtable hypothesis, per card what was done or why not, `star_check` results | #75 |
 | `issue63.md` | #63 the four masked REPEAT gadgets (Darryl, Fang, Bea, Amber): causes, fixes, live numbers | #74 |
+| `issue46_swap_cook.patch` | #46 batch 4 leftovers: SWAP (Jae-Yong) and COOK (Pearl), never committed; a header says how to port it | #89 |
 | `behaviour_design.md` | sliders, intents, planner, scenarios, enemy identity: the approved design + as-built notes (steps C, S, D, BI, E, the #9 port) | #10, #11 (this note: #76) |
 | `cloud_runs.md` | #48 runs r48-r51 on a 4-core CPU container: settings, what broke, keeping a run alive | #76 |
 | `findings.md` | loose measurements and owner decisions with no issue of their own; BrawlAPI | #76 |

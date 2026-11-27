@@ -1,0 +1,313 @@
+Issue #46 gadgets, batch 4 leftovers: SWAP and COOK (never committed; saved here so the work is not lost)
+
+Uncommitted edits from a subagent worktree of 2026-11-25 (base 5bba92b, the pre-#71 star-powers branch, kept on GitHub
+as backup/focused-mayer-5bba92b). Paths are repo-root relative. Not applied: main's gadget.c has moved on since.
+
+What it adds (engine/native/loader/gadget.c, env.c, superfix_cc.c; super_audit.py classifies and audits the kinds):
+- SWAP: swap_weapon_skill with a bounded duration (Jae-Yong `Alternator`: ActiveTicks 100 = 5 s, the replacement
+  weapon SkillData, the mode's aura). Uses superfix_cc_swap (Draco's mount swap) and puts the own weapon back after.
+  Audit then: Alternator_DamageMode works (3400 damage, AlternatorDamageProjectile, AlternatorDamageAura r1250);
+  Alternator_SlowMode was not run.
+- COOK: next_attack_change SubType 23 with StatusEffectEnemy (Pearl `Cooker_Poison`): the next volley's victims get the
+  status, via a gadget_hit hook in env.c. Audit then: works (5154 damage, healed 600, CookerProjectile x6, damage after
+  the hit = "dot", a new super_audit outcome with LATE_AFTER).
+- SUMMON is in this diff too, but it already landed in main (#46 batches 3b and 4, 7b454cd): skip those hunks.
+
+To port: apply the SWAP / COOK hunks by hand onto main's gadget.c (`git apply -3` will conflict), record the engine
+change in engine/patches/ as AGENTS.md says, rebuild the host, then `python -m gadget_check` and
+`python -m super_audit --gadget` for Jae-Yong and Pearl.
+
+diff --git a/engine/native/loader/env.c b/engine/native/loader/env.c
+index cc16a812989cb6f531ff1f0e0f6a478fce9333e0..e5a7fc4cfbd07cf5a8fe99ec03489148930632da 100644
+--- a/engine/native/loader/env.c
++++ b/engine/native/loader/env.c
+@@ -205,6 +205,7 @@ static int taunt_target(uint8_t *ch, int *tx, int *ty) {
+     *tx = I32(ch, 0x38) + (int)(dx / d * 1000); *ty = I32(ch, 0x3c) + (int)(dy / d * 1000);
+     return 2;
+ }
++void gadget_hit(void *victim, void *attacker, void *src);   /* gadget.c */
+ void superfix_cc_hit(uint8_t *victim, void *attacker, void *src, uint64_t lr) __attribute__((weak));   /* superfix_cc.c: projectile stuns */
+ void hyper_install(void); void *hyper_super_data(int i, uint8_t *ch, void *sd); void hyper_unswap(int i, uint8_t *ch);
+ void hyper_char_changed(uint8_t *old, uint8_t *nc);
+@@ -415,6 +416,7 @@ static uint64_t my_root(void *victim, int a1, int dmg, int a3, int a4, void *att
+     int mode3 = I32(g_libg->base, 0x12eefb4) == 3;
+     E.root_calls++;
+     if (superfix_cc_hit) superfix_cc_hit(victim, attacker, src, (uint64_t)__builtin_return_address(0));
++    gadget_hit(victim, attacker, src);   /* gadget.c COOK (issue #46) */
+     int saved_level = E.charge_level; E.charge_level = 0;
+     if (mode3 && !E.in_own_call && attacker) {   /* agent: entryScale (attackerArg 5) + dmgModelApply */
+         int raw = dmg, d = raw, aid = I32(attacker, 8), cubes = cubes_of(aid), lvl = 0;
+diff --git a/engine/native/loader/gadget.c b/engine/native/loader/gadget.c
+index 6758f054b070c5aba397cc6c028c7b68a41500dc..ae6eea4299deb1fc9fad044e254422743da50a13 100644
+--- a/engine/native/loader/gadget.c
++++ b/engine/native/loader/gadget.c
+@@ -90,7 +90,7 @@ static int g_next_ok;   /* gadget_install hooked Character::getAccessory */
+                            * Feb 2026 notes). NB_GAD_USES=3 restores the old 3 uses per battle (issue #22). */
+ #define TICKS_PER_S 20    /* 50 ms ticks */
+ enum { ACC_PLAIN = 0, ACC_DASH = 2, ACC_SPIN = 3, ACC_HEAL = 8, ACC_SPAWN = 9, ACC_REPEAT = 13, ACC_HEAL_SELF = 50,
+-       ACC_CHARGE_ULTI = 56, ACC_HEAL_TAKEN = 58 };   /* the `mov w8, #N` per Type string in 0xb2731c (spin_shoot 3, ...) */   /* accessory +0x24 type enum (0xb2731c's Type parser; 0 = empty Type) */
++       ACC_CHARGE_ULTI = 56, ACC_HEAL_TAKEN = 58, ACC_SWAP = 59 };   /* the `mov w8, #N` per Type string in 0xb2731c (spin_shoot 3, ...) */   /* accessory +0x24 type enum (0xb2731c's Type parser; 0 = empty Type) */
+ 
+ typedef int (*AdGet)(void *ad);
+ static int ad_get(void *ad, uint64_t getter) { return ((AdGet)B(getter))(ad); }
+@@ -114,6 +114,8 @@ struct Gad {
+     void *area_data; int area_x, area_y, area_here;        /* the area to spawn (NULL = the accessory's AreaEffect) and where
+                                                             * (area_here 1 = at the brawler when it spawns, 0 = area_x / y) */
+     int spin_id, spin_next, spin_end, spin_ang;            /* spin_shoot: char id, next volley tick, end tick, volley angle */
++    int cook_armed, cook_tag_tick, cook_ntag; int cook_tag[16][2];   /* COOK: tick armed, tick of the tagged volley, (projectile id, last victim id) */
++    int swap_id, swap_end; void *swap_sd;                 /* SWAP: char id, tick it ends, the swapped-in SkillData */
+     int armed, applied;                                    /* NEXT: tick armed, tick the client code marked it applied */
+     int hp_prev, hp_lost[100];                        /* damage taken per tick (ring by tick % 100), for HEAL_TAKEN */
+ };
+@@ -330,6 +332,117 @@ static int item_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
+     return it != NULL;
+ }
+ 
++/* ---- SUMMON (issue #46 batch 4): spawn rows whose CustomObject is a characters.csv row and SubType 1 (BeeSniper_Slow's pot,
++ * Roller_Speed's booster, CrossBomber_Vision's tower, JetpackGirl_DamageTower: one summon at the brawler, no other column).
++ * The Attack handler hands a skill's summon to its projectile (setter 0xb703c8(proj, CharacterData, count, ...): +0x1c0 the
++ * CharacterData, +0x3e8 the count) and the projectile's end spawns it (0xb75b00 -> 0xb77344 -> the character factory
++ * 0xb56e00: position = the projectile's, count 1 = no ring offset, power level / owner / team from the projectile). The same
++ * is done here with a carrier projectile of the brawler's own weapon (dmg 0) aimed at the brawler's own tile, so the
++ * projectile ends at once and the game's own code spawns the summon; the summon's area (CharacterData AreaEffect), lifetime
++ * and AI are then libg's and superfix_summon_area's. The other spawn SubTypes (2..6: counts, rings, pets with CustomValues
++ * 20..400 of unknown meaning) and ArtilleryDude_Cover (CustomValue1 35) are not read: not usable. */
++#define AD_SUBTYPE_SPAWN_ONE 1
++static long g_summons;
++static void *custom_char(void *ad) { return lookup_by_name(0xad2b60, ((void *(*)(void *))B(AD_CUSTOM_OBJ))(ad)); }   /* 0xad2b60 getCharacterByName */
++static int summon_classify(void *ad, int type) {
++    return type == ACC_SPAWN && ad_get(ad, AD_SUBTYPE) == AD_SUBTYPE_SPAWN_ONE && !custom_item(ad) && !PTR(ad, AD_AREA) &&
++           !ad_get(ad, AD_CV1) && !ad_get(ad, AD_CV2) && custom_char(ad);
++}
++static int summon_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
++    (void)deg; (void)tick;
++    if (I32(ch, 0x3c4) <= 0 || !PTR(ch, 0x20)) return 0;
++    void *sd = SKILL_ATTACK_SD(ch), *pd = skill_proj(sd);
++    if (!pd) return 0;
++    int X = I32(ch, 0x38), Y = I32(ch, 0x3c);
++    uint8_t *p = ((SpawnProj)B(0xb78190))(X, Y, ch, ch, pd, X, Y, 0, 0, 0, 0, NULL, sim, 0, GAD_PROJ_KIND, NULL);
++    if (!p) return 0;
++    PTR(p, 0x1c0) = custom_char(g->ad); I32(p, 0x3e8) = 1;   /* setter 0xb703c8: CharacterData, count (+0x3ec, +0x3f4, +0x3f8 stay 0) */
++    g_summons++;
++    if (g_summons <= 6) LOG("[gadget] summon carrier %p for char data %d\n", p, I32(PTR(p, 0x1c0), 0x20));
++    return 1;
++}
++
++/* ---- SWAP (issue #46 batch 4): swap_weapon_skill with a bounded duration (Alternator's two modes: ActiveTicks 100 = 5 s,
++ * CustomObject = the replacement weapon SkillData, AreaEffect = the mode's aura). The weapon swap is superfix_cc.c's (Draco's
++ * mount: a new skill instance in slot 0, the old one kept and put back), done at the use and undone ActiveTicks later; the aura
++ * is spawned at the brawler as for the AREA kind. Voodoo_AllBuffsAttack and Meeple_WallAttack (ActiveTicks 100000, CustomValue6
++ * 1: how long the swap lasts is not in the row) are left out. */
++extern void superfix_cc_swap(uint8_t *ch, void *data, int mount) __attribute__((weak));
++static long g_swaps;
++static void *custom_skill(void *ad) { return lookup_by_name(0xad2b7c, ((void *(*)(void *))B(AD_CUSTOM_OBJ))(ad)); }   /* 0xad2b7c getSkillByName */
++static int swap_classify(void *ad, int type) {
++    int t = ad_get(ad, AD_ACTIVE_TICKS);
++    return type == ACC_SWAP && superfix_cc_swap && t > 0 && t < 10000 && custom_skill(ad) && PTR(ad, AD_AREA);
++}
++static void *own_weapon(uint8_t *ch) { uint8_t *cd = ((uint8_t *(*)(void *))B(0xb6a384))(ch); return cd ? PTR(cd, 0x260) : NULL; }   /* CharacterData +0x260 (superfix_cc.c) */
++static int swap_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
++    if (I32(ch, 0x3c4) <= 0 || g->swap_end) return 0;
++    void *sd = custom_skill(g->ad); if (!sd) return 0;
++    superfix_cc_swap(ch, sd, 1);
++    g->swap_id = I32(ch, 8); g->swap_end = tick + ad_get(g->ad, AD_ACTIVE_TICKS); g->swap_sd = sd; g_swaps++;
++    area_fire(sim, g, ch, deg, tick);   /* the mode's aura at the brawler (an AreaEffect row, spawned as the AREA kind does) */
++    return 1;
++}
++static void swap_tick(void *sim, Gad *g, int tick) {
++    uint8_t *ch = env_obj_by_id(sim, g->swap_id);
++    if (tick < g->swap_end && ch && I32(ch, 0x3c4) > 0) return;
++    if (ch && I32(ch, 0x3c4) > 0 && own_weapon(ch)) superfix_cc_swap(ch, own_weapon(ch), 0);
++    g->swap_end = 0;
++}
++
++/* ---- COOK (issue #46 batch 4): next_attack_change SubType 23 (Cooker_Poison, "next basic attack shoots burning cookies, dealing
++ * extra damage over time"): the row's StatusEffectEnemy (AccessoryData +0x60, createReferences 0xa92474's store order: Ally
++ * +0x58, Enemy +0x60, Self +0x68, AreaEffect +0x70) is CookerGadgetDot (status_effects_logic.csv: Damage every TriggerRate
++ * ticks for DurationTicks). The client code only reads the armed accessory and calls the compiled-out stub 0xb27cfc, so the
++ * host does it: the use arms it, the projectile spawn 0xb78190 (wrapped in gadget_install) tags the main-attack projectiles
++ * (kind word 1) the owner spawns in the first tick it spawns any, and the damage root (env.c, gadget_hit) gives an enemy
++ * the status when a tagged projectile hits it, through the status add 0xb35dd0 superfix_status.c runs (its damage ticks
++ * through the root as every status). Cooker_Healing (SubType 24: the cookies ignore enemies and heal allies, StatusEffectAlly)
++ * is not done: the projectile's pass-through of enemies is server code. */
++static long g_cooks; static int g_cooks_live;
++static int cook_classify(void *ad, int type) { return type == 23 /* next_attack_change */ && g_cooks_live && ad_get(ad, AD_SUBTYPE) == 23 && PTR(ad, 0x60); }
++static int cook_fire(void *sim, Gad *g, uint8_t *ch, double deg, int tick) {
++    (void)sim; (void)deg;
++    if (I32(ch, 0x3c4) <= 0 || g->cook_armed) return 0;
++    g->cook_armed = tick > 0 ? tick : 1; g->cook_tag_tick = 0; g->cook_ntag = 0;
++    return 1;
++}
++typedef void *(*SpawnProj16)(int, int, void *, void *, void *, int, int, int, int, int, int, void *, void *, int, int, void *);
++static SpawnProj16 g_spawn_orig;
++static void *my_spawn_proj(int x, int y, void *o1, void *o2, void *pd, int tx, int ty, int d1, int d2, int a9, int a10, void *a11,
++                           void *sim, int a13, int kind, void *a15) {
++    void *p = g_spawn_orig(x, y, o1, o2, pd, tx, ty, d1, d2, a9, a10, a11, sim, a13, kind, a15);
++    if (p && kind == 1 && sim && o1) {
++        int now = I32(sim, 0x10);
++        for (int i = 0; i < NBE_MAXP; i++) {
++            Gad *g = &g_gad[i]; if (!g->cook_armed || !g->im || g->im->fire != cook_fire) continue;
++            uint8_t *ch = char_of(sim, i); if (ch != (uint8_t *)o1) continue;
++            if (!g->cook_tag_tick) g->cook_tag_tick = now;
++            if (g->cook_tag_tick == now && g->cook_ntag < 16) { g->cook_tag[g->cook_ntag][0] = I32(p, 8); g->cook_tag[g->cook_ntag++][1] = -1; }
++        }
++    }
++    return p;
++}
++typedef void (*apply_t)(void *, void *, int, int, void *, void *, int, int, int, int, int);   /* 0xb35dd0 (superfix_status.c) */
++void gadget_hit(void *victim, void *attacker, void *src) {   /* env.c's damage root hook: a tagged cookie hits an enemy */
++    static int off = -1; if (off < 0) off = getenv("NB_GAD_COOK_OFF") != NULL;   /* NB_GAD_COOK_OFF=1: no status (the audit's control run) */
++    if (!victim || !src || !g_cooks_live || off) return;
++    for (int i = 0; i < NBE_MAXP; i++) {
++        Gad *g = &g_gad[i]; if (!g->cook_ntag) continue;
++        int pid = I32(src, 8);
++        for (int k = 0; k < g->cook_ntag; k++) {
++            if (g->cook_tag[k][0] != pid || g->cook_tag[k][1] == I32(victim, 8)) continue;
++            int pl = ((int (*)(void *))B(0xb6a754))(src), team = ((int (*)(void *))B(0xb6a818))(src), vt = ((int (*)(void *))B(0xb6a818))(victim);
++            if (vt == team) continue;   /* allies are not poisoned */
++            g->cook_tag[k][1] = I32(victim, 8);
++            ((apply_t)B(0xb35dd0))(victim, PTR(g->ad, 0x60), pl, team, src, attacker, 0, 0, -1, -1, 0);
++            g_cooks++;
++            if (g_cooks <= 6) LOG("[gadget] cook: status %p on char %d from projectile %d\n", PTR(g->ad, 0x60), I32(victim, 8), pid);
++        }
++    }
++}
++static void cook_tick(Gad *g, int tick) { if (g->cook_armed && g->cook_tag_tick && tick > g->cook_tag_tick) g->cook_armed = 0; }
++
+ /* ---- SKILL: a gadget whose Skill the game's own skill code runs (issue #46): the Charge skills (Rocket Girl's jump, Speedy's
+  * dash, ...) and the Attack skills with summons or special handlers (Bow Dude's totem, ...). The skill activation 0xb7b268
+  * (superfix_moves.c) switches on the BehaviorType and the earlier rounds' handlers run, so the gadget only has to put a skill
+@@ -409,6 +522,8 @@ void gadget_install(void) {
+     if (f[0] != 0xaa1f03e0 || f[1] != 0xd65f03c0) { LOG("[gadget] getAccessory 0xb422c8: unexpected bytes %08x %08x, next-attack gadgets off\n", f[0], f[1]); return; }
+     hook_replace(g_libg, 0xb422c8, (void *)my_get_accessory);   /* mov x0, xzr ; ret */
+     g_next_ok = 1;
++    g_spawn_orig = (SpawnProj16)hook_replace(g_libg, 0xb78190, (void *)my_spawn_proj);   /* COOK: tags the cookies */
++    g_cooks_live = 1;
+ }
+ 
+ /* ---- SUPER: charge_ulti (R-T): the super charge (player +0x54) to CustomValue1 % of its maximum (+0x58) */
+@@ -458,7 +573,10 @@ static const GadImpl g_impl[] = {
+     {NBE_GAD_SPAWN, item_classify, item_fire},
+     {NBE_GAD_SUPER, super_classify, super_fire},
+     {NBE_GAD_HEAL, heal_now_classify, heal_now_fire},
++    {NBE_GAD_SPAWN, summon_classify, summon_fire},
++    {NBE_GAD_PROJECTILE, swap_classify, swap_fire},
+     {NBE_GAD_SPAWN, skill_classify, skill_fire},
++    {NBE_GAD_PROJECTILE, cook_classify, cook_fire},
+     {NBE_GAD_PROJECTILE, next_classify, next_fire},
+     {NBE_GAD_NONE, NULL, NULL}};
+ 
+@@ -531,6 +649,8 @@ void gadget_tick(void *sim, int tick) {   /* env.c pre_snapshot, once per tick *
+         if (g_gad[i].area_at && tick >= g_gad[i].area_at) area_spawn(sim, &g_gad[i]);
+         if (g_gad[i].spin_end) spin_tick(sim, &g_gad[i], tick);
+         if (g_gad[i].armed) next_tick(sim, &g_gad[i], tick);
++        if (g_gad[i].swap_end) swap_tick(sim, &g_gad[i], tick);
++        if (g_gad[i].cook_armed) cook_tick(&g_gad[i], tick);
+         if (g_gad[i].im && g_gad[i].type == ACC_HEAL_TAKEN) taken_tick(sim, &g_gad[i], tick);
+     }
+ }
+diff --git a/engine/native/loader/superfix_cc.c b/engine/native/loader/superfix_cc.c
+index e72f915e1b4c2e15ce1b6011b8e0bbfe932f1b67..345afe85db6fccb6493764a1ccbe5376908c3c50 100644
+--- a/engine/native/loader/superfix_cc.c
++++ b/engine/native/loader/superfix_cc.c
+@@ -192,6 +192,14 @@ static void do_swap(uint8_t *ch, Swap *w) {
+                             I32(w->want, 0x20), now_tick(ch));
+     w->want = NULL;
+ }
++/* issue #46 (gadget.c SWAP, Alternator): the same swap on request: mount 1 puts a new instance of `data` in slot 0 and keeps the old
++ * one, mount 0 puts the character's own weapon (data) back */
++void superfix_cc_swap(uint8_t *ch, void *data, int mount) {
++    if (!on() || !data || !is_char(ch)) return;
++    Swap *w = swap_rec(ch); if (!w) return;
++    if (mount) w->spare = NULL;
++    w->want = data; w->mount = mount; do_swap(ch, w);
++}
+ /* 0xb35c3c(ch, slot, SkillData, w3, w4, w5) */
+ static void my_change_skill(uint8_t *ch, int slot, void *data) {
+     void *ret = __builtin_return_address(0);
+diff --git a/super_audit.py b/super_audit.py
+index 27a367af5159f475c361896af5bbcc9366693042..c389fcfce9dc907a1469754841c7aeeb6ae89bac 100644
+--- a/super_audit.py
++++ b/super_audit.py
+@@ -61,6 +61,7 @@ MAP = "Survival651"                      # the most open Showdown map (88 % open
+ TILE = 300
+ CORR = 8                                 # corridor length in tiles from the shooter's tile: targets up to 7 tiles (2100 u)
+ SPACING = 13                             # tiles between spot centres (3900 u: a long super past its target stays clear)
++LATE_AFTER = 8                           # ticks after the first HP drop from which a drop counts as "late" (a status ticking: dot)
+ WATCH = 50                               # ticks watched after the fire (2.5 s at 20 ticks/s; regen starts 3 s after a hit)
+ STEP = 2                                 # ticks per env step while watching
+ POST_HIT = 0                             # --post-hit: tick after the fire at which the target shoots the shooter again (0 off)
+@@ -239,7 +240,7 @@ HEAL_TYPES = ("Heal", "Hot", "HealRegen", "HealAndDamage", "HotAndDot")
+ MASKED = {"HookDude_Homing", "AssaultShotgun_Bomb", "Speedy_Rewind"}   # gadget.c g_masked: classified, but no effect in this audit -> not usable
+ NATIVE_SKILL = {"BowDude_Totem", "HammerDude_Pull", "Ninja_InvisibleArea", "Gladiator_Amp",
+                 "MagicalGirl_FlyArea"}   # gadget.c g_native_skill: skill rows with a summon / item / handler, run by the game's skill path
+-GADGET_KINDS = ("area", "shot", "skill_area", "repeat", "spin", "item", "heal_now", "super", "skill")
++GADGET_KINDS = ("area", "shot", "skill_area", "repeat", "spin", "item", "heal_now", "super", "skill", "summon", "swap", "cook")
+ 
+ 
+ def gadget_kind(a):
+@@ -258,10 +259,14 @@ def gadget_kind(a):
+         if bt == "Attack" and sk.get("Projectiles"): return "shot"
+         if bt in ("Attack", "AimableArea") and not sk.get("Projectiles") and sk.get("AreaEffectObject"): return "skill_area"
+         return "skill"   # the other skills (Charge ...): the game's skill path (gadget.c SKILL)
++    if t == "next_attack_change" and a.get("SubType") == "23" and a.get("StatusEffectEnemy"): return "cook"   # gadget.c cook_classify
+     if t == "next_attack_change" and ((a.get("SubType") == "2" and is_proj) or (a.get("SubType") == "21" and obj)): return "next_attack"   # gadget.c next_classify
++    if (t == "swap_weapon_skill" and 0 < num("ActiveTicks") < 10000 and obj in T["skill"] and a.get("AreaEffect")): return "swap"   # gadget.c swap_classify
+     if t == "repeat_shot" and is_proj and num("CustomValue1") > 0: return "repeat"
+     if t == "spin_shoot" and is_proj and num("CustomValue1") > 0 and num("ActiveTicks") > 0: return "spin"
+     if t == "spawn" and obj in T["item"]: return "item"
++    if (t == "spawn" and a.get("SubType") == "1" and obj in T["char"] and not a.get("AreaEffect")
++            and not num("CustomValue1") and not num("CustomValue2")): return "summon"   # gadget.c summon_classify
+     if t in ("heal_attached_and_self", "heal_damage_taken") and num("CustomValue1") > 0: return "heal_now"
+     if t == "charge_ulti" and num("CustomValue1") > 0: return "super"
+     return None
+@@ -283,7 +288,7 @@ def all_gadgets():
+     return out
+ 
+ 
+-AUDIT_KINDS = ("area", "shot", "skill_area", "repeat", "spin", "item", "heal_now", "skill", "next_attack")   # "super" (R-T): gadget_check checks it
++AUDIT_KINDS = ("area", "shot", "skill_area", "repeat", "spin", "item", "heal_now", "skill", "next_attack", "summon", "swap", "cook")   # "super" (R-T): gadget_check checks it
+ ROWS = ()   # --gadget-rows: audit these accessories.csv rows (any kind, even one the host does not handle yet) instead of slots
+ 
+ 
+@@ -338,11 +343,20 @@ def expected_gadget(name, slot=0):
+         return {**base, "kind": "Gadget: " + kind, "range": rng, "expect": ["projectile", "damage"], "projectiles": [obj]}
+     if kind == "item":
+         return {**base, "kind": "Gadget: item", "range": 600.0, "expect": ["item"], "items": [a["CustomObject"].split(";")[0]]}
+-    if kind == "next_attack" or a.get("Type") == "next_attack_change":
++    if kind == "next_attack" or (a.get("Type") == "next_attack_change" and kind not in ("cook",)):
+         obj = [x for x in (a.get("CustomObject") or "").split(";")[:1] if x]
+         rng = _num(att, "CastingRange") * 100 or 2000.0
+         return {**base, "kind": "Gadget: next_attack (%s)" % a["Name"], "range": rng, "expect": ["own"] if obj else ["projectile"],
+                 "then_attack": True, "own_names": obj}
++    if kind == "cook":   # the next attack's cookies poison: HP keeps falling after the hit (needs --watch >= 90)
++        return {**base, "kind": "Gadget: cook (%s)" % a["Name"], "range": _num(att, "CastingRange") * 100 or 2000.0, "expect": ["dot"],
++                "then_attack": True, "notes": ["status %s: damage after the hit" % a["StatusEffectEnemy"]]}
++    if kind == "swap":   # the replacement weapon's own projectile in the attack after the use
++        sk = T["skill"].get(a["CustomObject"].split(";")[0], {})
++        return {**base, "kind": "Gadget: swap (%s)" % a["Name"], "range": _num(att, "CastingRange") * 100 or 2000.0, "expect": ["own"],
++                "then_attack": True, "own_names": [x for x in (sk.get("Projectiles") or "").split(";") if x]}
++    if kind == "summon":
++        return {**base, "kind": "Gadget: summon", "range": 600.0, "expect": ["summon"], "summons": [a["CustomObject"].split(";")[0]]}
+     if kind == "heal_now": return {**base, "kind": "Gadget: heal_now", "range": 600.0, "expect": ["heal"]}
+     return {**base, "kind": "Gadget: probe (%s)" % acc, "range": 1000.0, "expect": [], "notes": ["--gadget-rows probe of a row the host does not handle"]}
+ 
+@@ -358,6 +372,7 @@ def observed(m):
+     for k, e in (("projectiles", "projectile"), ("summons", "summon"), ("areas", "area"), ("items", "item")):
+         if m.get(k): o.add(e)
+     if m.get("changed"): o.add("change")
++    if m.get("late", 0) > 0: o.add("dot")   # the target lost HP well after its first hit, with nothing else hitting it (a status's damage over time)
+     if m.get("own_seen"): o.add("own")   # next_attack: the gadget's own projectile / area took the attack's place
+     if m.get("hyper_cast"): o.add("hyper_cast")
+     if m.get("hyper_seen"): o.add("hyper")
+@@ -628,6 +643,10 @@ class Auditor:
+             for j, s, t in run:
+                 m, p, q = M[j], r.pl[s], r.pl[t]
+                 m["sc_min"] = min(m["sc_min"], int(p.super_charge)); m["hp_max"] = max(m["hp_max"], int(p.hp))
++                if q.alive and int(q.hp) < m.get("thp_prev", m["thp0"]):   # dot: HP lost more than LATE_AFTER ticks after the first drop
++                    if "hit_n" not in m: m["hit_n"] = n
++                    elif n > m["hit_n"] + LATE_AFTER: m["late"] = m.get("late", 0) + m.get("thp_prev", m["thp0"]) - int(q.hp)
++                if q.alive: m["thp_prev"] = int(q.hp)
+                 m["thp_min"] = min(m["thp_min"], int(q.hp) if q.alive else 0); m["target_dead"] |= bool(not q.alive or q.eliminated)
+                 m["leaping"] |= bool(p.leaping)
+                 if p.alive: m["move"] = max(m["move"], int(np.hypot(p.x - m["x0"], p.y - m["y0"])))
