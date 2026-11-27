@@ -342,6 +342,17 @@ def head_flags(ap):
     """step-C flags of the heads that never act, shared with train_fast (defaults = off, the original behaviour)"""
     ap.add_argument("--vlive", type=int, default=0, help="1 = train the live value head (model.Policy.vl: no priv, return without the intent reward)")
     ap.add_argument("--aux-w", type=float, default=0.0, help="weight of the aux head losses (model.Policy.aux; 0 = off: no loss, no gradient; start 0.1)")
+    ap.add_argument("--aim-lead", type=int, default=-1, help="model.Policy.aim_lead of the learner and its KL anchor: 1 = aim bumps on the "
+                    "lead() intercept, 0 = on the bearing (as before); -1 = keep the checkpoint's (0 for a fresh net or an older checkpoint)")
+
+
+def set_aim_lead(a, *nets):
+    """--aim-lead >= 0: set Policy.aim_lead of these nets (the learner and its KL anchor, so the anchor does not pull the
+    aim back behind movers); frozen opponents (base, league files) keep their own"""
+    if a.aim_lead < 0: return
+    for n in nets:
+        if n is not None: n.aim_lead.fill_(float(a.aim_lead))
+    print("aim lead %d" % a.aim_lead, flush=True)
 
 
 def _opt_tail(opt, sd):
@@ -738,6 +749,7 @@ def main():
         load_opt(opt, ck["opt"], net=net); load_opt(opt_x, ck.get("opt_x"), "optimizer state of the non-acting heads", net=net)
         if ck.get("ref"): ref = frozen(ck["ref"])
         bnet = frozen(torch.load(a.base, map_location="cpu", weights_only=False)["model"] if a.base else ck["model"])
+    set_aim_lead(a, net, ref)
     kmix = [int(x) for x in a.kmix.split(",")]; rng_b = np.random.default_rng(a.seed + 7)
     eval_queue = []; ev = {"active": False, "t_last": 0.0 if a.resume else time.time()}      # resumed: eval first
     os.makedirs(os.path.join(out, "league"), exist_ok=True); M = a.opp_slots

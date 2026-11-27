@@ -146,6 +146,7 @@ def _check():
     assert resolve_trained(["Sniper", "colt"], table) == ["piper", "colt"]
     net = Mo.Policy(); net.add_heroes([O.brawler_stats("Sniper")])
     with torch.no_grad(): net.fire_x.weight.normal_(0, 0.3)   # a policy that uses the gadget and hypercharge classes
+    net.aim_lead.fill_(1.0)                                     # and leads its aim (model.lead_deg: asin in the graph)
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, "policy_chk_u0.onnx")
         sp = spec("chk/u0", ["piper"], table, hyper=True)

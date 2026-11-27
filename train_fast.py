@@ -255,7 +255,7 @@ def main(argv=None):
     import env_v5 as E, obs_v5 as O
     from train_ppo import Buffer, chunks, eval_summary, eval_items, eval_presets, eval_plan, split_params, gae, expl_var, live_targets, head_loss
     from train_ppo import aux_targets, aux_readout, scenario_items, scenario_eval, intent_stats, load_opt
-    from train_ppo import imit_nll, imit_open, imit_pretrain, wmean
+    from train_ppo import imit_nll, imit_open, imit_pretrain, wmean, set_aim_lead
     import scenarios as SC
     from fast_act import StackedActor, OBS_W, _OFF
     NS = O.N_S
@@ -301,7 +301,7 @@ def main(argv=None):
         load_opt(opt, ck["opt"], net=net); load_opt(opt_x, ck.get("opt_x"), "optimizer state of the non-acting heads", net=net)
         if ck.get("ref"): ref = frozen(ck["ref"])
         bnet = frozen(torch.load(a.base, map_location="cpu", weights_only=False)["model"] if a.base else ck["model"])
-    ck = None
+    ck = None; set_aim_lead(a, net, ref)
     print("hero table rows: %d" % net.add_heroes([O.brawler_stats(c) for c in sorted(set(E.heroes()) | {a.brawler})]), flush=True)
     ds_i, imit_batch = imit_open(a)                  # --imit-*: own rng; the update thread (overlap) is the only one sampling during PPO
     imit_pre = lambda: imit_pretrain(a, net, opt, main_p, imit_batch, dev)

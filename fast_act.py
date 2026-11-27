@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import obs_v5 as O
-from model import Policy, HID, PRIV, _CAND, _FOE, mask_fire, lead, hero_index, F_IN, HMAX, NONACT, acting_params, N_FX, _SUPER
+from model import Policy, HID, PRIV, _CAND, _FOE, mask_fire, lead, lead_deg, hero_index, F_IN, HMAX, NONACT, acting_params, N_FX, _SUPER
 
 NS = O.N_S                                              # s = self | cond | intent (obs v5.5)
 _W = [NS, O.N_ENT * O.F_ENT, O.G * O.G, PRIV, HID]      # block layout: s | ent | grid | priv | h
@@ -45,7 +45,7 @@ class StackedActor:
     def _stack(self, nets):
         """stacked weights of these nets (+ the fused head matrix), rebuilt only when any of their parameters changed"""
         key = tuple(id(n) for n in nets)
-        ver = tuple(sum(t._version for t in acting_params(n).values()) + n.hero_stats._version for n in nets)
+        ver = tuple(sum(t._version for t in acting_params(n).values()) + n.hero_stats._version + n.aim_lead._version for n in nets)
         hit = self.cache.get(key)
         if hit is not None and hit[0] == ver: return hit[1]
         if len(self.cache) > 32: self.cache.clear()
@@ -62,6 +62,7 @@ class StackedActor:
             P["embf"] = P["emb.weight"].reshape(-1, P["emb.weight"].shape[-1])
             P["hembf"] = P["hemb.weight"].reshape(-1, P["hemb.weight"].shape[-1])
             P["hero_stats"] = torch.stack([n.hero_stats for n in nets])[:, None]       # (G, 1, HMAX, 13)
+            P["aim_lead"] = torch.stack([n.aim_lead for n in nets])[:, None, None]       # (G, 1, 1): model.lead_deg per net
         self.cache[key] = (ver, P)
         return P
 
@@ -98,7 +99,7 @@ class StackedActor:
         here = (c[..., 0] > 0.5) & (c.index_select(3, self.foe).sum(-1) > 0.5)
         o = F.relu(cx[:, :, None] + torch.bmm(c.reshape(G, Bm * K, -1), P["candE"]).view(G, Bm, K, -1))
         o = lin(o.view(G, Bm * K, -1), "cand.2").view(G, Bm, K, 3)
-        mu = torch.rad2deg(torch.atan2(c[..., O.XY + 1], c[..., O.XY])) % 360.0 + 25.0 * torch.tanh(o[..., 1])
+        mu = torch.rad2deg(torch.atan2(c[..., O.XY + 1], c[..., O.XY])) % 360.0 + lead_deg(c, P["aim_lead"]) + 25.0 * torch.tanh(o[..., 1])
         dd = (self.bins - mu[..., None]).abs() % 360.0; dd = torch.minimum(dd, 360.0 - dd)
         bump = torch.log_softmax(-0.5 * (dd / (F.softplus(o[..., 2]) + 0.7)[..., None]) ** 2, -1)
         mix = torch.log_softmax(torch.cat([o[..., 0].masked_fill(~here, -1e9), fsc], -1), -1)
@@ -219,6 +220,8 @@ def _check(B=70, G=4, iters=100):
     d = compare(nets, gidx, s, ent, grid, h, pv, actor); assert ok(d), ("stale cache (fire_x)", d)
     with torch.no_grad(): nets[0].pi.bias += 0.5                  # a weight change must reach the cached stack
     d = compare(nets, gidx, s, ent, grid, h, pv, actor); assert ok(d), ("stale cache", d)
+    with torch.no_grad(): nets[0].aim_lead.fill_(1.0); nets[2].aim_lead.fill_(1.0)   # model.lead_deg on 2 of the 4 nets (--aim-lead)
+    d = compare(nets, gidx, s, ent, grid, h, pv, actor); assert ok(d), ("aim_lead", d)
     X = np.concatenate([np.asarray(x_, np.float32).reshape(B, -1) for x_ in (s, ent, grid, pv)], 1)
     used, Bm, dest = actor.layout(gidx); xb = np.zeros((len(used) * Bm, int(_OFF[-1])), np.float32); xb[dest, :OBS_W] = X; xb[dest, OBS_W:] = h
     fw = lambda: actor.forward_padded([nets[g] for g in used], torch.as_tensor(xb, device=dev).view(len(used), Bm, -1))

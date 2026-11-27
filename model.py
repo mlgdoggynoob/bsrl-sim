@@ -38,6 +38,10 @@ Obs v5.10: + 2 power-cube columns at the end of the entity row (obs_v5.CUB; zero
 as v5.6's) and + 2 intent kinds, whose one-hot columns sit inside the intent block before dx, dy: pad_param inserts
 them as zero columns into a v5.9 checkpoint's vec.0 at obs_v5.S_INT + 7, so its dx / dy / radius / time-left weights
 stay on their inputs. Same outputs for the 7 old kinds; a new kind reaches it only through dx, dy, radius, time left.
+Aim lead (trainer --aim-lead, buffer `aim_lead`, default 0; no obs change): 1 centres each target's aim bump on the
+lead() intercept (lead_deg: asin of the lead column) instead of on its bearing; the learned +-25 deg offset stays on
+top. 0 (older checkpoints load it as 0) = the bearing + offset only, as before. Saved in the checkpoint and exported in
+the ONNX graph.
 Heads the actor never runs (NONACT; fast_act / act_stacked skip them, old checkpoints load with strict=False and get
 fresh ones; built on their own RNG stream, so Policy() under a given seed has the acting weights it had without them):
 * live value `vl` (trainer --vlive): MLP on the detached cat[x, h], no priv, so it works live (priv does not exist
@@ -95,6 +99,14 @@ def lead(ent, s):
     q = p + v * t[..., None]
     sn = (p0[..., 0] * q[..., 1] - p0[..., 1] * q[..., 0]) / (torch.sqrt((p0 * p0).sum(-1) * (q * q).sum(-1)) + 1e-6)
     return torch.stack([sn, t / 40.0], -1) * ok[..., None]
+
+
+def lead_deg(c, on):
+    """(..., K) degrees from a candidate's bearing to where a shot fired now meets it (the lead() intercept; c = candidate
+    rows with the lead columns at the end), times `on` (Policy.aim_lead: 0 = off, the aim bump sits on the bearing + the
+    learned offset only). r51 left the intercept to the learned +-25 deg offset and aimed behind movers (scorecard lead
+    slope -0.19, aim_err 11.7 deg)."""
+    return torch.rad2deg(torch.asin(c[..., -N_LEAD].clamp(-1.0, 1.0))) * on
 
 
 def _widen(lin, old_row):
@@ -156,6 +168,7 @@ class Policy(nn.Module):
             _widen(self.ent[0], O.F_ENT_V55); _widen(self.cand[0], O.F_ENT_V55)
             self.ent[0].weight[:, O.F_ENT:] = 0; self.cand[0].weight[:, -N_LEAD:] = 0
         self.register_buffer("bins", torch.arange(360).float())
+        self.register_buffer("aim_lead", torch.zeros(()))   # 1 = aim bumps centred on the lead() intercept (trainer --aim-lead)
         with torch.random.fork_rng(devices=[]):          # own CPU stream: the acting weights' draws stay as before
             torch.default_generator.manual_seed((torch.initial_seed() + 1) % 2 ** 63)
             self.vl = nn.Sequential(nn.Linear(d + HID, 256), nn.ReLU(), nn.Linear(256, 1))   # live value (no priv)
@@ -190,11 +203,11 @@ class Policy(nn.Module):
         the lead columns; s / cond / intent at the tail) = same outputs; no hemb -> zeros (a reused league slot must not
         keep the previous snapshot's rows; the hero table may stay); no fire_x (before v5.7) -> zeros (the new classes
         start at logit 0, masked until ready), fewer fire_x rows -> zero-padded, and its vec.0 column of the gadget-ready
-        input zeroed: self 3 was always 0, so those weights are still their random init"""
+        input zeroed: self 3 was always 0, so those weights are still their random init; no aim_lead -> 0 (aims as before)"""
         own = self.state_dict(); sd = dict(sd)
         if "fire_x.weight" not in sd and "vec.0.weight" in sd:
             sd["vec.0.weight"] = sd["vec.0.weight"].clone(); sd["vec.0.weight"][:, _GADGET] = 0
-        for k in ("hemb.weight", "fire_x.weight", "fire_x.bias"):
+        for k in ("hemb.weight", "fire_x.weight", "fire_x.bias", "aim_lead"):
             if k not in sd: sd[k] = torch.zeros_like(own[k])
         for k, v in sd.items():
             if k in own: sd[k] = pad_param(k, v, own[k])
@@ -208,13 +221,14 @@ class Policy(nn.Module):
         return F.relu(x)
 
     def heads(self, x, ent, s, priv=None):
-        """x = cat[trunk, gru]. The aim head is nirkt's PointerAim: a bump at every target's angle (+ a learned lead of
-        up to 25 degrees, learned width) mixed with a free 360-bin component; log-probabilities."""
+        """x = cat[trunk, gru]. The aim head is nirkt's PointerAim: a bump at every target's angle (+ the lead() intercept
+        when aim_lead is 1, + a learned lead of up to 25 degrees, learned width) mixed with a free 360-bin component;
+        log-probabilities."""
         mv, fi, di = torch.split(self.pi(x), [17, 3, 8], -1); fi = torch.cat([fi, self.fire_x(x)], -1)
         c = ent[:, _CAND]; c = torch.cat([c, lead(c, s)], -1); B, K, _ = c.shape
         here = (c[..., 0] > 0.5) & (c[..., _FOE].sum(-1) > 0.5)
         o = self.cand(torch.cat([x[:, None].expand(B, K, x.shape[-1]), c], -1))
-        mu = torch.rad2deg(torch.atan2(c[..., O.XY + 1], c[..., O.XY])) % 360.0 + 25.0 * torch.tanh(o[..., 1])
+        mu = torch.rad2deg(torch.atan2(c[..., O.XY + 1], c[..., O.XY])) % 360.0 + lead_deg(c, self.aim_lead) + 25.0 * torch.tanh(o[..., 1])
         dd = (self.bins - mu[..., None]).abs() % 360.0; dd = torch.minimum(dd, 360.0 - dd)
         bump = torch.log_softmax(-0.5 * (dd / (F.softplus(o[..., 2]) + 0.7)[..., None]) ** 2, -1)
         mix = torch.log_softmax(torch.cat([o[..., 0].masked_fill(~here, -1e9), self.free_score(x)], -1), -1)
@@ -379,6 +393,7 @@ def _check():
     _check_aux(net, s, ent, grid)
     _check_live(net, s, ent, grid, pv)
     _check_stage2()
+    _check_aim_lead()
     print("model ok: %d parameters" % sum(x.numel() for x in net.parameters()))
 
 
@@ -602,6 +617,31 @@ def _check_fire():
     l3n = [x.flip(0) for x in l3]; l4n = [l3n[0], torch.cat([l3n[1], l4[1][:, 3:]], -1), l3n[2], l3n[3]]  # = the 3-class KL
     pf = torch.softmax(l3[1].float(), -1); kl = [(torch.softmax(a_, -1) * (torch.log_softmax(a_, -1) - torch.log_softmax(b_, -1))).sum(-1) for a_, b_ in zip(l3, l3n)]
     assert torch.allclose(masked_kl(l4, l4n), kl[0] + kl[1] + (1 - pf[:, 0]) * kl[2] + pf[:, 2] * kl[3], atol=1e-5)
+
+
+
+def _check_aim_lead():
+    """aim_lead: off by default and for a checkpoint saved without it (same aim as before); on, the bump of a crossing
+    enemy moves to the lead() intercept, ahead of it; the trainer flag sets it on the learner and its anchor only"""
+    torch.manual_seed(3); net = Policy().eval(); N = 2
+    s = torch.zeros(N, O.N_S); s[:, O.N_SELF + 3] = 0.6                 # own projectile speed (cond stats[3])
+    ent = torch.zeros(N, O.N_ENT, O.F_ENT); ent[:, 0, 0] = 1; ent[:, 0, 1 + O.ENT.index("enemy")] = 1
+    ent[:, 0, O.XY] = 0.6; ent[:, 0, O.VEL + 1] = 0.15                  # 6 tiles right, crossing up at 0.15 tiles / tick
+    grid = torch.zeros(N, O.G, O.G, dtype=torch.uint8); h = torch.zeros(N, HID)
+    assert float(net.aim_lead) == 0
+    sd = {k: v for k, v in net.state_dict().items() if k != "aim_lead"}  # a checkpoint from before the buffer
+    old = Policy().eval(); old.aim_lead.fill_(1.0); old.load_state_dict(sd); assert float(old.aim_lead) == 0
+    with torch.no_grad():
+        a0 = net(s, ent, grid, h)[0][2]; assert torch.equal(a0, old(s, ent, grid, h)[0][2])
+        c = torch.cat([ent[:, _CAND], lead(ent[:, _CAND], s)], -1); want = float(lead_deg(c, 1.0)[0, 0])
+        assert 10 < want < 60, want                                     # ahead of it = towards +y = positive degrees
+        net.aim_lead.fill_(1.0); a1 = net(s, ent, grid, h)[0][2]
+    win = lambda a: (a[0, :90].argmax() + 0).item()                     # the bump near the enemy (0 .. 89 deg)
+    shift = win(a1) - win(a0) if win(a0) < 45 else None
+    assert shift is not None and abs(shift - want) <= 2, (win(a0), win(a1), want)
+    import argparse, train_ppo
+    a = argparse.Namespace(aim_lead=-1); n2 = Policy(); n2.aim_lead.fill_(1.0); train_ppo.set_aim_lead(a, n2); assert float(n2.aim_lead) == 1
+    a.aim_lead = 0; train_ppo.set_aim_lead(a, n2, None); assert float(n2.aim_lead) == 0
 
 
 if __name__ == "__main__":
