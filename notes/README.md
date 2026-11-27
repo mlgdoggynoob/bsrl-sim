@@ -33,3 +33,4 @@ docstrings and comments are the spec.
 | `issue46_b34.md` | #46 batches 3b and 4: the summon gadgets (SUMMON) and the Charge-skill gadgets (CHARGE), Maisie's stun and Clancy's reload on their dashes; live numbers, guesses | #78 |
 | `issue64.md` | #64 the last seven masked gadgets (Bo, Max, Frank, Griff, Leon, Damian, Starr Nova): causes, fixes, live numbers | #77 |
 | `pro_strategies.md` | community Showdown habits from web research (2026-11-16) and what each means for the observation / reward | the first commit |
+| `intents_v2.md` | plan: cube-aware planner (strength = HP x damage with +400 HP / +10 % per cube), farm / rotate / pin / focus rules, then OBS v5.10 (enemy cubes column, `super` and `check_bush` intents), from web research + game data | this note's PR |
