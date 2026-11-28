@@ -81,7 +81,7 @@ class FastObsV5(O.ObsV5):
         g[wrong] = r.integers(len(SEG), size=int(wrong.sum()))
         link = r.random((B, N_ENT))                       # identity (v5.6) and power cubes (v5.10): ObsV5.build's, already batched
         cu = r.random((B, N_ENT, 2))
-        if who is None: ent[..., O.ID0:O.ID0 + O.N_ID] = 0.0; ent[..., O.CUB:O.CUB + 2] = 0.0
+        if who is None: ent[..., O.ID0:O.ID0 + O.N_ID] = 0.0; ent[..., O.CUB:O.CUB + 2] = 0.0; ent[..., O.CLS:O.F_ENT] = 0.0
         else:
             wh = np.where(here[..., None], who, -1)
             O.noisy_id(ent, wh, [e[9] for e in eps], link); O.noisy_cubes(ent, wh, [e[9] for e in eps], cu)

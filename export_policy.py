@@ -4,7 +4,7 @@
     python -m export_policy --check      # self-check: a fresh Policy through the export (CPU, no host)
 
 Graph = Policy.forward on one decision (B = 1):
-    inputs  (batch axis dynamic; the bot runs B = 1) s (1, N_S) float32 = cat[self (8), cond (30), intent (11)], ent (1, N_ENT, F_ENT) float32,
+    inputs  (batch axis dynamic; the bot runs B = 1) s (1, N_S) float32 = cat[self (8), cond (37), intent (13)], ent (1, N_ENT, F_ENT) float32,
             grid (1, G, G) uint8, h (1, HID) float32
     outputs move (1, 17), fire (1, 5) (obs_v5.FIRE; super / gadget / hypercharge masked to -1e9 in the graph while self
             2 / 3 / 4 is off),
@@ -13,7 +13,7 @@ Metadata `spec` (JSON): obs_version, the shapes (n_self, n_cond, n_int, n_ent, f
 team_size, gadgets (trained with --gadgets: the bot may set self 3 from
 the gadget button; else it keeps it 0 as in training), hyper (trained with --hyper: the bot may set self 4 when the
 hypercharge can be activated; else 0; obs v5.8: self 4 is no longer "the hypercharge bar is full"), sliders + presets (cond order), trained (characters.csv ItemName, lower case = the bot's brawler names),
-heroes {item name: {name, display, stats (13), speed (tiles / tick)}} for every brawler identity can name (obs_v5.id_lut:
+heroes {item name: {name, display, stats (13), speed (tiles / tick), cls (7, v5.11)}} for every brawler identity can name (obs_v5.id_lut:
 the enemy / teammate rows' identity columns live, the countdown name reader's closed set of display names), ckpt.
 OUT.ref.npz: 64 random decisions through torch (the bot's test replays them through onnxruntime, atol 1e-4).
 --trained takes characters.csv names (Sniper) or item names (piper); the bot plays only those brawlers on the policy."""
@@ -36,7 +36,8 @@ def hero_table():
     for k, n in enumerate(names):
         r = t[n][1]; item = (r.get("ItemName") or n).strip().lower()
         out[item] = {"name": n, "display": tx.get(r.get("TID") or "", item.upper()), "row": k,
-                     "stats": [round(float(v), 6) for v in lut[k]], "speed": float(r.get("Speed") or 0) / 20 / 300}
+                     "stats": [round(float(v), 6) for v in lut[k]], "speed": float(r.get("Speed") or 0) / 20 / 300,
+                     "cls": [float(v) for v in O.cls_lut()[k]]}   # v5.11: the class one-hot (obs_v5.CLASSES) the bot writes
     return out
 
 

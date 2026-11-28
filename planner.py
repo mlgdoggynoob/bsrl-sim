@@ -114,7 +114,8 @@ for a dash super), cap 12.
   B5 point_blank   my attack super ready, the nearest enemy within trigger (3 tiles, full damage) below 60 % or R < 1.2,
                    or me below the low_hp threshold (the knockback) -> super it; rule 4 then fires for this brawler only
                    within trigger, or beyond it on a finish (< 25 %)  "Sniper 2 tiles E at 40 %: point-blank super"
-  B6 avoid_brawl   (before ambush) a KNOWN close fighter (not a thrower, range above mine and <= 8 tiles) of R 0.9-1.5
+  B6 avoid_brawl   (before ambush) a KNOWN close fighter (class tank, or a shotgun damage dealer: >= 3 bullets with a
+                   spread, range <= 8 tiles; obs v5.11 class columns) of R 0.9-1.5
                    within its range + 2, not a finish -> away from it
                                                                        "BullDude 4 tiles E, a close fighter (x1.4 my strength): staying away W"
   B7 charge_cover  my super ready (held), hp < 0.8, a KNOWN enemy that out-ranges me 1.5 x with no wall between us, I am
@@ -206,7 +207,7 @@ AMB_R, AMB_R_UNK, AMB_HP, AMB_WAIT = 1.2, 0.9, 0.5, 5.0   # ambush: R below 1.2 
                           # unknown enemy: stricter), hp >= 50 %, wait while it is within the spring distance + 5 tiles
 PB_HP, PB_R = 0.6, 1.2   # point_blank: super a target below 60 % or one I out-duel within the full-damage range (shelly.md)
 COVER_HP = 0.8            # charge_cover: below this, no charge across open ground at a longer-range enemy (bull.md)
-BRAWL_RNG, BRAWL_R = 8.0, 0.9   # avoid_brawl: a close fighter (range <= 8 tiles: Shelly 7.67, Bull 5.33) from R 0.9 (a
+BRAWL_RNG, BRAWL_R = 8.0, 0.9   # avoid_brawl: a shotgun's range <= 8 tiles (Shelly 7.67) and from R 0.9 (a
                           # shotgun / tank wins the even fight against a punch or a dash: edgar.md, mortis.md)
 DIVE_RNG, DIVE_R, DIVE_HP = 4.0, 0.9, 0.6   # dive_ranged: an enemy with range >= 4 tiles, R < 0.9, my hp >= 60 % (edgar.md)
 HEAL_MATE, HEAL_TWO = 0.6, 0.8   # heal_mate: a mate below 60 %, or two below 80 % (poco.md)
@@ -330,6 +331,7 @@ class View:
         self.erng, self.esup = e[:, O.ID0] * 10.0, e[:, O.ID0 + 12] * 10.0
         self.thrown, self.melee, self.emax = e[:, O.ID0 + 6] > 0.5, e[:, O.ID0 + 7] > 0.5, e[:, O.ID0 + 8] * 10000.0
         self.edash = e[:, O.ID0 + 10] > 0.5              # a dash / jump super (BehaviorType Charge)
+        cl = e[:, O.CLS:O.F_ENT]; self.ecls = np.where(cl.max(1) > 0.5, cl.argmax(1), -1)   # O.CLASSES index, -1 unknown (v5.11)
         self.prof = None                                 # my roles.profile (RulePlanner(roles=True))
         self.wall = e[:, O.LOS] > 0.5
         self.reach = np.where(self.known, np.minimum(np.maximum(self.erng, self.esup), 12.0), self.rng)   # known: range / super
@@ -383,6 +385,12 @@ class View:
     def diver(self, k):
         """a KNOWN enemy that wins up close: melee, short range or a dash / jump super (module doc: role rules)"""
         return bool(self.known[k] and (self.melee[k] or self.erng[k] <= 5.5 or self.edash[k]))
+
+    def close_fighter(self, k):
+        """a KNOWN tank, or a shotgun damage dealer (>= 3 bullets with a spread, range <= 8 tiles): wins the even close fight"""
+        c = O.CLASSES[self.ecls[k]] if self.ecls[k] >= 0 else None
+        shot = self.e[k, O.ID0 + 5] * 10 >= 3 and self.e[k, O.ID0 + 4] > 0 and self.erng[k] <= BRAWL_RNG
+        return bool(self.known[k] and not self.thrown[k] and (c == "tank" or (c == "damage_dealer" and shot)))
 
     def dive(self, k):
         """its dive reach in tiles: max(range, super range for a dash super), cap 12"""
@@ -623,8 +631,7 @@ class RulePlanner:
 
     def _avoid_brawl(self, v):
         if not self._has(v, "avoid_brawl"): return None
-        th = [k for k in v.foes if v.known[k] and not v.thrown[k] and v.rng < v.erng[k] <= BRAWL_RNG and BRAWL_R <= v.R[k] < OUT_R
-              and v.d[k] <= v.erng[k] + 2.0 and not v.finish(k)]
+        th = [k for k in v.foes if v.close_fighter(k) and BRAWL_R <= v.R[k] < OUT_R and v.d[k] <= v.erng[k] + 2.0 and not v.finish(k)]
         if not th: return None
         k = min(th, key=lambda j: v.d[j]); ex, ey = v.xy[k]
         return self._away(v, "avoid_brawl", ex, ey, "%s, a close fighter (x%.1f my strength): staying away" % (self._who(v, k), v.R[k]))
@@ -990,7 +997,7 @@ def synth(foes=(), mates=(), boxes=(), cubes=(), hp=1.0, inbush=False, me="Snipe
         nonlocal k
         ent[k, 0] = 1; ent[k, 1 + O.ENT.index(cls)] = 1; ent[k, O.XY:O.XY + 2] = np.asarray(xy) / 10.0; ent[k, O.HP] = h
         if not new: ent[k, O.VEL] = 0.01                 # tracked (a noisy-obs row seen at the last decision too)
-        if name: ent[k, O.ID0:O.ID0 + 13] = O.brawler_stats(name); ent[k, O.ID_KNOWN] = 1
+        if name: ent[k, O.ID0:O.ID0 + 13] = O.brawler_stats(name); ent[k, O.ID_KNOWN] = 1; ent[k, O.CLS:O.F_ENT] = O.brawler_class(name)
         ent[k, O.LOS] = float(wall); k += 1
     for f in foes: row("enemy", *f)
     for m in mates: row("teammate", *m)
@@ -1259,6 +1266,7 @@ def _check():
     # Mortis vs a full Shelly (x1.0)
     want(rrun(me="Enrager", foes=[((4, 0), 1.0, "BullDude", False)]), "avoid_brawl", "avoid", "BullDude 4 tiles E, a close fighter (x1.4 my strength): staying away W")
     assert rrun(me="Undertaker", foes=[((5, 0), 1.0, "ShotgunGirl", False)])["rule"] == "avoid_brawl"
+    assert rrun(me="Enrager", foes=[((4, 0), 1.0, "Shaman", False)])["rule"] != "avoid_brawl"   # Nita: not a tank / shotgun
     assert rrun(me="Enrager", foes=[SN((4, 0))])["rule"] != "avoid_brawl" and run(me="Enrager", foes=[((4, 0), 1.0, "BullDude", False)])["rule"] != "avoid_brawl"
     # Bull charge_cover: charge held at hp 60 %, Piper 8 tiles E in the open -> the bush 2-3 tiles W; no bush: behind a
     # wall; at hp 90 % he charges her instead (super_engage, she is weak: R 0.6)

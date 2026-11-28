@@ -10,7 +10,7 @@
 <p align="center">
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white">
   <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white">
-  <img alt="Observation v5.9" src="https://img.shields.io/badge/observation-v5.10-blue">
+  <img alt="Observation v5.11" src="https://img.shields.io/badge/observation-v5.11-blue">
   <a href="LICENSE"><img alt="Licence: AGPL v3" src="https://img.shields.io/badge/licence-AGPL--3.0-green"></a>
 </p>
 
@@ -58,7 +58,7 @@ intent (or none = free play), with a readable reason. The intent goes into the o
 
 ```mermaid
 flowchart LR
-    H["Game host"] -->|"obs + state"| O["Observation v5.10<br/>self · cond · intent · 39 entity rows · 25×25 grid"]
+    H["Game host"] -->|"obs + state"| O["Observation v5.11<br/>self · cond · intent · 39 entity rows · 25×25 grid"]
     O -->|"1 / s"| PL["Rule planner"] -->|"intent"| O
     O -->|"10 / s"| P["Policy (GRU)"] -->|"actions"| H
 ```
@@ -146,6 +146,7 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | v5.8 | fire head: 5th class hypercharge, allowed only while self 4 (hypercharge ready) is set | act the same while self 4 is 0 |
 | v5.9 | invisible enemies are left out of the observation beyond their reveal distance (host `encode.c`; no shape change) | load unchanged |
 | v5.10 | power cubes held per enemy / teammate player row + known flag (entity rows 36 → 38); intent kinds super and check_bush (block 11 → 13) | zero-padded (the new one-hot columns inserted before dx, dy), act the same |
+| v5.11 | brawler class one-hot (ClassArchetype, 7) per identified entity row (rows 38 → 45) and own class at the end of cond (30 → 37) | zero-padded (the cond class columns inserted before the intent block), act the same |
 
 ## What is here
 

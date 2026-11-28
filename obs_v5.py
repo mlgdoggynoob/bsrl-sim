@@ -7,17 +7,21 @@
     o = ob.build(obs["vec"], obs["grid"], env.last_meta, ids, who=env.last_who, gadget=env.gadget(ids), hyper=env.hyper(ids))
                                                      # gadget / hyper: optional
     o["self"] (B, 8)   hp fraction, ammo 0-1, super / gadget / hypercharge ready, in bush, own velocity x, y
-    o["ent"]  (B, 39, 38)  present | class one-hot (ENT) | dx, dy (10 tiles, x right / y down) | vx, vy (tiles/tick) | hp fraction
+    o["ent"]  (B, 39, 45)  present | class one-hot (ENT) | dx, dy (10 tiles, x right / y down) | vx, vy (tiles/tick) | hp fraction
                        | area effects: radius (10 tiles), harms me, helps me, slows me (0 for every other class)
                        | identity (ID0 20..33): brawler_stats (13) of the row's brawler (a player row) or of the projectile's
                          owner + known (1 = identity given; unknown = 13 zeros + 0; summons, boxes, cubes, areas: zeros)
                        | line of sight (LOS 34, 35; enemy / teammate rows): wall_between, water_between on o["grid"]
                        | power cubes (CUB 36, 37; enemy / teammate player rows): cubes held / 10 (clip 2), known
+                       | brawler class (CLS 38..44, v5.11): one-hot of CLASSES (characters.csv ClassArchetype) of the
+                         brawler the identity names (same rows, same given brawler: a wrong identity gives its class;
+                         unknown = zeros)
     o["grid"] (B, 25, 25) uint8  seg class id (SEG) per tile around the player, UNKNOWN outside the camera view
-    cond(brawler, sliders, team_size, cubes, left) (30,)  own brawler stats + behaviour weights + team size + HUD numbers
+    cond(brawler, sliders, team_size, cubes, left) (37,)  own brawler stats + behaviour weights + team size + HUD numbers
+                       + own class one-hot (COND_CLS 30..36, v5.11)
     preset_vec(name) (12,)  the slider weights of a named play-style mode (PRESETS: balanced, bush_camper, aggressive, ...)
     intent block (N_INT 13): one-hot of INTENTS 1..9 | dx, dy | radius | time left (intent.encode; env_v5.Env.intents)
-    policy input s = cat[self (8), cond (30), intent (13)] (N_S = 51; S_INT = 38 = the block's offset)
+    policy input s = cat[self (8), cond (37), intent (13)] (N_S = 58; S_INT = 45 = the block's offset)
 
 Source = the host's state2 vector + grid after nbpc.fair (already camera- and bush-limited). Needs the rl-round
 host `nbhost_rl` (enemy features 14 / 15 = summon / on my team, self 18 = hypercharge fraction, grid channel 0 =
@@ -80,7 +84,10 @@ SLIDERS = ("bush_camp", "collect", "protect", "retreat", "kite", "peek", "focus"
 # v5.9: invisible enemies are left out beyond their reveal distance (host encode.c; no shape change);
 # v5.10: + 2 power-cube columns (CUB) at the end of each entity row, + intent kinds super / check_bush (the block's one-hot
 # grows by 2 before dx, dy: model.pad_param inserts their zero columns into a v5.9 checkpoint's vec.0)
-OBS_VERSION = "v5.10"
+# v5.11: + the brawler class one-hot (CLASSES, 7) at the end of each entity row (CLS, zero input columns before the lead
+# columns, as v5.6's) and at the end of cond (COND_CLS, before the intent block: model.pad_param inserts their zero
+# columns into a v5.5-v5.10 checkpoint's vec.0 at the old S_INT)
+OBS_VERSION = "v5.11"
 FIRE = ("none", "attack", "super", "gadget", "hypercharge")   # fire head classes = NbeAction.fire codes 0-4 (host env.c apply_actions)
 FIRE_READY = (None, None, 2, 3, 4)               # self column that must be >= 0.5 for the class to be allowed (model.mask_fire)
 FIRE_AIM = (False, True, True, True, False)      # the aim head counts for the class (the host takes the gadget's aim as its
@@ -101,13 +108,18 @@ N_ID = 13 + 1                            # identity block: brawler_stats (13) + 
 ID0, ID_KNOWN, LOS = F_ENT_V55, F_ENT_V55 + 13, F_ENT_V55 + N_ID   # LOS = wall_between, LOS + 1 = water_between
 F_ENT_V59 = LOS + 2                      # entity row width v5.6 .. v5.9
 CUB = F_ENT_V59                          # CUB = cubes held / 10, CUB + 1 = known (v5.10)
-F_ENT = CUB + 2
+F_ENT_V510 = CUB + 2                     # entity row width v5.10
+CLASSES = ("damage_dealer", "tank", "assassin", "support", "controller", "marksman", "artillery")   # ClassArchetype values
+CLS = F_ENT_V510                         # CLS .. CLS + 6 = class one-hot of the identified brawler (v5.11)
+F_ENT = CLS + len(CLASSES)
 WHO_FOE, WHO_MATE, WHO_ME = 0, 1, 2      # who[..., 2]: side of the row's owner seen from the observer
-N_COND = 13 + len(SLIDERS) + 3 + 2      # + own cubes, teams / players left (Showdown HUD; BSRL brain/hud.py live)
+N_COND_V510 = 13 + len(SLIDERS) + 3 + 2  # + own cubes, teams / players left (Showdown HUD; BSRL brain/hud.py live)
+N_COND = N_COND_V510 + len(CLASSES)      # + own class one-hot (v5.11)
+COND_CLS = np.arange(N_COND_V510, N_COND)
 N_COND_V53 = 28                          # cond width up to v5.3 (10 sliders); the 2 newer sliders sit at the end
 # cond index of each slider (order SLIDERS): the first 10 after the 13 stats, the ones added later at the end, so an older
 # checkpoint's input weights zero-pad at the end (model.load_state_dict) and act the same
-COND_SLIDERS = np.r_[13:23, N_COND_V53:N_COND]
+COND_SLIDERS = np.r_[13:23, N_COND_V53:N_COND_V510]
 N_S = N_SELF + N_COND + N_INT            # policy vector input s = cat[self, cond, intent]; S_INT = the intent block's offset
 S_INT = N_SELF + N_COND
 LEFT0 = {1: 10, 2: 5, 3: 4}              # teams left at the start by team size (sim trio = 3 x 3 + 1 solo, live 4 x 3)
@@ -267,7 +279,7 @@ def from_state2(vec, grid, meta, who=None, derived=True, gadget=None, hyper=None
     if not derived: return {"self": s, "ent": ent, "grid": g}
     if who is not None:
         w = np.asarray(who); ok = (w[..., 1] >= 0) & (ent[..., 0] > 0.5)
-        ent[..., ID0:ID0 + 13] = id_lut()[1][np.where(ok, w[..., 1], -1)]; ent[..., ID_KNOWN] = ok
+        id_cols(ent, np.where(ok, w[..., 1], -1))
         cube_cols(ent, cubes_held(ent, w))
     ent[..., LOS:LOS + 2] = los(ent, g)
     return {"self": s, "ent": ent, "grid": g}
@@ -325,7 +337,13 @@ def noisy_id(ent, who, eps_id, link):
     wrong = (side == WHO_FOE) & (tk(uw) < pw[:, None])
     given = np.where(wrong, (hero + tk(pick)) % max(nh, 1), hero)
     known = (hero >= 0) & (w[..., 0] >= 0) & (ent[..., 0] > 0.5) & kp & (~_PJ_ROW[None] | (side == WHO_ME) | (link < ppj[:, None]))
-    ent[..., ID0:ID0 + 13] = lut[np.where(known, given, -1)]; ent[..., ID_KNOWN] = known
+    id_cols(ent, np.where(known, given, -1))
+
+
+def id_cols(ent, row):
+    """identity columns in place: row (B, N_ENT) = the id_lut row each entity row names (-1 = unknown) -> its
+    brawler_stats, known, and its class one-hot (CLS, v5.11)"""
+    ent[..., ID0:ID0 + 13] = id_lut()[1][row]; ent[..., ID_KNOWN] = row >= 0; ent[..., CLS:CLS + len(CLASSES)] = cls_lut()[row]
 
 
 _PLAYER_C = [1 + ENT.index("enemy"), 1 + ENT.index("teammate")]
@@ -448,7 +466,7 @@ class ObsV5:
         g[wrong] = r.integers(len(SEG), size=int(wrong.sum()))
         link = r.random((B, N_ENT))                       # identity (v5.6): projectile owner links of this decision
         cu = r.random((B, N_ENT, 2))                      # power cubes (v5.10): misreads of this decision
-        if who is None: ent[..., ID0:ID0 + N_ID] = 0.0; ent[..., CUB:CUB + 2] = 0.0
+        if who is None: ent[..., ID0:ID0 + N_ID] = 0.0; ent[..., CUB:CUB + 2] = 0.0; ent[..., CLS:F_ENT] = 0.0
         else:
             wh = np.where(here[..., None], who, -1)        # false detections: unknown
             noisy_id(ent, wh, [e[9] for e in eps], link); noisy_cubes(ent, wh, [e[9] for e in eps], cu)
@@ -515,6 +533,19 @@ def id_lut():
     return names, np.concatenate([np.stack([brawler_stats(n) for n in names]), np.zeros((1, 13), np.float32)]).astype(np.float32)
 
 
+def brawler_class(name):
+    """(len(CLASSES),) float32 one-hot of a brawler's characters.csv ClassArchetype (zeros for one outside CLASSES)"""
+    c = D.table("characters.csv")[name][1].get("ClassArchetype"); out = np.zeros(len(CLASSES), np.float32)
+    if c in CLASSES: out[CLASSES.index(c)] = 1.0
+    return out
+
+
+@functools.lru_cache(None)
+def cls_lut():
+    """(n + 1, len(CLASSES)) float32: the class one-hot of each id_lut row; the last row (index -1) = zeros = unknown"""
+    return np.concatenate([np.stack([brawler_class(n) for n in id_lut()[0]]), np.zeros((1, len(CLASSES)), np.float32)])
+
+
 @functools.lru_cache(None)
 def _id_rows():
     t = D.table("characters.csv"); names = id_lut()[0]
@@ -552,10 +583,10 @@ def preset_vec(name):
 def cond(brawler, sliders, team_size=1, cubes=0, left=None):
     """conditioning vector: brawler stats (13) + slider weights 0-2 (the first 10 of SLIDERS) + team size 1-3 one-hot
     + own power cubes / 10 (max 2) + teams (solo: players) left / 10, the two Showdown HUD numbers + the later sliders
-    (leash, gas_safe). COND_SLIDERS = each slider's index."""
+    (leash, gas_safe) + own class one-hot (COND_CLS, v5.11). COND_SLIDERS = each slider's index."""
     t = np.zeros(3, np.float32); t[team_size - 1] = 1.0; w = np.asarray(sliders, np.float32)
     hud = np.array([min(cubes, 20) / 10.0, (LEFT0[team_size] if left is None else left) / 10.0], np.float32)
-    return np.concatenate([brawler_stats(brawler), w[:10], t, hud, w[10:]])
+    return np.concatenate([brawler_stats(brawler), w[:10], t, hud, w[10:], brawler_class(brawler)])
 
 
 def _check():
@@ -585,7 +616,7 @@ def _check():
     assert len(FIRE) == len(FIRE_READY) == len(FIRE_AIM) and FIRE[:3] == ("none", "attack", "super") and FIRE_READY[3] == 3
     oh = from_state2(vec, grid, meta, hyper=np.array([0, 1]))    # self 4 from the host's state, not the fraction
     assert oh["self"][0, 4] == 0 and oh["self"][1, 4] == 1 and np.array_equal(np.delete(oh["self"], 4, 1), np.delete(o["self"], 4, 1))
-    assert FIRE[4] == "hypercharge" and FIRE_READY[4] == 4 and not FIRE_AIM[4] and OBS_VERSION == "v5.10"
+    assert FIRE[4] == "hypercharge" and FIRE_READY[4] == 4 and not FIRE_AIM[4] and OBS_VERSION == "v5.11"
     e = o["ent"][0]; cls = lambda k: ENT[int(e[k, 1:1 + len(ENT)].argmax())]
     got = [(k, cls(k)) for k in np.nonzero(e[:, 0])[0]]
     assert got == [(0, "enemy"), (1, "teammate"), (2, "enemy_summon"), (3, "teammate_summon"), (9, "teammate_projectile"),
@@ -661,15 +692,16 @@ def _check():
     assert c.shape == (N_COND,) and c[25] == 1 and c[23] == 0 and c[26] == 0 and abs(c[27] - 0.4) < 1e-6
     assert np.allclose(cond("Sniper", np.ones(len(SLIDERS)), 1, cubes=3, left=7)[26:28], [0.3, 0.7])
     w = np.arange(len(SLIDERS), dtype=np.float32) / 10; c = cond("Sniper", w, 2)
-    assert np.allclose(c[COND_SLIDERS], w) and N_COND == 30 and len(COND_SLIDERS) == len(SLIDERS) and np.allclose(c[:13], brawler_stats("Sniper"))
+    assert np.allclose(c[COND_SLIDERS], w) and N_COND == 37 and N_COND_V510 == 30 and len(COND_SLIDERS) == len(SLIDERS) and np.allclose(c[:13], brawler_stats("Sniper"))
     assert c[:N_COND_V53].shape == (28,) and np.allclose(c[13:23], w[:10]) and c[24] == 1   # the v5.3 layout is the first 28
+    assert np.array_equal(c[COND_CLS], brawler_class("Sniper")) and c[COND_CLS].sum() == 1 and c[COND_CLS][CLASSES.index("marksman")] == 1
     assert set(PRESETS) >= {"balanced", "bush_camper", "aggressive", "cube_farmer"} and all(set(v) <= set(SLIDERS) for v in PRESETS.values())
     pv = np.stack([preset_vec(k) for k in PRESETS])
     assert pv.shape == (len(PRESETS), len(SLIDERS)) and pv.min() >= 0 and pv.max() <= 2 and (preset_vec("balanced") == 1).all()
     assert preset_vec("bush_camper")[SLIDERS.index("bush_camp")] == 2 and len({tuple(r) for r in pv}) == len(PRESETS)
-    assert N_INT == 13 and len(INTENTS) == 10 and INTENTS[0] == "none" and N_S == N_SELF + N_COND + N_INT == 51 and S_INT == 38
-    assert (I_XY, I_RAD, I_LEFT) == (9, 11, 12) and OBS_VERSION == "v5.10" and N_INT_V59 == 11 and INTENTS[8:] == ("super", "check_bush")
-    assert (F_ENT_V55, ID0, ID_KNOWN, LOS, F_ENT_V59, CUB, F_ENT) == (20, 20, 33, 34, 36, 36, 38)
+    assert N_INT == 13 and len(INTENTS) == 10 and INTENTS[0] == "none" and N_S == N_SELF + N_COND + N_INT == 58 and S_INT == 45
+    assert (I_XY, I_RAD, I_LEFT) == (9, 11, 12) and OBS_VERSION == "v5.11" and N_INT_V59 == 11 and INTENTS[8:] == ("super", "check_bush")
+    assert (F_ENT_V55, ID0, ID_KNOWN, LOS, F_ENT_V59, CUB, F_ENT_V510, CLS, F_ENT) == (20, 20, 33, 34, 36, 36, 38, 38, 45)
     _check_id(vec, grid, meta)
     _check_cubes(vec, grid, meta)
     print("obs_v5 ok (%s): %d brawlers, %d thrown, %d melee, cond %d, intent %d, s %d, ent %dx%d" % (
@@ -688,8 +720,11 @@ def _check_id(vec, grid, meta):
     o = from_state2(vec, grid, meta, who); e = o["ent"][0]
     for k, n in ((0, "Sniper"), (1, "BullDude"), (9, "ShotgunGirl"), (10, "Sniper")):
         assert np.array_equal(e[k, ID0:ID0 + 13], brawler_stats(n)) and e[k, ID_KNOWN] == 1, k
+        assert np.array_equal(e[k, CLS:F_ENT], brawler_class(n)) and e[k, CLS:F_ENT].sum() == 1, k   # v5.11: its class
     assert not e[2:9, ID0:ID0 + N_ID].any() and not e[11:, ID0:ID0 + N_ID].any() and not o["ent"][1, :, ID0:].any()   # summons, boxes, areas: 0
     assert not from_state2(vec, grid, meta)["ent"][..., ID0:ID0 + N_ID].any()                  # who None: every identity unknown
+    assert not e[2:9, CLS:].any() and not e[11:, CLS:].any() and not from_state2(vec, grid, meta)["ent"][..., CLS:].any()   # no identity: no class
+    assert cls_lut().shape == (nh + 1, len(CLASSES)) and not cls_lut()[-1].any() and (cls_lut()[:-1].sum(1) == 1).all()
     # line of sight: me at cell (12, 12); a wall 2 tiles right, water 3 tiles down, nothing up-left
     g = np.zeros((1, G, G), np.uint8); g[0, 12, 14] = _S("indestructible"); g[0, 15, 12] = _S("water"); g[0, 9, 9] = _S("rope_fence")
     en = np.zeros((1, N_ENT, F_ENT), np.float32); en[0, :6, 0] = 1
@@ -716,6 +751,9 @@ def _check_id(vec, grid, meta):
             if e[0, ID_KNOWN]: st0.add((aid, e[0, ID0:ID0 + 13].tobytes()))
             if e[1, ID_KNOWN]: assert np.array_equal(e[1, ID0:ID0 + 13], brawler_stats("BullDude"))   # mates: never wrong
             if e[0, ID_KNOWN]: assert not np.array_equal(e[0, ID0:ID0 + 13], brawler_stats("Sniper"))  # id_wrong 1: never the truth
+            for k in np.flatnonzero(e[:, ID_KNOWN] > 0.5):                       # the class is the given brawler's (wrong or not)
+                r_ = int(((lut[:-1] - e[k, ID0:ID0 + 13]) ** 2).sum(1).argmin()); assert np.array_equal(e[k, CLS:F_ENT], cls_lut()[r_]), k
+            assert not e[e[:, ID_KNOWN] < 0.5, CLS:].any()
             assert e[9, ID_KNOWN] == 1 and np.array_equal(e[9, ID0:ID0 + 13], brawler_stats("ShotgunGirl"))   # mine: always
             assert e[10, ID_KNOWN] <= e[0, ID_KNOWN] and (not e[10, ID_KNOWN] or np.array_equal(e[10, ID0:ID0 + 13], e[0, ID0:ID0 + 13]))
             assert not e[[2, 3, 25, 31], ID0:ID0 + N_ID].any()
@@ -737,18 +775,18 @@ def _check_cubes(vec, grid, meta):
     W[0, 0] = [3, id_row("Sniper"), WHO_FOE, 7]; W[0, 1] = [5, id_row("BullDude"), WHO_MATE, 25]
     W[0, 2] = [4, -1, WHO_FOE, 3]; W[0, 10] = [3, id_row("Sniper"), WHO_FOE, 7]   # a summon row, a projectile row: no count
     e = from_state2(v1, g1, m1, W)["ent"][0]
-    assert np.allclose(e[:3, CUB:CUB + 2], [[0.7, 1], [2.0, 1], [0, 0]]) and not e[3:, CUB:].any(), e[:4, CUB:]
+    assert np.allclose(e[:3, CUB:CUB + 2], [[0.7, 1], [2.0, 1], [0, 0]]) and not e[3:, CUB:CUB + 2].any(), e[:4, CUB:CUB + 2]
     assert np.array_equal(e[:, :CUB], from_state2(v1, g1, m1, W[..., :3])["ent"][0, :, :CUB])   # nothing else changes
-    assert not from_state2(v1, g1, m1, W[..., :3])["ent"][..., CUB:].any() and not from_state2(v1, g1, m1)["ent"][..., CUB:].any()
+    assert not from_state2(v1, g1, m1, W[..., :3])["ent"][..., CUB:CUB + 2].any() and not from_state2(v1, g1, m1)["ent"][..., CUB:CUB + 2].any()
     q0 = {k: (0.0, 0.0) for k in NOISE if not k.startswith(("id_", "pj_", "cube_"))}; q0["latency"] = (0, 0)
     perfect = ObsV5(noise=q0, seed=1).build(v1, g1, m1, [16], who=W)["ent"][0]                # no cube_* keys: counts perfect
-    assert np.array_equal(perfect[:, CUB:], e[:, CUB:])
+    assert np.array_equal(perfect[:, CUB:CUB + 2], e[:, CUB:CUB + 2])
     ob = ObsV5(noise=dict(q0, cube_known=(0.5, 0.5), cube_misread=(0.5, 0.5)), seed=5); kn, mis = [], []
     for aid in range(16, 16 + 16 * 400, 16):              # 400 battles of agent 0, 6 decisions each
         ks = []
         for t in range(6):
             o = ob.build(v1, g1, m1, [aid], who=W)["ent"][0]; ks.append(o[:2, CUB + 1].copy())
-            assert not o[2:, CUB:].any()
+            assert not o[2:, CUB:CUB + 2].any()
             if o[0, CUB + 1]: assert np.round(o[0, CUB] * 10) in (6, 7, 8); mis.append(np.round(o[0, CUB] * 10) != 7)
             if o[1, CUB + 1]: assert np.round(o[1, CUB] * 10) in (19, 20)           # 25 +-1 still clips at 20
         ks = np.array(ks); assert (ks == ks[:1]).all(); kn.append(ks[0])            # read or not: fixed for the battle
