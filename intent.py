@@ -21,6 +21,13 @@ Kinds (obs_v5.INTENTS; distances in tiles, true positions in the sim):
                                            while I deal damage (the host has no per-source damage: shortcut)  3 s
   9  check_bush bush tile within my range  a main attack fired (fire 1, ammo spent) within 15 deg of the tile; if an enemy
                                            hid on / next to it then, wait <= 2 s for it to take my damage (+ bonus)  2 s
+Modes (planner role rules, #91 / #92; candidate "mode", "threat" = the enemy player it is about, "near" tiles; not in
+the block: the observation is unchanged):
+  super, mode escape   point target (the landing tile)   my super is fired and >= ESC_S later I am ESC_GAIN tiles farther
+                       from the threat than at the start, or it is down / out of my sight; invalid 2 s after the fire
+                       without that (the readiness and the fire as for super)
+  hide, mode quiet     my bush tile                       hidden (as hide; or at the step before, as a threat this close
+                       sees me) when the threat comes within near, leaves my sight or the time runs out; invalid: a main attack fired (it reveals me) or the tile no longer a bush
 Invalid (no bonus): me knocked out / eliminated; the target player down (engage / super: not after my damage / super);
 an anchored or static target not seen by me for 1 s (fair rule); a farm target in the gas or gone without my doing; a
 hide / check_bush tile that is no longer a bush; super: fired and 2 s without a hit (readiness: checked at the pick). After any end: none until the next planner tick; achieved -> a re-plan on the next decision (Env).
@@ -49,6 +56,7 @@ K = {k: i for i, k in enumerate(KINDS)}
 C = 0.01                  # reward per tile of progress
 CAP = 0.15                # per-intent total (design 4.3: <= c x start distance + bonus <= ~0.15)
 SEEN_S, HIT_S = 1.0, 2.0  # s: an unseen target is lost after 1 s; "my damage in the last 2 s" (engage / farm a box)
+ESC_S, ESC_GAIN = 1.0, 3.0   # super escape: >= 1 s after the fire, 3 tiles farther from the threat (Piper ~2 s airborne)
 PICK = 1.5                # tiles: a cube picked up this close to the target is the target
 TILE, VIEW = 300.0, (4500.0, 3500.0, 2900.0)   # camera rule of nbpc.fair / env_v5.slider_terms: |dx| < 4500 from the
                                                # clamped camera x, -3500 < dy < 2900
@@ -107,7 +115,8 @@ def new(cand, d0, range_t=None, steps_per_s=10, super_t=None):
     it = {"kind": k, "q": int(cand.get("q", -1)), "pt": cand.get("pt"), "obj": cand.get("obj"), "r": radius(k, range_t, super_t),
           "range": float(range_t or 0.0), "t": 0, "T": int(round(SPEC[k]["max_s"] * steps_per_s)), "sps": int(steps_per_s),
           "tot": 0.0, "dk": 0.0, "box": 0.0, "unseen": 0, "hit_t": -10 ** 6, "box_t": -10 ** 6, "fire_t": None, "shot_t": None,
-          "reason": cand.get("reason", "random")}
+          "reason": cand.get("reason", "random"), "mode": cand.get("mode"), "threat": int(cand.get("threat", -1)),
+          "near": cand.get("near"), "td0": None, "hid": False}
     it["phi"] = phi(it, d0)
     return it
 
@@ -123,7 +132,8 @@ def step_reward(it, ev):
     for SEEN_S, in the gas, gone without me, not a bush any more), got (engage: down after my damage; farm: box broken
     by me / cube picked; super: landed; check_bush: the hidden enemy hit), dk (own damage dealt / 1000), box (own box
     damage / 1000), in_range (engage), on (hide: on the tile), hid (hide: hidden by it or no enemy in view), shot
-    (check_bush: a main attack toward the tile this step), wait (check_bush: a hidden enemy was there, its hit pending)"""
+    (check_bush: a main attack toward the tile this step), wait (check_bush: a hidden enemy was there, its hit pending),
+    near / gone (hide quiet: the threat within near / out of my sight or down); super escape: got = the escape held"""
     if ev.get("out") or ev.get("lost"): return 0.0, "invalid"
     k, sp, d = it["kind"], SPEC[it["kind"]], float(ev["d"]); it["t"] += 1
     p = phi(it, d); r = C * (it["phi"] - p); it["phi"] = p
@@ -141,7 +151,11 @@ def step_reward(it, ev):
         ach = bool(ev.get("got"))
     elif k == "regroup": ach = sp["band"][0] <= d <= sp["band"][1]
     elif k == "hide":
-        hid = bool(ev.get("on")) and bool(ev.get("hid")); r += sp["stay"] * hid; ach = hid
+        hid = bool(ev.get("on")) and bool(ev.get("hid")); r += sp["stay"] * hid
+        if it["mode"] == "quiet":                        # hidden until the threat came near (it sees me then) or left
+            ach = (hid or it["hid"]) and bool(ev.get("near") or ev.get("gone"))
+        else: ach = hid
+        it["hid"] = hid
     elif k == "super": ach = bool(ev.get("got"))
     elif k == "check_bush":
         if ev.get("shot") and it["shot_t"] is None: it["shot_t"] = it["t"]
@@ -149,7 +163,8 @@ def step_reward(it, ev):
         if ach and ev.get("got"): r += sp["hit"]
     end = "achieved" if ach else None
     if end is None and it["t"] >= it["T"]:                # hold: inside at the end; check_bush: shot, the hit still pending
-        end = "achieved" if (k == "hold" and d <= sp["r"]) or (k == "check_bush" and it["shot_t"] is not None) else "timeout"
+        end = "achieved" if ((k == "hold" and d <= sp["r"]) or (k == "check_bush" and it["shot_t"] is not None)
+                             or (k == "hide" and it["mode"] == "quiet" and it["hid"])) else "timeout"
     if end == "achieved": r += sp["bonus"]
     r = min(it["tot"] + r, CAP) - it["tot"]; it["tot"] += r
     return float(r), end
@@ -253,6 +268,18 @@ def _check():
     it, tot, ends = run(P("regroup"), [0.5, 0.5, 1.6]); assert ends[-1] == "achieved" and np.isclose(tot, C * 1.0 + 0.02)   # away from a clump
     it, tot, ends = run(P("hide"), [3.0, 1.0, 0.0, 0.0], {1: {"on": True, "hid": False}, 2: {"on": True, "hid": True}})
     assert ends == [None, None, "achieved"] and np.isclose(tot, C * 3 + 0.002 + 0.02)
+    # hide quiet (lurk / ambush wait): hidden is not enough; achieved when the threat comes near / leaves, or hidden at
+    # the time limit; a shot (env: lost) is invalid
+    Q = P("hide", mode="quiet", threat=4, near=3.0); H_ = {"on": True, "hid": True}
+    it, tot, ends = run(Q, [0.0, 0.0, 0.0, 0.0], {0: H_, 1: H_, 2: {**H_, "near": True}})
+    assert ends == [None, None, "achieved"] and np.isclose(tot, 3 * 0.002 + 0.02) and it["threat"] == 4, (ends, tot)
+    it, tot, ends = run(Q, [0.0] * 60, {j: H_ for j in range(60)}); assert ends[-1] == "achieved" and len(ends) == 50
+    it, tot, ends = run(Q, [0.0] * 60, {j: (H_ if j < 49 else {"on": True}) for j in range(60)}); assert ends[-1] == "timeout"
+    it, tot, ends = run(Q, [0.0] * 5, {0: H_, 1: {**H_, "gone": True}}); assert ends == [None, "achieved"]
+    it, tot, ends = run(Q, [0.0] * 5, {0: H_, 1: {"on": True, "near": True}}); assert ends == [None, "achieved"]   # seen as it arrives
+    it, tot, ends = run(Q, [0.0] * 5, {0: {"on": True}, 1: {"on": True, "near": True}}); assert not any(ends)   # never hidden
+    it, tot, ends = run(Q, [0.0] * 5, {0: H_, 1: {"lost": True}}); assert ends == [None, "invalid"] and np.isclose(tot, 0.002)
+    assert new(P("hide"), 1.0)["mode"] is None and new(P("hide"), 1.0)["threat"] == -1
     # engage: closing to 0.8 range, damage in range (capped), achieved once; then nothing more
     E = dict(kind="engage", q=3, pt=None, obj=None)
     it, tot, ends = run(E, [9.0, 6.0, 4.0, 4.0, 4.0], {1: {"in_range": True, "dk": 0.06}, 2: {"in_range": True, "dk": 5.0}, 3: {"got": True}})
@@ -306,7 +333,7 @@ def _check():
     empty = dict(scene, foes=[], mates=[], boxes=[], cubes=[], walk=np.zeros((H, W), bool), bush=np.zeros((H, W), bool))
     assert set(candidates(empty)) == {"avoid"} and all(2 <= dd(x["pt"]) <= 5 for x in candidates(empty)["avoid"])
     assert candidates(dict(empty, ring=30)) == {"avoid": candidates(empty)["avoid"]} and sample(dict(empty, ring=30), rng)["kind"] == "avoid"
-    print("intent ok: %d kinds, encode, telescoping progress, bonus once, invalid on target loss, cap %.2f, sampler valid" % (len(SPEC), CAP))
+    print("intent ok: %d kinds, encode, telescoping progress, bonus once, invalid on target loss, hide quiet, cap %.2f, sampler valid" % (len(SPEC), CAP))
 
 
 if __name__ == "__main__":

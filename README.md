@@ -110,6 +110,12 @@ taken before rules 2, 6 and 11 and the strength test existed, so "—" = not mea
 Thresholds come from the sliders. Rules 4 and 5 need the enemy's brawler and skip enemies that were not identified.
 Strength = HP now x (1 + 0.1 per power cube); an engage also needs 2 of 3 ammo bars and, below 80 % HP, an enemy in range
 (a finish below 25 % needs neither). Move targets are tiles reachable around the walls on the seen grid.
+
+Role rules (`--plan-roles 1`, off by default; #91 / #92): per-brawler profiles from `roles.py` (class defaults from the
+game's ClassArchetype, overridden by the research in `notes/super_research/`) add super_escape (jump away from a diver),
+lurk (hold fire in a bush), ambush (wait in a bush, then spring) and super_engage (dash onto a weak enemy), and gate the
+super rule to finisher supers. They reuse the super / hide / engage intents (modes escape / quiet): no observation
+change. Checklist of researched brawlers: `notes/super_research/CHECKLIST.md`, workflow `notes/super_research/WORKFLOW.md`.
 Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 `hp 30 %, Gunslinger 9 tiles N (reach 11 tiles): disengaging S`. A higher rule can replace a held intent early.
 
@@ -144,6 +150,7 @@ Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 | `intent.py` | Intents (per-second goals: move to, avoid, hold, engage, farm, regroup, hide, super, check bush): kind specs and end rules, the block encoder, the intent-following reward (signed progress, capped per intent), the random-valid sampler. `env_v5.Env.intents` runs them in battles (trainer `--intent-scale`, default 0 = off). `python -m intent` |
 | `planner.py` | Rule planner: 17 priority rules (gas, rotate, low HP, super, thrower behind a wall, keep away from a short-range enemy, outclassed, fight / third party, endgame, regroup, engage, pin, check bush, farm, hide, explore, none) on what the policy sees, a cube-aware strength test for fights, wall-aware move targets, thresholds from the sliders, rules needing the enemy's brawler skip unknown ones; each pick has a readable reason (replay frames, viz). Training rollouts: trainer `--p-plan` (default 0 = off; design 0.5) with preemption of held planner intents; `--eval-plan 1` = eval kind `evalp_plan` (planner vs free play, same seeds); its docstring ends with the `train_fast` command that fine-tunes a checkpoint on planner intents. `python -m planner` |
 | `export_policy.py` | Checkpoint -> ONNX policy for the BSRL bot (inputs s / ent / grid / h, fire head masked in the graph, metadata `spec`: obs version, shapes, sliders and presets, trained brawlers, every brawler's display name and stats for live identity) + a `.ref.npz` of torch outputs the bot's test replays. `python -m export_policy CKPT OUT.onnx --trained Sniper`, `--check` |
+| `roles.py` | Super roles and bush play per brawler for the planner's role rules (#91 / #92): class defaults from characters.csv ClassArchetype and the super's BehaviorType, overrides for the researched brawlers (notes/super_research), the research numbers checked against the game tables. `python -m roles`; `--checklist` writes notes/super_research/CHECKLIST.md |
 | `policy_video.py` | A checkpoint's battles rendered by the real game client as MP4s: N battles, the best one motion-interpolated to 30 fps, loadouts from the run's `config.json`, brawlers turned to their aim (`facing_sync`). Procedure: [docs/RECORDING.md](docs/RECORDING.md). `xvfb-run -a python -m policy_video --ckpt CKPT --out DIR --tries 5`, `--check`; `--overlay 1` draws det-class boxes and the rule planner's pick and path |
 | `overlay.py` | What `policy_video --overlay 1` draws: a box per rendered entity with its showdown-vision det class tag, an A* path over the walkable tiles, a text panel; projection = `engine/py/proj.py`. `python -m overlay` |
 | `fast_obs.py`, `fast_act.py` | Batched, vectorised versions of the observation builder and the actor for the multi-process trainer (bit-equal to the reference paths). |
@@ -218,7 +225,7 @@ Self-checks (no battle is booted; `obs_v5` / `env_v5` read the game's data table
 `export_policy` needs `onnx`, `policy_video` needs `ffmpeg`). `./update.sh --check` runs all of them but `policy_video`:
 
 ```bash
-python -m obs_v5 && python -m intent && python -m planner && python -m model && python -m fast_obs && python -m imitation
+python -m obs_v5 && python -m intent && python -m planner && python -m roles && python -m model && python -m fast_obs && python -m imitation
 python -m env_v5 --check && python -m train_ppo --check && python -m scenarios --check && python -m export_policy --check
 python -m gadget_check --check && python -m hyper_check --check && python -m charge_check --check && python -m gear_check --check
 python -m showdown_check --check && python -m status_check --check && python -m super_audit --check

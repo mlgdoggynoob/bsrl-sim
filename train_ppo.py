@@ -48,7 +48,8 @@
   and battle --p-steer of the agents are steered, the rest free (always none); a steered agent's planner tick takes the
   rule planner's pick (planner.py, which may be none) with --p-plan (default 0 = no planner: the step-D behaviour;
   design 0.5), a random valid intent with --p-rand-intent, else none; a held planner intent may be preempted by the
-  planner (gas / higher rule with a target change > 2 tiles), a random one never. Reward += S x intent.step_reward
+  planner (gas / higher rule with a target change > 2 tiles), a random one never; --plan-roles 1 adds the planner's
+  role rules (roles.py, planner module doc). Reward += S x intent.step_reward
   (terms "i_rew" = rew_int, which the live value excludes). BC battles (native AI) and evals (tag "intent": "none",
   scenario battles too) play free; --eval-plan 1 adds kind "evalp_plan" (the eval seeds vs 9 native, player 0 on the
   planner at every tick) -> pl_rank / pl_ci95 / pl_win / pl_top3 / pl_follow / pl_rules in evals.jsonl next to the
@@ -298,6 +299,7 @@ def intent_flags(ap):
     ap.add_argument("--p-steer", type=float, default=0.7, help="with intents on: share of agents per battle that get intents (the rest play free)")
     ap.add_argument("--p-rand-intent", type=float, default=0.3, help="with intents on: chance per planner tick of a random valid intent (else none)")
     ap.add_argument("--p-plan", type=float, default=0.0, help="with intents on: chance per planner tick of the rule planner's pick (planner.py; design 0.5; 0 = off)")
+    ap.add_argument("--plan-roles", type=int, default=0, help="1 = the rule planner's role rules (roles.py profiles: super_escape, lurk, ambush, super_engage; #91 / #92; 0 = off)")
     ap.add_argument("--eval-plan", type=int, default=0, help="1 = evals also play the eval seeds with player 0 on the rule planner (kind evalp_plan; needs --intent-scale > 0)")
 
 
@@ -309,7 +311,7 @@ def set_intents(a):
     E.Env.intent_jitter = O.NOISE["jitter"] if a.noise else (0.0, 0.0)
     if a.p_plan > 0 or a.eval_plan:
         import planner as PL
-        E.Env.planner = PL.RulePlanner(noisy=bool(a.noise))   # clean obs: no false detections to confirm
+        E.Env.planner = PL.RulePlanner(noisy=bool(a.noise), roles=bool(getattr(a, "plan_roles", 0)))   # clean obs: no false detections to confirm
 
 
 def intent_stats(rows):

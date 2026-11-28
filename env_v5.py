@@ -27,7 +27,9 @@ _finish_step on the true positions: reward += intent_scale x intent.step_reward,
 part; the trainers' rew_int), episode rows "intents" {kind: [started, achieved, timeout, invalid]} (a preempted intent
 has no end), "plan_rules" {rule: [picked, started, preempted]} (planner agents), "intent_mode" free | steered and terms
 "i_rew". `Env.last_why` = per row of the last intents() call the reason of the active intent ("random" or the planner's)
-or of the planner's none (replay frames).
+or of the planner's none (replay frames). The planner's role rules' modes (intent.py "Modes": super escape, hide quiet)
+are scored in _intent_step from the true state: the threat's distance / my sight of it, a main attack fired (acts fire 1
+and an ammo bar spent).
 Identity (obs v5.6): every poll sets `Env.last_who` = who(ids, vec), the owner player / brawler / side of each fair
 observation row, read from the host's snap2 dump of that response (F_STATE; no host change) and matched to the rows by
 position; obs_v5.ObsV5.build(..., who=env.last_who) turns it into the identity columns (with the identity noise).
@@ -846,6 +848,15 @@ class Env(MAEnv):
                         elif not up[q] or t - it["fire_t"] > I.HIT_S * sps: lost = True
                     elif not up[q]: lost = True
                 elif not up[q]: lost = True
+            elif k == "super":                           # mode escape (planner super_escape): a landing point, the threat
+                full = pl[p].super_max > 0 and pl[p].super_charge >= pl[p].super_max; th = it["threat"]
+                dth = float(np.hypot(x[th] - x[p], y[th] - y[p]) / 300.0) if th >= 0 else 0.0
+                if it["td0"] is None: it["td0"] = dth
+                if it["fire_t"] is None and not full: it["fire_t"] = t
+                if it["fire_t"] is not None and t - it["fire_t"] >= I.ESC_S * sps:
+                    if th < 0 or not up[th] or not w["sees"][p, th] or dth >= it["td0"] + I.ESC_GAIN: got = True
+                    elif t - it["fire_t"] > I.HIT_S * sps: lost = True
+                seen = True                                                    # a point: never lost unseen
             else:
                 seen = k != "farm" or bool(I.on_screen(x[p], y[p], px, py, w["W"]))   # unseen rule: anchored targets (players, farm objects)
                 gx, gy = min(max(int(px // 300), 0), w["W"] - 1), min(max(int(py // 300), 0), w["H"] - 1)
@@ -875,6 +886,13 @@ class Env(MAEnv):
                     en = up & (team != team[p])
                     hid = w["inb"][p] and not (en & w["sees"][:, p]).any() and (en & w["screen"][:, p]).any()   # env slider_terms hid_vs
                     ev["on"] = (w["tx"][p], w["ty"][p]) == (gx, gy); ev["hid"] = hid or not (en & w["sees"][p]).any()
+                    if it["mode"] == "quiet":                  # lurk / ambush wait: a main attack reveals me (invalid)
+                        a = getattr(s, "acts", {}).get(p); am = int(pl[p].ammo)
+                        if a is not None and int(a[1]) == 1 and am < it.get("ammo", -1): lost = True
+                        it["ammo"] = am; th = it["threat"]
+                        if th >= 0:
+                            ev["near"] = bool(up[th]) and np.hypot(x[th] - x[p], y[th] - y[p]) / 300.0 <= float(it["near"] or 0.0)
+                            ev["gone"] = not up[th] or not w["sees"][p, th]
             it["unseen"] = 0 if seen else it["unseen"] + 1
             ev["lost"] = lost or (not got and it["unseen"] >= I.SEEN_S * sps); ev["got"] = got
             out[p], end = I.step_reward(it, ev)
@@ -1301,6 +1319,24 @@ def _check_intents(players, tiles, NS):
     st["act"] = cb(); s.acts = {0: [0, 0, 0, 0]}; step(mk(**hid)); s.acts = {0: [0, 1, 0, 0]}; step(mk(p0_ammo=2000, **hid))
     assert st["act"] is not None and st["act"]["hide_q"] == [1]                                          # waits for the hit
     tr = step(mk(p0_damage_dealt=500, p1_damage_taken=500, **hid)); assert st["act"] is None and np.isclose(tr[0][0], 0.25 * 0.08), tr[0][0]
+    # super, mode escape (planner super_escape): p1 the threat 10 tiles right, landing 8 tiles left; fired, then >= 1 s
+    # later 3 tiles farther from it -> achieved; fired and staying put -> invalid after 2 s
+    es = lambda: I.new(dict(kind="super", q=-1, pt=(1650.0 - 2400, 1650.0), mode="escape", threat=1), 8.0, 10.0, steps_per_s=10, super_t=8.0)
+    st["act"] = es(); step(mk(p0_super_charge=1000)); step(mk()); assert st["act"]["fire_t"] == 2 and st["act"]["td0"] == 10.0
+    for _ in range(9): step(mk(p0_x=750))
+    assert st["act"] is not None; n_ach = st["cnt"]["super"][1]
+    tr = step(mk(p0_x=750)); assert st["act"] is None and st["cnt"]["super"][1] == n_ach + 1 and tr[0][0] >= 0.25 * 0.05
+    st["act"] = es(); step(mk(p0_super_charge=1000)); n_inv = st["cnt"]["super"][3]
+    for _ in range(25): step(mk())
+    assert st["act"] is None and st["cnt"]["super"][3] == n_inv + 1
+    # hide, mode quiet (lurk / ambush wait) on p0's bush tile, threat p1: hidden while it walks in, achieved when it is
+    # within 3 tiles; a main attack (fire 1, an ammo bar spent) is invalid
+    s.sl["bush"][5, 5] = True; qh = lambda: I.new(dict(kind="hide", q=-1, pt=(1650.0, 1650.0), mode="quiet", threat=1, near=3.0), 0.0, 10.0, steps_per_s=10)
+    st["act"] = qh(); s.acts = {0: [0, 0, 0, 0]}; step(mk()); step(mk(p1_x=1650 + 1800)); assert st["act"] is not None
+    n_ach = st["cnt"]["hide"][1]; step(mk(p1_x=1650 + 750)); assert st["act"] is None and st["cnt"]["hide"][1] == n_ach + 1
+    st["act"] = qh(); step(mk(p0_ammo=2000)); s.acts = {0: [0, 1, 0, 0]}; n_inv = st["cnt"]["hide"][3]
+    step(mk(p0_ammo=1000)); assert st["act"] is None and st["cnt"]["hide"][3] == n_inv + 1
+    s.sl["bush"][5, 5] = False
     s.acts = {}
     st["act"] = mv(); st["cnt"]["move_to"][0] += 1
     tr = step(mk(p0_eliminated=1)); assert tr[0][0] == 0 and st["cnt"]["move_to"][3] >= 1                  # knocked out: invalid
