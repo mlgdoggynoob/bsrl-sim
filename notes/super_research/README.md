@@ -25,6 +25,12 @@ Piper also at high effort to compare). Web only: this container has no game file
 - Numbers: wiki infoboxes mix power levels and lag balance patches (Dynamike super 2200 vs 6000 in the same page, Poco
   rework Aug 2026). The game tables have to win every conflict.
 
+## Round 2: attack dashers (Sonnet 5.5, high effort)
+| Brawler (codename) | profile | checked in the tables | open |
+|---|---|---|---|
+| Mortis (Undertaker) | finisher + heal_self super; dash_escape (main attack), lane (a wall cuts the dash), ambush 3 tiles | attack dash 2.67 tiles (CastingRange 8, AlwaysCastAtMaxRange), super Attack 10 tiles, 900 damage, 4000 HP | the "4.67-tile long dash bar" the wiki describes is not in skills.csv; whether a dash into a bush stays hidden; the super finish test by absolute HP (900 vs enemy HP) instead of < 50 % |
+| Mico (Leaper) | engage_dash + escape_dash super (sreach 10), dash_escape, ambush 3.5 tiles | attack jump 4 tiles (Charge), super FlyJump: CastingTime 1000 ms, ActiveTime 6000 ms, MovementSpeed 1025, CastingRange 0 | a finish_jump rule (jump a target with HP < 1140) and no_dive_grouped: in mico.md section 6, not built |
+
 ## Checked against the game tables (2026-11-28, `roles._check`)
 - Ranges and super ranges in the table match skills.csv (CastingRange / 3 = tiles): Piper 10 / 8.67, Shelly 7.67 /
   7.67, Bull 5.33 / **11** (the agent's unconfirmed 11-tile charge is right), Edgar 2 / 6.67, Poco 7 / 9.33, Dynamike

@@ -77,6 +77,7 @@ listed). They read my profile (roles.profile of my brawler, found from my cond s
 sit in RULES as: gas, rotate, super_escape, lurk, low_hp, ambush, super_engage, super, ... A diver = a KNOWN enemy that
 is melee, short range (<= 5.5 tiles) or has a dash / jump super (ent ID0 + 10); its dive reach = max(range, super range
 for a dash super), cap 12.
+  My super range = the observation's, or the profile's sreach when larger (Mico's flight has no table range).
   R1 super_escape  role escape_dash, my super ready, a threat (a diver within its dive reach + 1, or R >= 1 within its
                    reach) and (hp < ESC_HP, or it within ESC_CLOSE, or 2+ enemies within 4 tiles) -> super at a landing
                    tile 0.6-1 x my super range on the far side of the threat (walkable, >= 3 tiles from the poison), the
@@ -94,6 +95,15 @@ for a dash super), cap 12.
                                                                        "Sniper 3 tiles E: springing the ambush"
   R4 super_engage  role engage_dash, my super ready, an enemy beyond my range within my super range that is below 25 %
                    or passes the engage test (weak) -> super it        "Sniper 7 tiles E at 40 %: jumping in (super)"
+  Brawler rules (a profile's `rules`: on only for the brawlers that list them; roles.py module doc):
+  B1 dash_escape   (after super_escape) a main attack that dashes, >= 1 ammo bar, and the low_hp case (hp below its
+                   threshold, an enemy within 1.2 x its reach) or an enemy of R >= 1.5 within its reach + 2 -> move_to a
+                   walkable reachable tile 1.5-2.5 dashes away, not toward it (> ~70 deg off), the farthest from every enemy (a bush + 1; profile
+                   lane: a straight walkable first dash + 2, as a wall cuts Mortis's dash short)
+                                                                       "hp 30 %, ShotgunGirl 3 tiles E: dashing W (attack)"
+  B2 snipe_band    (before engage) a target engage would take (the engage test), not a diver within 5 tiles -> engage
+                   it, mode band: hold band (lo, hi) tiles from it (intent: phi = the distance outside the band)
+                                                                       "Gunslinger 5 tiles E at 40 %: stepping back to 9 tiles to snipe"
   With roles, rule 4 (super) needs the finisher role (Poco's heal, Sandy's cloak are Attack supers), and an escape_dash
   brawler keeps its super while a diver is within 10 tiles unless the target is below 25 %; rule 6 (keep_away) measures a
   diver's distance against its dive reach + 2 (Edgar's 6.67-tile jump), not its range + 2.
@@ -129,7 +139,8 @@ import functools, heapq, sys
 import numpy as np
 import obs_v5 as O, intent as I
 
-RULES = ("gas", "rotate", "super_escape", "lurk", "low_hp", "ambush", "super_engage", "super", "thrower_wall", "keep_away", "outclassed", "fight", "endgame", "regroup", "engage",
+RULES = ("gas", "rotate", "super_escape", "dash_escape", "lurk", "low_hp", "ambush", "super_engage", "super", "thrower_wall",
+         "keep_away", "outclassed", "fight", "endgame", "regroup", "snipe_band", "engage",
          "pin", "check_bush", "farm", "hide", "explore", "none")
 PRI = {r: k for k, r in enumerate(RULES)}
 TILE = 300.0
@@ -284,6 +295,7 @@ class View:
         self.poison, self.bush, self.edge = _solid(g == _S("poison")), _solid(g == _S("bush")), _solid(g == _S("out_of_bounds"))
         self._steps = None
         self.since_cb = np.inf if since_cb is None else float(since_cb)   # s since my last bush check
+        self.sub = (float(sub[0]), float(sub[1]))
 
     @property
     def steps(self):
@@ -357,6 +369,7 @@ class RulePlanner:
         if self.roles:
             import roles as RO
             v.prof = RO.profile(_me_name(np.asarray(cond, np.float32)[:13].tobytes()))
+            v.srng = max(v.srng, float(v.prof.get("sreach") or 0.0))   # Mico's steered flight: no table super range
         for r in RULES[:-1]:
             out = getattr(self, "_" + r)(v)
             if out is not None: return out
@@ -456,6 +469,46 @@ class RulePlanner:
         why = "hp %d %%, %s" % (round(100 * v.hp), self._who(v, k)) + (", 2+ enemies close" if swarm else "")
         return pick("super_escape", "super", *t, slot=k, mode="escape", threat=(float(ex), float(ey)),
                     reason="%s: jumping %s %s (super)" % (why, tiles(np.hypot(*t)), dir8(*t)))
+
+    def _has(self, v, rule):
+        return self.roles and v.prof is not None and rule in v.prof["rules"]
+
+    def _dash_escape(self, v):
+        if not (self._has(v, "dash_escape") and len(v.foes) and v.ammo >= 1.0 / 3 - 1e-3): return None
+        thr = float(np.clip(0.35 + 0.1 * (v.w["retreat"] - 1.0), 0.25, 0.45))   # low_hp's threshold
+        th = [k for k in v.foes if (v.hp < thr and v.d[k] <= 1.2 * v.reach[k]) or (v.R[k] >= OUT_R and v.d[k] <= v.reach[k] + 2.0)]
+        if not th: return None
+        k = min(th, key=lambda j: v.d[j]); ex, ey = v.xy[k]; dash = float(v.prof.get("adash") or 2.67)
+        de = np.min([np.hypot(v.ox - v.xy[j, 0], v.oy - v.xy[j, 1]) for j in v.foes], 0)
+        away = (v.ox * ex + v.oy * ey) < 0.3 * v.td * v.d[k]   # not toward it (> ~70 deg off its direction): walls allowed for
+        ok = v.walk & (v.td >= 1.5 * dash) & (v.td <= max(2.5 * dash, 4.0)) & away & np.isfinite(v.steps)   # a side escape
+        if v.poison.any(): ok &= v.dist_to(v.poison) >= 2.0
+        key = de + 1.0 * v.bush
+        if v.prof.get("lane"): key = key + 2.0 * self._lane(v, dash)   # a wall cuts the dash short (Mortis)
+        t = v.tile_pick(ok, -key)
+        if t is None: return None
+        why = "hp %d %%, %s" % (round(100 * v.hp), self._who(v, k)) if v.hp < thr else self._who(v, k) + " (x%.1f my strength)" % v.R[k]
+        return pick("dash_escape", "move_to", *t, reason="%s: dashing %s (attack)" % (why, dir8(*t)))
+
+    def _lane(self, v, dash):
+        """(G, G) True where the straight line from me toward the tile is walkable for the first dash (dash tiles)"""
+        n = np.maximum(v.td, 1e-6); ok = np.ones(v.g.shape, bool)
+        for f in np.linspace(0.15, 1.0, 6):
+            s = np.minimum(f * dash / n, 1.0)            # a point f x dash along the line (not past the tile)
+            ii = np.clip(np.floor(_C + v.sub[0] + v.ox * s).astype(int), 0, O.G - 1)
+            jj = np.clip(np.floor(_C + v.sub[1] + v.oy * s).astype(int), 0, O.G - 1)
+            ok &= v.walk[jj, ii] | (v.g[jj, ii] == _S("poison"))
+        return ok
+
+    def _snipe_band(self, v):
+        if not (self._has(v, "snipe_band") and v.prof.get("band") and len(v.foes)): return None
+        if any(v.diver(j) and v.d[j] <= 5.0 for j in v.foes): return None   # keep_away / lurk / super_escape handle it
+        agg = v.w["aggressive"] >= 1.2; ok = [k for k in v.foes if v.engage_ok(k, agg)]
+        if not ok: return None
+        lo, hi = v.prof["band"]; k = min(ok, key=lambda j: (v.engage_ok(j, agg) != "finish", v.d[j])); mid = 0.5 * (lo + hi)
+        how = ("stepping back to %s to snipe" if v.d[k] < lo else "closing to %s to snipe" if v.d[k] > hi else "sniping from %s") % tiles(mid)
+        return pick("snipe_band", "engage", *v.xy[k], slot=k, mode="band", band=(float(lo), float(hi)),
+                    reason="%s at %d %%: %s" % (self._who(v, k), round(100 * v.ehp[k]), how))
 
     def _lurk(self, v):
         if not (self.roles and v.prof is not None and v.prof["lurk"] and v.inbush and len(v.foes)): return None
@@ -665,7 +718,7 @@ class RulePlanner:
         if pk["kind"] == "none": return c
         mx, my = float(w["x"][p]), float(w["y"][p]); x, y = mx + pk["dx"] * TILE, my + pk["dy"] * TILE
         miss = lambda: dict(c, kind="none", reason=pk["reason"] + " (target not matched)")
-        if pk.get("mode"):                               # role rules: the threat -> its true player (as an engage target)
+        if pk.get("mode") in ("escape", "quiet"):        # role rules: the threat -> its true player (as an engage target)
             oth = w["up"].copy(); oth[p] = False; tx_, ty_ = mx + pk["threat"][0] * TILE, my + pk["threat"][1] * TILE
             d = np.where(oth & (w["team"] != w["team"][p]) & w["sees"][p], np.hypot(w["x"] - tx_, w["y"] - ty_) / TILE, np.inf)
             if d.min() > MATCH: return miss()
@@ -676,7 +729,9 @@ class RulePlanner:
             ok = oth & (mate & w["screen"][p] if pk["kind"] == "regroup" else ~mate & w["sees"][p])
             d = np.where(ok, np.hypot(w["x"] - x, w["y"] - y) / TILE, np.inf)
             if d.min() > MATCH: return miss()
-            c["q"] = int(np.argmin(d)); return c
+            c["q"] = int(np.argmin(d))
+            if pk.get("mode") == "band": c.update(mode="band", band=pk["band"])   # snipe_band: engage within the band
+            return c
         if pk["kind"] == "farm":
             sc = env._scene(s, p, b, w); xy = np.asarray(sc["boxes" if pk["obj"] == "box" else "cubes"], np.float64).reshape(-1, 2)
             d = np.hypot(xy[:, 0] - x, xy[:, 1] - y) / TILE if len(xy) else np.zeros(0)
@@ -956,6 +1011,28 @@ def _check():
     finally: RO.BRAWLERS["ShotgunGirl"]["roles"] = keep; RO.profile.cache_clear()
     # keep_away measures a dash's reach: Edgar 7 tiles off (jump 6.67) is a threat with roles, not without
     assert rrun(foes=[ED((7, 0))])["rule"] == "keep_away" and run(foes=[ED((7, 0))])["rule"] != "keep_away"
+    # brawler rules: Piper's snipe_band (8.5-10 tiles) on a weak Colt 5 tiles off -> engage it from the band; Mortis's
+    # dash_escape at low hp (his attack dashes 2.67 tiles); neither without roles, nor for a brawler not listing it
+    CO = lambda xy, hp=0.4: (xy, hp, "Gunslinger", False)
+    pk = want(rrun(foes=[CO((5, 0))]), "snipe_band", "engage", "Gunslinger 5 tiles E at 40 %: stepping back to 9 tiles to snipe", sx=1)
+    assert pk["mode"] == "band" and pk["band"] == (8.5, 10.0)
+    assert "sniping from 9 tiles" in rrun(foes=[CO((9, 0))])["reason"] and run(foes=[CO((5, 0))])["rule"] == "engage"
+    assert rrun(foes=[CO((5, 0)), ED((4, 0), 0.9)])["rule"] != "snipe_band" and rrun(me="ShotgunGirl", foes=[CO((5, 0))])["rule"] != "snipe_band"
+    SG = ((3, 0), 1.0, "ShotgunGirl", False)
+    want(rrun(me="Undertaker", hp=0.3, foes=[SG]), "dash_escape", "move_to", "hp 30 %, ShotgunGirl 3 tiles E: dashing", sx=-1)
+    assert rrun(me="Undertaker", hp=0.3, ammo=0.0, foes=[SG])["rule"] == "low_hp" and run(me="Undertaker", hp=0.3, foes=[SG])["rule"] == "low_hp"
+    assert rrun(me="BullDude", hp=0.3, foes=[SG])["rule"] == "low_hp"
+    # Mortis: ambush at 3 tiles (dash 2.67); dash_escape prefers a straight first dash (a wall W of him: he dashes
+    # another way). Mico: his flight super (no table range: sreach 10) escapes an Edgar at low hp
+    assert rrun(me="Undertaker", inbush=True, foes=[SN((5, 0))])["reason"].endswith("waiting for 3 tiles (ambush)")
+    gw = grid(indestructible=[(0, 25, 10, 12)])          # a wall 1-2 tiles W of me
+    pk = rrun(me="Undertaker", hp=0.3, foes=[((3, 0), 1.0, "ShotgunGirl", False)], grid=gw)
+    assert pk["rule"] == "dash_escape" and pk["dx"] > -1.5, pk   # not through the wall
+    pk = rrun(me="Leaper", sup=True, hp=0.4, foes=[ED((3, 0))]); assert pk["rule"] == "super_escape" and pk["dx"] < 0, pk
+    v = View(*synth(grid=grid(indestructible=[(10, 15, 10, 12)]))); L = PR._lane(v, 8 / 3)   # a wall block 1-2 tiles W
+    at = lambda x, y: bool(L[_C + y, _C + x])
+    assert not at(-6, 0) and not at(-6, -2) and at(6, 0) and at(0, -6) and at(0, 6), L[6:19, 6:19].astype(int)
+    assert run(me="Leaper", sup=True, hp=0.4, foes=[ED((3, 0))])["rule"] != "super_escape"
     assert set(seen) == set(RULES), set(RULES) - set(seen)
     # priority order: each state built for rule k also matching a later rule picks k
     rich = dict(team=3, mates=[((7, 0), 1.0, None, False)], cubes=[(0, 3)], sliders={"bush_camp": 1.5})

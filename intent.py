@@ -24,8 +24,10 @@ Kinds (obs_v5.INTENTS; distances in tiles, true positions in the sim):
 Modes (planner role rules, #91 / #92; candidate "mode", "threat" = the enemy player it is about, "near" tiles; not in
 the block: the observation is unchanged):
   super, mode escape   point target (the landing tile)   my super is fired and >= ESC_S later I am ESC_GAIN tiles farther
-                       from the threat than at the start, or it is down / out of my sight; invalid 2 s after the fire
-                       without that (the readiness and the fire as for super)
+                       from the threat than at the start, or it is down / out of my sight; else timeout at the 3 s
+                       (Mico's super has a 1 s windup; the readiness and the fire as for super)
+  engage, mode band    enemy (anchored)                   as engage; the potential is the distance outside band (lo, hi)
+                       tiles (snipe_band: Piper 8.5-10), so walking inside lo costs as walking out of hi; radius = hi
   hide, mode quiet     my bush tile                       hidden (as hide; or at the step before, as a threat this close
                        sees me) when the threat comes within near, leaves my sight or the time runs out; invalid: a main attack fired (it reveals me) or the tile no longer a bush
 Invalid (no bonus): me knocked out / eliminated; the target player down (engage / super: not after my damage / super);
@@ -102,6 +104,7 @@ def phi(it, d):
     k, sp = it["kind"], SPEC[it["kind"]]; cap = sp["dcap"]
     if k == "avoid": return -min(d, sp["r"])
     if k == "hold": return min(max(d, sp["r"]), cap)
+    if it.get("band"): lo, hi = it["band"]; return min(max(d - hi, 0.0) + max(lo - d, 0.0), cap)   # engage, mode band
     if k in _NEAR: return min(max(d - it["r"], 0.0), cap)
     if k == "regroup": lo, hi = sp["band"]; return min(max(d - hi, 0.0), cap) + max(lo - d, 0.0)
     return min(d, cap)
@@ -116,7 +119,8 @@ def new(cand, d0, range_t=None, steps_per_s=10, super_t=None):
           "range": float(range_t or 0.0), "t": 0, "T": int(round(SPEC[k]["max_s"] * steps_per_s)), "sps": int(steps_per_s),
           "tot": 0.0, "dk": 0.0, "box": 0.0, "unseen": 0, "hit_t": -10 ** 6, "box_t": -10 ** 6, "fire_t": None, "shot_t": None,
           "reason": cand.get("reason", "random"), "mode": cand.get("mode"), "threat": int(cand.get("threat", -1)),
-          "near": cand.get("near"), "td0": None, "hid": False}
+          "near": cand.get("near"), "td0": None, "hid": False, "band": cand.get("band")}
+    if it["band"]: it["r"] = float(it["band"][1])       # engage band: the encoded radius = its outer edge
     it["phi"] = phi(it, d0)
     return it
 
@@ -280,6 +284,10 @@ def _check():
     it, tot, ends = run(Q, [0.0] * 5, {0: {"on": True}, 1: {"on": True, "near": True}}); assert not any(ends)   # never hidden
     it, tot, ends = run(Q, [0.0] * 5, {0: H_, 1: {"lost": True}}); assert ends == [None, "invalid"] and np.isclose(tot, 0.002)
     assert new(P("hide"), 1.0)["mode"] is None and new(P("hide"), 1.0)["threat"] == -1
+    # engage, mode band (8.5-10): from 5 tiles back to 9 pays 3.5 tiles of progress; walking in from 9 to 6 costs 2.5
+    Bd = dict(kind="engage", q=3, pt=None, obj=None, mode="band", band=(8.5, 10.0))
+    it, tot, ends = run(Bd, [5.0, 7.0, 9.0, 9.0]); assert it["r"] == 10.0 and np.isclose(tot, C * 3.5) and not any(ends), tot
+    it, tot, ends = run(Bd, [9.0, 6.0]); assert np.isclose(tot, -C * 2.5) and np.isclose(run(Bd, [12.0, 9.0])[1], C * 2.0)
     # engage: closing to 0.8 range, damage in range (capped), achieved once; then nothing more
     E = dict(kind="engage", q=3, pt=None, obj=None)
     it, tot, ends = run(E, [9.0, 6.0, 4.0, 4.0, 4.0], {1: {"in_range": True, "dk": 0.06}, 2: {"in_range": True, "dk": 5.0}, 3: {"got": True}})

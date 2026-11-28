@@ -114,7 +114,8 @@ Strength = HP now x (1 + 0.1 per power cube); an engage also needs 2 of 3 ammo b
 Role rules (`--plan-roles 1`, off by default; #91 / #92): per-brawler profiles from `roles.py` (class defaults from the
 game's ClassArchetype, overridden by the research in `notes/super_research/`) add super_escape (jump away from a diver),
 lurk (hold fire in a bush), ambush (wait in a bush, then spring) and super_engage (dash onto a weak enemy), and gate the
-super rule to finisher supers. They reuse the super / hide / engage intents (modes escape / quiet): no observation
+super rule to finisher supers. Brawler rules run only for the brawlers whose profile lists them: dash_escape (Mortis, Mico,
+Kaze, Alli, Samurai: their main attack dashes) and snipe_band (Piper engages from 8.5-10 tiles, her full-damage band). They reuse the super / hide / engage intents (modes escape / quiet): no observation
 change. Checklist of researched brawlers: `notes/super_research/CHECKLIST.md`, workflow `notes/super_research/WORKFLOW.md`.
 Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 `hp 30 %, Gunslinger 9 tiles N (reach 11 tiles): disengaging S`. A higher rule can replace a held intent early.
