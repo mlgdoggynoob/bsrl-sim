@@ -24,6 +24,15 @@ From replays/*.json (one learner battle per update, true positions):
              0 = shoots where the target is, 1 = leads perfectly; aim_err = median |aim - ideal| in degrees
   range      median distance to the nearest enemy in view, divided by the brawler's attack range
              (marksmen should sit near 1, not rush to 0.3)
+  super      (replay self column 2 = super ready, action fire 2 = super) per super kind of the recorded brawler
+             (brawler_stats 9 / 10 / 11: attack / charge = dash or jump / other):
+             ready = share of alive decisions with the super ready; held_s = median seconds from ready to fired (runs
+             still unfired at a knock-out or the replay end count as held to then); per_min = supers per alive minute;
+             died_ready = share of knock-outs with the super ready (an unused escape or finisher);
+             hit (attack supers) = share of supers after which an enemy then within 1.25 x super range loses HP within
+             1.5 s with no main attack fired in that window (hit_n = such clean supers);
+             escape (charge / other supers fired at hp < 40 % with an enemy within 6 tiles) = share of those after which
+             the nearest enemy is farther 1.5 s later (escape_n = such supers)
 """
 import argparse, collections, glob, json, os
 import numpy as np
@@ -181,6 +190,63 @@ def replay_stats(frames, chr_, groups, stats_of):
     return lead_i, lead_a, rng
 
 
+SUPER_KINDS = ("attack", "charge", "other")   # brawler_stats 9 / 10 / 11 (the ultimate's BehaviorType)
+WIN_T = 30                                     # 1.5 s in 50 ms ticks: super hit / escape window
+
+
+def super_stats(frames, chr_, groups, stats_of):
+    """{kind: counters} of one replay's recorded player (summarize_supers turns them into the scorecard's super block)"""
+    me = frames[0]["f"] if frames else 0
+    st = stats_of(chr_[me]); kind = SUPER_KINDS[int(np.argmax(st[9:12]))] if np.any(st[9:12]) else "other"
+    srng = float(st[12]) * 30.0 / 3.0 * UNITS_TILE
+    c = {"alive": 0, "ready": 0, "uses": 0, "held": [], "ko": 0, "ko_ready": 0, "hit": 0, "hit_n": 0, "esc": 0, "esc_n": 0, "dt": 0}
+    since = None                                  # tick the current ready run started
+    foes = [p for p in range(10) if p != me and not (groups[p] and groups[p] == groups[me])]
+    for k, f in enumerate(frames):
+        if f["f"] != me: continue
+        P = np.array(f["p"], float); alive = bool(P[me, 4]); rdy = len(f.get("s", [])) > 2 and f["s"][2] >= 0.5
+        nxt = frames[k + 1] if k + 1 < len(frames) else None
+        if alive:
+            c["alive"] += 1; c["ready"] += rdy
+            if rdy and since is None: since = f["t"]
+            if nxt is not None and not nxt["p"][me][4]:          # knocked out at the next frame
+                c["ko"] += 1; c["ko_ready"] += rdy
+                if since is not None: c["held"].append((nxt["t"] - since) * TICK_S); since = None
+        if not (alive and f["a"][1] == 2): continue
+        c["uses"] += 1
+        if since is not None: c["held"].append((f["t"] - since) * TICK_S); since = None
+        win = [g for g in frames[k + 1:] if g["t"] - f["t"] <= WIN_T and g["f"] == me]
+        live = [q for q in foes if P[q, 4]]
+        if not win or not live: continue
+        d = np.hypot(P[live, 0] - P[me, 0], P[live, 1] - P[me, 1]); end = np.array(win[-1]["p"], float)
+        if kind == "attack":
+            if any(g["a"][1] == 1 for g in win): continue
+            near = [q for q, dq in zip(live, d) if dq <= 1.25 * srng]
+            if not near: continue
+            c["hit_n"] += 1; c["hit"] += any(min(g["p"][q][2] for g in win) < P[q, 2] for q in near)
+        elif P[me, 3] > 0 and P[me, 2] / P[me, 3] < 0.4 and d.min() < 6 * UNITS_TILE and end[me, 4]:
+            j = live[int(np.argmin(d))]
+            c["esc_n"] += 1; c["esc"] += np.hypot(*(end[j, :2] - end[me, :2])) > d.min()
+    if since is not None and frames: c["held"].append((frames[-1]["t"] - since) * TICK_S)
+    return kind, c
+
+
+def summarize_supers(by_kind):
+    """{kind: {n_replays, ready, held_s, per_min, died_ready, hit / hit_n | escape / escape_n}} from super_stats counters"""
+    out = {}
+    for kind, cs in by_kind.items():
+        al = sum(c["alive"] for c in cs); ko = sum(c["ko"] for c in cs); held = sum((c["held"] for c in cs), [])
+        r = {"n_replays": len(cs), "ready": round(sum(c["ready"] for c in cs) / max(al, 1), 3),
+             "held_s": round(float(np.median(held)), 1) if held else None,
+             "per_min": round(sum(c["uses"] for c in cs) / max(al * 0.1 / 60.0, 1e-9), 2),   # decisions = 0.1 s (ticks 2)
+             "died_ready": round(sum(c["ko_ready"] for c in cs) / ko, 3) if ko else None}
+        hn, en = sum(c["hit_n"] for c in cs), sum(c["esc_n"] for c in cs)
+        if kind == "attack": r.update(hit=round(sum(c["hit"] for c in cs) / hn, 3) if hn else None, hit_n=hn)
+        else: r.update(escape=round(sum(c["esc"] for c in cs) / en, 3) if en else None, escape_n=en)
+        out[kind] = r
+    return out
+
+
 def summarize_leads(li, la):
     li, la = np.array(li), np.array(la)
     m = np.abs(li) > 2.0                                           # moving targets only (a lead is visible)
@@ -204,11 +270,12 @@ def scorecard(run, last=3000, stats_of=None):
         out["groups"]["%s/t%d/%s" % (k, ts, br)] = ep_stats(rs)
     if stats_of is None:
         import obs_v5 as O; stats_of = O.brawler_stats
-    li, la, rg = [], [], []
+    li, la, rg, sup = [], [], [], collections.defaultdict(list)
     for fn in sorted(glob.glob(os.path.join(run, "replays", "u*.json")))[-30:]:
-        c = json.load(open(fn)); a, b, r_ = replay_stats(c["frames"], c["chr"], c.get("groups") or [0] * 10, stats_of)
+        c = json.load(open(fn)); gr = c.get("groups") or [0] * 10; a, b, r_ = replay_stats(c["frames"], c["chr"], gr, stats_of)
         li += a; la += b; rg += r_
-    out["replays"] = {**summarize_leads(li, la), "range": round(float(np.median(rg)), 3) if rg else None}
+        k, cs = super_stats(c["frames"], c["chr"], gr, stats_of); sup[k].append(cs)
+    out["replays"] = {**summarize_leads(li, la), "range": round(float(np.median(rg)), 3) if rg else None, "super": summarize_supers(sup)}
     out["presets"] = preset_report(rows); out["slopes"] = slider_slopes(rows); out["intents"] = intent_report(rows)
     return out
 
@@ -230,6 +297,25 @@ def _check():
     for lead_, want in ((False, 0.0), (True, 1.0)):
         r = summarize_leads(*replay_stats(frames(lead_), ["X"] * 10, [0] * 10, st)[:2])
         assert abs(r["lead"] - want) < 0.05, (lead_, r)
+    def sframes(kind_col, fire_at, hp_me, foe_hp, foe_dx, ko=False):   # 40 decisions (2 ticks each), super ready from 10
+        out = []
+        for k in range(40):
+            P = [[0, 0, 1, 1, 0] for _ in range(10)]
+            P[0] = [5000, 5000, hp_me, 3000, int(not (ko and k >= 30))]
+            fx = 5000 + foe_dx + (300 * (k - fire_at) if kind_col == 10 and k > fire_at else 0)   # a charge super: I dash away (foe drifts relatively)
+            P[1] = [fx, 5000, foe_hp - (500 if kind_col == 9 and k > fire_at + 2 else 0), 3000, 1]
+            out.append({"t": 2 * k, "f": 0, "a": [0, 2 if k == fire_at else 0, 0.0, 0], "p": P, "s": [1, 1, 1.0 if 10 <= k <= fire_at else 0.0, 0, 0]})
+        return out
+    sst = lambda col: (lambda c: np.array([1.0, .72, 1, .75, 0, 1, 0, 0, .3, col == 9, col == 10, col == 11, 1.0], np.float32))
+    k, c = super_stats(sframes(9, 20, 3000, 3000, 1500), ["X"] * 10, [0] * 10, sst(9)); sm = summarize_supers({k: [c]})["attack"]
+    assert k == "attack" and sm["hit"] == 1.0 and sm["hit_n"] == 1 and sm["held_s"] == 1.0 and sm["died_ready"] is None, sm
+    assert abs(sm["ready"] - 11 / 40) < 1e-3 and abs(sm["per_min"] - 15.0) < 0.01, sm
+    k, c = super_stats(sframes(10, 25, 900, 3000, 900), ["X"] * 10, [0] * 10, sst(10)); sm = summarize_supers({k: [c]})["charge"]
+    assert k == "charge" and sm["escape"] == 1.0 and sm["escape_n"] == 1 and sm["held_s"] == 1.5, sm
+    fr = sframes(10, 99, 900, 3000, 900, ko=True)                # never fired, knocked out while ready
+    for g in fr: g["s"][2] = 1.0 if g["t"] >= 20 else 0.0
+    k, c = super_stats(fr, ["X"] * 10, [0] * 10, sst(10)); sm = summarize_supers({k: [c]})["charge"]
+    assert sm["died_ready"] == 1.0 and sm["per_min"] == 0 and sm["held_s"] == 2.0 and sm["escape"] is None, sm
     rows = [{"seed": 1, "player": p, "rank": rk, "truncated": False, "restart": False, "ticks": 400, "storm_death": 0,
              "terms": {"dealt": 2, "taken": 1, "hits": 1, "shots": 2, "cubes": 1}, "tag": {"kind": "k1", "team_size": 3, "groups": g}}
             for p, rk, g in ((0, 5, [1, 1, 0] + [0] * 7), (1, 2, [1, 1, 0] + [0] * 7))]
@@ -273,6 +359,7 @@ if __name__ == "__main__":
         print("scorecard %s: place %s win %s trade %s hit %s dps %s cubes %s alive %ss | lead %s aim_err %s range %s -> %s" % (
             sc["run"], ev.get("place"), ev.get("win"), ev.get("trade"), ev.get("hit"), ev.get("dps"), ev.get("cubes"),
             ev.get("alive_s"), rp.get("lead"), rp.get("aim_err"), rp.get("range"), os.path.join(run, "scorecard.json")))
+        for k, v in (rp.get("super") or {}).items(): print("  super %s: %s" % (k, json.dumps(v)))
         if sc["presets"]:
             print("presets: " + ", ".join("%s %s (place %s%s%s)" % (p, "PASS" if v.get("pass") else "-" if "pass" not in v else "FAIL", v.get("place"),
                                                                  "; " + "; ".join(v["why"]) if v.get("why") else "",
