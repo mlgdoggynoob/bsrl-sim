@@ -37,7 +37,11 @@ One tree of nirkt's code (`engine/NOTICE.md` says which file came from which rep
 | `engine/labeller`, `framegen`, `debug`, `data`, `docs`, `tests`, `bl.py` | bulletlabels' vision-label tools (not used by the sim) | bulletlabels |
 | `engine/patches` | This project's changes, listed below | this project |
 
-Changes made to nirkt's code, all recorded in `engine/patches/`:
+Changes made to nirkt's code, all recorded in `engine/patches/`, listed here in the order `engine/patches/series` replays
+them. The first four were already in the tree when it was folded into `engine/` (their paths are bulletlabels'); from
+`gadgets_dash_heal.patch` on, each patch is relative to `engine/` and applies on the tree the one before it leaves.
+`engine/patches/check_chain.sh` (also run by `./update.sh --check`) replays the series on the fold commit and compares the
+result with `engine/`:
 - `training_round.patch`: team groups, summons and area effects in the observation, per-instance map folders,
   teammate respawn.
 - `fair_view.patch`: camera view window (measured trapezoid, per-episode zoom, teammates never bush-hidden).
@@ -48,17 +52,11 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   `env.c` `gadget_input` tries first. It implements dash gadgets (the native charge mover, through `env.c`
   `env_dash_start`) and heal-over-time gadgets (Bibi, Byron; ticked from `env.c` `pre_snapshot`), with 3 uses per
   battle (unlimited since `guessed_numbers.patch`) and the game's own cooldown. Every other gadget still reads as not usable.
-- `area_gadgets.patch` (issue #3, a diff on top of the patches above): `gadget.c`'s AREA kind (published as SPAWN), the
-  gadgets that only drop their area at the brawler (Barley, Poco x2, Tick, Shade, Trunk), spawned with libg's
-  `0xb35c40` after the row's ActivationDelay. `python -m super_audit --gadget` checks their effects.
-- `gadgets_batch2.patch` (issue #3, a diff on top of `area_gadgets.patch`): more kinds in `gadget.c`. The gadget's own
-  skill fired as its projectile(s) through libg's projectile spawn `0xb78190` (SHOT, published PROJECTILE) or as its area
-  (Bull's Stomp, 8-Bit's Extra Credits); repeat_shot / spin_shoot volleys of the row's CustomObject projectile (off in
-  `repeat_spin_off.patch`, rebuilt from the game data in `repeat_spin_rebuild.patch`); items
-  through the item factory `0xb55684` (Bolt, Gale); R-T's super charge (new `NBE_GAD_SUPER`, mirrored in `nbpc/proto.py`);
-  instant heals through libg's heal `0xb41554` (Kit, Kenji). Eight rows that classify but showed no effect live are masked
-  (`gadget.c` `g_masked`). `python -m super_audit --gadget [--gadget-slot 1]` and `python -m gadget_check` check them.
-- `charge.patch` (issue #5, a diff on top of the four above): the charge supers in `native/loader/env.c`. The skill's
+- `gadgets_dash_heal.patch` (issue #3, a diff on top of the fold's tree, which held an earlier `gadget.c`): the part of
+  `gadgets.patch` that landed after the fold into `engine/`: `gadget.c`'s DASH and HEAL kinds, `env.c` `gadget_tick`,
+  `env_dash_start` and `env_obj_by_id`. `gadgets.patch` above is the whole gadget work against bulletlabels' paths; this one
+  is the step the chain replays.
+- `charge.patch` (issue #5, a diff on top of `gadgets_dash_heal.patch`): the charge supers in `native/loader/env.c`. The skill's
   ChargePushback after each contact hit (the game's knockback 0xb49834), Bull's straight lane that breaks walls and bushes
   up to the first unbreakable tile, El Primo breaking the tiles around his landing, trail areas (Stu, Berry, Trunk)
   through the game's own per-tick spawn, Crow's knives at take-off and landing, the end-of-charge area (Bull, Nori,
@@ -75,40 +73,50 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   game builds it as the brawler's third skill instance) it takes the super's place while hypercharged (`hyper.c`
   `swap_ulti` / `hyper_unswap`). Meg's mech takes Meg's card. `NbeResp` `hyp_supers` / `hyp_super_id` count the supers cast
   while hypercharged (`python -m super_audit --hyper`).
-- `hyper_supers_fix.patch` (issue #32 item 3, a diff on top of `hypercharged_supers.patch`): `hyper.c` steers homing
-  projectiles (TravelType 4: the client build leaves their target position at 0,0; this changes every homing shot, not only
-  hypercharged ones), takes the overcharged list for AttackPattern 11's per-attack projectile (Lumi) and the Attack
-  handler's summon (Pam), and heals with a hypercharged brawler's Heal areas (Pam); `superfix_moves.c` gives Blink's
-  Damage enter area the scaled damage (Gigi).
-- `showdown.patch` (issue #21, a diff on top of the others): Showdown rules the client build lacks. `native/loader/env.c`
-  `elimination_tick` ends a battle with teams when one team is left (`NbeResp.winner` = that team's lowest-index player);
-  `env.c` mirrors each brawler's power cubes into character `+0x874`, so libg's own death drop (inside the damage root)
-  drops min(cubes / 3 + 1, 5) cubes, 2 at most for a trio group, as Trio Showdown does; a respawned teammate comes back
-  after 17 s (`RespawnSeconds`) with 3 s of spawn protection. `python -m showdown_check` checks it live.
-- `showdown_leftovers.patch` (issue #21, a diff on top of the others): the storm's ramp starts after 1 s in Trio (5 s in
-  Solo / Duo) and healing inside the gas is halved (`env.c` `gas_tick`; `NB_GAS_RULES=0` restores the phone agent's storm);
-  the Meteors and HealingMushrooms event modifiers as env tick jobs in `native/loader/showdown_mods.c`, off unless
-  `NB_SD_MODIFIERS=3,5`; WallSpawn areas place every tile closer than their Radius (Sprout: a plus of 5, Rosa's Grow Light:
-  3x3) and bush-grow areas grow bushes (`spawnfix.c` `wall_ring`). `NB_SD_DBG=1` logs storm hits and events.
-- `trio_respawn_gas.patch` (issue #22, a diff on top of `showdown_leftovers.patch`): a brawler in a group of 3 that
-  respawns on a gas tile gets no spawn protection (`env.c` `respawn_tick`; `NB_GAS_RULES=0` off). `NB_SD_DBG=1` logs
-  every respawn's gas / protect decision.
 - `supers.patch` (issue #6, a diff on top of `gadgets.patch`): supers whose effect the client libg compiles out, in
   `native/loader/superfix*.c` (status-effect store, areas, summons; `NB_SUPERFIX=0` turns it off).
 - `status_movement.patch` (issue #19, a diff on top of `supers.patch`): speed boosts and slows from statuses in the mover
   (`env.c` `rec_move`), damage boost / reduce in `my_root`, stuns (projectile `StunLengthMS`, stun and silence areas,
   Bo's stun trap) through libg's stun counter, silence, `CcImmunity`, and Draco's weapon swap on mount
   (`native/loader/superfix_cc.c`; `NB_SUPERFIX_CC=0` turns the stuns, silence and swap off). `python -m status_check`.
+- `showdown.patch` (issue #21, a diff on top of the others): Showdown rules the client build lacks. `native/loader/env.c`
+  `elimination_tick` ends a battle with teams when one team is left (`NbeResp.winner` = that team's lowest-index player);
+  `env.c` mirrors each brawler's power cubes into character `+0x874`, so libg's own death drop (inside the damage root)
+  drops min(cubes / 3 + 1, 5) cubes, 2 at most for a trio group, as Trio Showdown does; a respawned teammate comes back
+  after 17 s (`RespawnSeconds`) with 3 s of spawn protection. `python -m showdown_check` checks it live.
 - `obs_invisibility.patch` (issue #19, obs v5.9, a diff on top of `status_movement.patch`): the observation encoder
   (`native/loader/encode.c`) leaves out an invisible enemy brawler farther than its reveal distance (1200; "full"
   invisibility: any distance) from the enemy rows and grid channel 5; `env.c` `invis_reach` reads the status
   aggregate and Leon's super (broken by his attack).
+- `area_gadgets.patch` (issue #3, a diff on top of the patches above): `gadget.c`'s AREA kind (published as SPAWN), the
+  gadgets that only drop their area at the brawler (Barley, Poco x2, Tick, Shade, Trunk), spawned with libg's
+  `0xb35c40` after the row's ActivationDelay. `python -m super_audit --gadget` checks their effects.
 - `star_probe.patch` (issue #20, a diff on top of the others): `native/loader/star.c`, the star power probe. With
   `NB_STAR_PROBE=1` it counts the config lookups 0xc34be0 / 0xc34c6c / 0xc34d10 per card type and logs them per battle
   (`offline.c` calls it at each build and tick); without it nothing is hooked. `python -m star_audit`.
+- `showdown_leftovers.patch` (issue #21, a diff on top of the others): the storm's ramp starts after 1 s in Trio (5 s in
+  Solo / Duo) and healing inside the gas is halved (`env.c` `gas_tick`; `NB_GAS_RULES=0` restores the phone agent's storm);
+  the Meteors and HealingMushrooms event modifiers as env tick jobs in `native/loader/showdown_mods.c`, off unless
+  `NB_SD_MODIFIERS=3,5`; WallSpawn areas place every tile closer than their Radius (Sprout: a plus of 5, Rosa's Grow Light:
+  3x3) and bush-grow areas grow bushes (`spawnfix.c` `wall_ring`). `NB_SD_DBG=1` logs storm hits and events.
+- `gadgets_batch2.patch` (issue #3, a diff on top of `area_gadgets.patch`): more kinds in `gadget.c`. The gadget's own
+  skill fired as its projectile(s) through libg's projectile spawn `0xb78190` (SHOT, published PROJECTILE) or as its area
+  (Bull's Stomp, 8-Bit's Extra Credits); repeat_shot / spin_shoot volleys of the row's CustomObject projectile (off in
+  `repeat_spin_off.patch`, rebuilt from the game data in `repeat_spin_rebuild.patch`); items
+  through the item factory `0xb55684` (Bolt, Gale); R-T's super charge (new `NBE_GAD_SUPER`, mirrored in `nbpc/proto.py`);
+  instant heals through libg's heal `0xb41554` (Kit, Kenji). Eight rows that classify but showed no effect live are masked
+  (`gadget.c` `g_masked`). `python -m super_audit --gadget [--gadget-slot 1]` and `python -m gadget_check` check them.
+- `hyper_supers_fix.patch` (issue #32 item 3, a diff on top of `hypercharged_supers.patch`): `hyper.c` steers homing
+  projectiles (TravelType 4: the client build leaves their target position at 0,0; this changes every homing shot, not only
+  hypercharged ones), takes the overcharged list for AttackPattern 11's per-attack projectile (Lumi) and the Attack
+  handler's summon (Pam), and heals with a hypercharged brawler's Heal areas (Pam); `superfix_moves.c` gives Blink's
+  Damage enter area the scaled damage (Gigi).
 - `star_card_hits.patch` (issue #20, a diff on top of `star_probe.patch`): `star.c` also logs, for every lookup hit, the
   card that answered and the player slot whose config it was (`[star] h` lines), so `star_audit` counts a card as read
   only when it answered itself, not when another card of the same Type did.
+- `trio_respawn_gas.patch` (issue #22, a diff on top of `showdown_leftovers.patch`): a brawler in a group of 3 that
+  respawns on a gas tile gets no spawn protection (`env.c` `respawn_tick`; `NB_GAS_RULES=0` off). `NB_SD_DBG=1` logs
+  every respawn's gas / protect decision.
 - `broken_supers.patch` (issue #32 item 5, #6 / #5, a diff on top of the others): normal supers whose server half is
   compiled out. `env.c`: Moe's dive (charge type 22; the folded change to DiggerDrill at 0xb3eae0 / 0xb3eae4 goes to
   `dig_change`, which sets the drill timer and spawns the surfacing hit) and Bonnie's landing hit (type 16, `charge_land`).
@@ -174,6 +182,18 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   publish kind NONE until redone from the game data (the code is kept under `#if 0`). Piper's Auto Aimer is redone as
   the AUTO AIMER kind (PROJECTILE): one PiperHandgunProjectile at the nearest enemy within the row's Range (7 tiles),
   main attack Damage x CustomValue1 % (90), refused with no enemy in range; the push is the projectile's own.
+- `hyper_piper_bombs.patch` (issue #56, a diff on top of `hyper_supers_fix.patch`): Piper's hypercharged super dealt 0 damage.
+  While hypercharged, libg drops its overcharged box of bombs (items.csv rows 145 / 146, `OverchargedBomb`) where `env.c` only
+  exploded `PiperdefBomb`: `sf_bomb_state` explodes both (LEAP_BOMB), `encode.c` gives the hypercharged box and bomb item
+  feature 4 like the normal ones, `superfix_items.c` skips `OverchargedBomb`'s TriggerAreaEffect as it does BOMB_ITEM's.
+- `hyper_supers_all.patch` (issue #56, a diff on top of `hyper_piper_bombs.patch`): hypercharged supers that ignored their
+  `Overcharged*` data or card values. `hyper.c` `my_card_value` answers libg's card-value stub (0xb5281c) from the
+  hypercharge card for the card types whose libg call sites apply it, and the host applies the ones libg never reads (pets,
+  Griff's extra note, Lumi's side blasts, Colette's spirit hit, Berry's extra scoops); `env.c`: El Primo's negative
+  ChargePushback pulls the hit enemies to the landing point, the charge contact applies the skill's
+  OnChargeHitStatusEffect (Trunk); `spawnfix.c` chains on a recorded hit (Bea, Bibi) and Griff's notes return;
+  `superfix*.c`: same-area damage spacing for ChargeSuper (Max), StunTicks areas (Mico), an ownerless pet area takes its
+  summoner (Tick). `python -m super_audit --hyper`.
 - `desc_audit.patch` (issue #55, a diff on top of `repeat_spin_off.patch` and `hyper_supers_all.patch`): gadgets made to match the game's own description
   (`python -m desc_audit`). AREA gives the row's ShieldPercent for ShieldTicks (Tick's shield before the burst) through a
   new `superfix_status.c` zone, `superfix_status_shield`; SHOT fires extra waves for the cards in `g_waves` (Colt's
@@ -194,6 +214,12 @@ Changes made to nirkt's code, all recorded in `engine/patches/`:
   `env_repel_zone`). Darryl's spin, Fang's popcorn, Bea's bees and Amber's flames run the same code but stay in
   `g_masked`: their shots fly but do not work (Darryl's stop ~1280 u out and hit only there, Fang's kernels never pop,
   Bea's bees and Amber's flames spawn at the map origin instead of circling the brawler). `python -m desc_audit`, `python -m super_audit --gadget`.
+- `hyper_desc_match.patch` (issue #56, second wave, a diff on top of `hyper_supers_all.patch`): hypercharges made to do what
+  their descriptions (texts.csv `TID_*_OVERCHARGE_DESC`) say, where the effect lives in the card's or a component's code:
+  `superfix_status.c` (Pierce's marked shots and second wave, Najia's snakes, Meg's mech deploy, Alli's boost, dash-end
+  cancels, Sandy's areas), `env.c` (Bolt's wall pass, Piper's tile breaks, Fang's charge through walls, the charge-end event,
+  Alli, Stu, Leon), `hyper.c` (Carl's trail, Gus's spirits, Alli's card 319, Melodie, Ruffs, Poco, Shade, Kaze),
+  `spawnfix.c` (a weak call from `on_explode`: Gus).
 - `split_extras.patch` (issue #6, a diff on top of `hyper_desc_match.patch`): the rest of R-T's split. `env.c` `split_link`: when his
   legs reach 0 HP in any damage path, his head dies too, hit by the same attacker through the damage root without the
   damage modifiers (one kill credit, counted on the head's hit and never on the legs; the attacker's super charge is put

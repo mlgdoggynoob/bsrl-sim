@@ -3,6 +3,7 @@
 # a SKILL AREA with AreaEffectFollowType 1 sits at the brawler (8-Bit); ITEM passes the main attack's Damage x
 # CustomValue1 % to the item (Belle's trap); Gale's WindWall is masked (no push rule in this libg).
 # Check: python -m super_audit --gadget, python -m super_audit --gadget --gadget-slot 1, python -m gadget_check
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index d560b08..909f6fe 100644
 --- a/native/loader/env.c

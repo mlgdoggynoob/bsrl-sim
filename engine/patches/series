@@ -1,0 +1,50 @@
+# Replay order of engine/patches/*.patch on top of the engine/ tree of commit 7ac04b9 (the fold of deps/ into engine/).
+# One name per line (.patch implied); lines starting with # are comments. check_chain.sh applies them in this order with
+# `patch -F0` and compares the result with the working tree.
+#
+# Already in the tree at 7ac04b9, not replayed (their paths are bulletlabels', vendor/nbpc = py/nbpc, so they cannot be
+# applied to engine/): training_round, fair_view, live_state, gadgets. gadgets.patch is the whole gadget work; the part of it
+# that landed after the fold is gadgets_dash_heal, the first entry below.
+#
+# From here every patch is relative to engine/ (-p1 for `--- a/` headers, else -p0); each applies on the tree the one above
+# it leaves. The order follows the "a diff on top of" lines in the headers.
+gadgets_dash_heal
+charge
+hypercharge
+hypercharged_supers
+supers
+status_movement
+showdown
+obs_invisibility
+area_gadgets
+star_probe
+showdown_leftovers
+gadgets_batch2
+hyper_supers_fix
+star_card_hits
+trio_respawn_gas
+broken_supers
+guessed_numbers
+status_leftovers
+meg_mech
+split_and_paint
+status_final
+heal_scale
+gears
+repeat_spin_off
+hyper_piper_bombs
+hyper_supers_all
+desc_audit
+gadget_damage
+repeat_spin_rebuild
+hyper_desc_match
+split_extras
+hyper_unmodelled
+gadgets_batch3
+no_trains
+bolt_overdrive
+facing_sync
+repeat_masked
+star_powers2
+masked_seven
+summons_dashes

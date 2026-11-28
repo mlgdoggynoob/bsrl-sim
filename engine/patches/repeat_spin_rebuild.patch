@@ -5,6 +5,7 @@
 # HookDude_Homing leave g_masked); Darryl, Fang's popcorn, Bea and Amber run the same code but join g_masked: their shots
 # fly but do not work (Darryl's stop ~1280 u out, Fang's kernels never pop, Bea's / Amber's circle at the map origin). env.c gains env_repel_zone (ZONE_REPEL) for Gale's Twister item
 # (Blower_Stopper leaves g_masked): enemies within 300 u are knocked away every 10 ticks for 5 s (radius, push are guesses).
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index 909f6fe..2e0edd8 100644
 --- a/native/loader/env.c

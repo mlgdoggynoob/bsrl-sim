@@ -6,7 +6,8 @@
 #
 #   on main         fast-forwards to origin/main (stops if your main has commits of its own)
 #   on a branch     merges origin/main into it (stops, merge undone, on a conflict)
-#   --check         afterwards runs the self-checks that need no battle (AGENTS.md "Checks", README "Self-checks")
+#   --check         afterwards runs the self-checks that need no battle (AGENTS.md "Checks", README "Self-checks") and
+#                   engine/patches/check_chain.sh (the patch series replays and gives engine/)
 #   --apt           also installs system packages (setup.sh without --no-apt)
 #   --no-python     passed to setup.sh: leave the venv alone
 #   REMOTE          the remote to update from (default origin)
@@ -56,6 +57,8 @@ main() {
       # policy_video --check is left out: it needs ffmpeg, which setup.sh does not install (docs/RECORDING.md)
       if out=$(python $m 2>&1); then echo "ok    python $m"; else echo "FAIL  python $m"; echo "$out" | tail -5; fail=1; fi
     done
+    # the patch chain replays on the fold commit and gives engine/ (skips itself without git history)
+    if out=$(engine/patches/check_chain.sh 2>&1); then echo "ok    ${out#check_chain: }"; else echo "FAIL  engine/patches/check_chain.sh"; echo "$out" | tail -5; fail=1; fi
     [ $fail = 0 ] || exit 1
   fi
   [ $CHECK = 0 ] || { say "done"; echo "Host checks (boot the game, 60-90 s each): source env.sh && python -m live_check --n 2 --minutes 8"; }

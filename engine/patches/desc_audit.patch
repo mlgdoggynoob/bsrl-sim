@@ -2,6 +2,7 @@
 # (texts.csv): AREA's ShieldPercent / ShieldTicks (superfix_status_shield), SHOT waves (g_waves), Barley's HealPotion masked,
 # Meeple's RageQuit knockback (superfix_cc.c).
 # Check: python -m desc_audit --check, python -m super_audit --gadget
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/gadget.c b/native/loader/gadget.c
 index 3f90315..6d98a39 100644
 --- a/native/loader/gadget.c

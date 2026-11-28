@@ -7,6 +7,7 @@
 # SHOT volleys hit a target once when the projectile row has DamageOnlyWithOneProj (Emz's Acid Spray dealt 5 x a main attack
 # in the #54 volley check): volley() gives each spawned projectile the ids of the others with libg's 0xb791dc, as the attack
 # path does after its volley (0xb4e350), so libg's projectile hit (0xb730bc -> 0xb77894) marks the target on every sibling.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/gadget.c b/native/loader/gadget.c
 index d4efcc6..3f90315 100644
 --- a/native/loader/gadget.c

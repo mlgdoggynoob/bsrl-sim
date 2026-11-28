@@ -3,6 +3,7 @@
 # StunLengthMS, stun / silence areas, Bo's stun trap 0xb47358) through libg's own stun counter char +0xe1c, silence,
 # CcImmunity, and Draco's weapon swap on mount / dismount (change-skill 0xb35c3c). NB_SUPERFIX_CC=0 turns the stuns,
 # silence and swap off. Applies on top of supers.patch (paths relative to engine/).
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/build.sh b/native/loader/build.sh
 index 7fd55b9..cde0b74 100755
 --- a/native/loader/build.sh

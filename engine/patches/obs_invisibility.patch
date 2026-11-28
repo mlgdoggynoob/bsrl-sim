@@ -1,6 +1,7 @@
 # obs_invisibility (bsrl-sim issue #19, obs v5.9): the observation encoder (native/loader/encode.c) leaves out an
 # invisible enemy brawler beyond its reveal distance (status Invisibility char +0x97c, Leon's super until he attacks;
 # env.c invis_reach fills EncState.invis per player). Applies on top of status_movement.patch (paths relative to engine/).
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/encode.c b/native/loader/encode.c
 index 79a4c23..7a726c6 100644
 --- a/native/loader/encode.c
@@ -45,10 +46,10 @@ index 79a4c23..7a726c6 100644
          if (gx >= 0 && gx < GRID && gy >= 0 && gy < GRID) grid[5 * 625 + gy * 25 + gx] += 1.0f;
      }
 diff --git a/native/loader/env.c b/native/loader/env.c
-index be864a1..2d10a0d 100644
+index ee8cb00..c952043 100644
 --- a/native/loader/env.c
 +++ b/native/loader/env.c
-@@ -1507,7 +1507,8 @@ static void fill_players(void *sim) {
+@@ -1545,7 +1545,8 @@ static void fill_players(void *sim) {
  typedef struct { int W, H; uint8_t *wall, *water, *bush, *tile; } EncMap;
  typedef struct { int id, x, y; } PrevPos;
  typedef struct { const int32_t *pl, *ch, *pj, *it; int npl, nch, npj, nit, tick; const int32_t (*cubes)[2]; int ncubes;
@@ -58,7 +59,7 @@ index be864a1..2d10a0d 100644
  void enc_map_build(EncMap *m, const int32_t *tiles, int W, int H);
  int enc_encode(const EncMap *m, const EncState *s, int pidx, float *vec, float *grid);
  static EncMap g_emap; static uint32_t g_emap_hash; static PrevPos g_prev[4096]; static int g_nprev, g_prev_tick = -1, g_prev_valid;
-@@ -1551,6 +1552,33 @@ static void emulate_client_flags(void *sim, int32_t *a) {
+@@ -1589,6 +1590,33 @@ static void emulate_client_flags(void *sim, int32_t *a) {
      for (int k = 0; k < nit; k++) { int32_t *r = it + k * 12; r[8] = INVIEW(r[3], r[4]); }
      #undef INVIEW
  }
@@ -92,7 +93,7 @@ index be864a1..2d10a0d 100644
  static void write_obs(void *sim, uint32_t mask) {
      enc_map_update(sim);
      const int32_t *a = ST; EncState s; memset(&s, 0, sizeof s);
-@@ -1559,6 +1587,7 @@ static void write_obs(void *sim, uint32_t mask) {
+@@ -1597,6 +1625,7 @@ static void write_obs(void *sim, uint32_t mask) {
      s.cubes = (const int32_t (*)[2])R->cubes; s.ncubes = R->ncubes; s.jumps = (const int32_t (*)[5])R->jumps; s.njumps = R->njumps;
      if (g_prev_valid) { s.prev = g_prev; s.nprev = g_nprev; s.prev_tick = g_prev_tick; }
      { int np; void **ps = players(sim, &np); for (int i = 0; i < np && i < 16; i++) if (ps[i]) { s.hyper[i] = I32(ps[i], 0x98); s.hmax[i] = I32(ps[i], 0x9c); } }   /* rl round */
@@ -100,7 +101,7 @@ index be864a1..2d10a0d 100644
      int written = 0;
      for (int p = 0; p < NBE_MAXP; p++) if ((mask >> p) & 1) {
          float *v = OBSB + p * (NBE_OBS_VEC + NBE_OBS_GRID);
-@@ -1610,6 +1639,7 @@ static void publish(void *sim, uint32_t seq, int status, const char *err) {
+@@ -1648,6 +1677,7 @@ static void publish(void *sim, uint32_t seq, int status, const char *err) {
              for (int k = 0; k < 40 && n < (int)sizeof buf - 24; k++) n += snprintf(buf + n, sizeof buf - n, " %+.5g", f[k]);
              LOG("%s\n", buf); }
      }

@@ -2,6 +2,7 @@
 # 0xc34c6c / 0xc34d10 per card type and logs them per battle, only with NB_STAR_PROBE=1 (nothing is hooked otherwise);
 # native/loader/offline.c calls star_install / star_dump / star_built / star_tick; build.sh compiles star.c.
 # Python side: star_audit.py. Applies on top of the other patches. Paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/build.sh b/native/loader/build.sh
 index cde0b74..2124353 100755
 --- a/native/loader/build.sh

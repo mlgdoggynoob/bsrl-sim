@@ -3,6 +3,7 @@
 # native/loader/hyper.c: the drain (+0xa4 per tick, 5 s from full), the end, and the speed / damage / shield buffs from
 # characters.csv (env.c rec_move / my_root). State in NbeResp hyp_*, mirrored in py/nbpc/proto.py; py/nbpc/instance.py
 # set_div takes "hyper". Applies on top of gadgets.patch. Paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/build.sh b/native/loader/build.sh
 index 2e51585..a9ef4f5 100755
 --- a/native/loader/build.sh
@@ -15,7 +16,7 @@ index 2e51585..a9ef4f5 100755
 +  -Wno-int-conversion -fno-strict-aliasing -Iinc -o nbhost_spawnfix2.tmp main.c elfload.c bionic_shim.c android_shim.c jni_fake.c boot.c hook.c offline.c battle_fix.c env.c prof.c encode.c heapcheck.c bar_fix.c gl_client.c gl_client_gen.c spawnfix.c gadget.c hyper.c trace.c thunk.S -lm -lpthread
  mv -f nbhost_spawnfix2.tmp nbhost_spawnfix2 && echo "built native/loader/nbhost_spawnfix2"
 diff --git a/native/loader/env.c b/native/loader/env.c
-index fa1e4f0..4c79906 100644
+index 5e70939..89054be 100644
 --- a/native/loader/env.c
 +++ b/native/loader/env.c
 @@ -125,6 +125,7 @@ static struct {
@@ -55,7 +56,7 @@ index fa1e4f0..4c79906 100644
      int vchar = victim && VTOF(victim) == VT_CHAR, before = vchar ? I32(victim, 0x3c4) : 0;
      int ow = vchar && mode3 && resp_on() && E.sim ? brawler_owner(E.sim, victim) : -1;
      uint64_t r = o_root(victim, a1, dmg, a3, a4, attacker, src, a7, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9);
-@@ -606,7 +622,15 @@ static void rec_put(int kind, uint8_t *ch, int a, int b, int c, int d) {
+@@ -748,7 +764,15 @@ static void rec_put(int kind, uint8_t *ch, int a, int b, int c, int d) {
      int32_t *r = RECB + 8 * g_rec_n++;
      r[0] = I32(E.sim, 0x10); r[1] = I32(ch, 8); r[2] = kind; r[3] = a; r[4] = b; r[5] = c; r[6] = d; r[7] = I32(ch, 0x80);
  }
@@ -72,7 +73,7 @@ index fa1e4f0..4c79906 100644
  static void rec_stop(uint64_t *ctx) { rec_put(2, (uint8_t *)ctx[0], 0, 0, 0, 0); }
  /* pctrain round: "native + lead" (research B1/B2/D2). The native AI's targeted attack (0xb8d888 -> bl 0xb487c4 at
   * 0xb8dd38, return 0xb8dd3c; w6 = isSuper) passes the target's position + U[-150,150)^2 and never leads. For owners in
-@@ -854,10 +878,19 @@ static void client_pos(int i, uint8_t *ch, int *x, int *y) {
+@@ -999,10 +1023,19 @@ static void client_pos(int i, uint8_t *ch, int *x, int *y) {
      int k = (n - 5) & 7;      /* 4 ticks before the newest entry */
      *x = jround(X - CLIENT_LAG_F * (X - E.hx[i][k])); *y = jround(Y - CLIENT_LAG_F * (Y - E.hy[i][k]));
  }
@@ -92,7 +93,7 @@ index fa1e4f0..4c79906 100644
      if (I32(sim, 0x104) != 6) return;
      item_tick(sim);
      elimination_tick(sim);
-@@ -962,6 +995,11 @@ static void gadget_input(void *sim, int pidx, uint8_t *ch, double deg) {
+@@ -1118,6 +1151,11 @@ static void gadget_input(void *sim, int pidx, uint8_t *ch, double deg) {
      if (gadget_use(sim, pidx, ch, deg, I32(sim, 0x10))) return;
      double r = deg * M_PI / 180; apply_input(sim, pidx, 8, jround(1000 * cos(r)), jround(1000 * sin(r)), NULL);
  }
@@ -104,7 +105,7 @@ index fa1e4f0..4c79906 100644
  /* rl round (tests): fire the character's skill instance idx (char +0x458 array, +0x464 count; instance +0 = SkillData) like an attack */
  static void skill_idx_input(void *sim, int pidx, uint8_t *ch, int idx, double deg) {
      uint8_t **arr = PTR(ch, 0x458); int n = I32(ch, 0x464);
-@@ -1004,6 +1042,7 @@ static int client_intents(void *sim, int i, uint8_t *ch, const NbeAction *a) {
+@@ -1160,6 +1198,7 @@ static int client_intents(void *sim, int i, uint8_t *ch, const NbeAction *a) {
      if (a->fire == 1) { fire_input_at(sim, i, ch, 0, a->aim_deg, 1, cx, cy); E.cl_attacks++; }
      else if (a->fire == 2) { fire_input_at(sim, i, ch, 1, a->aim_deg, a->super_dist > 0 && a->super_dist <= 1 ? a->super_dist : 1, cx, cy); E.cl_attacks++; }
      else if (a->fire == 3) gadget_input(sim, i, ch, a->aim_deg);   /* diversity round */
@@ -112,7 +113,7 @@ index fa1e4f0..4c79906 100644
      else if (a->fire >= 200) skill_idx_input(sim, i, ch, a->fire - 200, a->aim_deg);   /* rl round (tests) */
          else if (a->fire >= 100) apply_input(sim, i, a->fire - 100, 1, 1, NULL);   /* rl round: raw input kind (tests) */
      (void)cc; return 1;
-@@ -1032,6 +1071,7 @@ static void apply_actions(void *sim, const NbeCmd *c) {
+@@ -1188,6 +1227,7 @@ static void apply_actions(void *sim, const NbeCmd *c) {
              E.moving[i] = 0; E.last_dir[i] = -1; E.sent_valid[i] = 0;
          }
          if (a->fire == 3) gadget_input(sim, i, ch, a->aim_deg);   /* diversity round */
@@ -120,7 +121,7 @@ index fa1e4f0..4c79906 100644
          else if (a->fire >= 200) skill_idx_input(sim, i, ch, a->fire - 200, a->aim_deg);   /* rl round (tests) */
          else if (a->fire >= 100) apply_input(sim, i, a->fire - 100, 1, 1, NULL);   /* rl round: raw input kind (tests) */
          if (a->fire == 1) fire_input(sim, i, ch, 0, a->aim_deg, 1);
-@@ -1143,6 +1183,7 @@ static void my_setseed(void *sim, int seed) {   /* builder 0x9bb7c4: bl 0xc24a08
+@@ -1299,6 +1339,7 @@ static void my_setseed(void *sim, int seed) {   /* builder 0x9bb7c4: bl 0xc24a08
   * All requests are checked against the game's own tables; a rejected one falls back to the default (NbeResp.div_err). */
  #define LOC_GLOBAL 0x12eefc0
  int32_t g_div_char[NBE_MAXP], g_div_skin[NBE_MAXP], g_div_gadget[NBE_MAXP], g_div_star[NBE_MAXP];   /* offline.c my_player_ctor */
@@ -128,7 +129,7 @@ index fa1e4f0..4c79906 100644
  static uint32_t g_div_team;
  static void *g_div_map_loc;   /* RESET div.reserved[1]: a location (any mode) whose Map row the battle location uses instead (my_loc_map) */   /* RESET div.reserved[0]: bit i = player i joins player 0's team (env_after_build) */
  static void *g_play_loc, *g_div_cl_loc; static uint8_t *g_theme_loc; static void *g_theme_orig; static int32_t g_div_err;
-@@ -1175,6 +1216,7 @@ static void div_reset(const NbeCmd *c) {   /* a RESET was accepted: set up the n
+@@ -1331,6 +1372,7 @@ static void div_reset(const NbeCmd *c) {   /* a RESET was accepted: set up the n
          else g_div_err |= 1u << 31;
      }
      g_div_team = (uint32_t)c->div.reserved[0];
@@ -136,7 +137,7 @@ index fa1e4f0..4c79906 100644
      g_div_map_loc = c->div.reserved[1] ? div_data(c->div.reserved[1]) : NULL;
      if (c->div.reserved[1] && (!g_div_map_loc || c->div.reserved[1] / 1000000 != 15)) { g_div_err |= 1 << 30; g_div_map_loc = NULL; }
      for (int i = 0; i < NBE_MAXP; i++) { g_div_char[i] = c->div.chr[i]; g_div_skin[i] = c->div.skin[i]; g_div_gadget[i] = c->div.gadget[i]; g_div_star[i] = c->div.star[i]; }
-@@ -1196,7 +1238,7 @@ static void div_publish(void *sim) {   /* RESET response: read the battle back f
+@@ -1352,7 +1394,7 @@ static void div_publish(void *sim) {   /* RESET response: read the battle back f
      R->div_variation = I32(sim, 0x104);
      R->div_reserved[0] = U8(sim, 0x134);   /* the builder's "cards" flag (global 0x12eefd4): 0 = player configs get no star power /
                                                gadget / overcharge cards (0xc27d64) */
@@ -145,15 +146,15 @@ index fa1e4f0..4c79906 100644
      for (int i = 0; i < NBE_MAXP; i++) {
          R->pl_char[i] = R->pl_skin[i] = 0;
          if (i >= np || !ps[i]) continue;
-@@ -1205,6 +1247,7 @@ static void div_publish(void *sim) {   /* RESET response: read the battle back f
+@@ -1361,6 +1403,7 @@ static void div_publish(void *sim) {   /* RESET response: read the battle back f
          R->pl_char[i] = ld ? data_id(ld[0]) : 0; R->pl_skin[i] = data_id(skin);
          if (PTR(ps[i], 0x190)) R->div_reserved[1] |= 1 << i;
-         gadget_reset_player(i, PTR(ps[i], 0x190) != NULL);   /* gadget round */
+         gadget_reset_player(i, PTR(ps[i], 0x190));   /* gadget round: the player's accessory object (NULL = no gadget) */
 +        hyper_reset_player(i, ps[i]);                         /* hypercharge round */
          if (ld && ld[1] && PTR(ld[1], 0x08)) R->div_reserved[2] |= 1 << i;
      }
  }
-@@ -1344,6 +1387,7 @@ static void publish(void *sim, uint32_t seq, int status, const char *err) {
+@@ -1500,6 +1543,7 @@ static void publish(void *sim, uint32_t seq, int status, const char *err) {
      fill_players(sim);
      if (E.cur.type == NBE_CMD_RESET) div_publish(sim);   /* diversity round (before gadget_publish: it sets up the gadgets) */
      gadget_publish(R, I32(sim, 0x10));                   /* gadget round */

@@ -1,7 +1,8 @@
 # Bolt's super: the speed boost and the damaging trail of his Brawler_Rock component (type 25, tick 0xb99070 is a bare ret),
 # a diff on top of the other patches (after no_trains.patch). Paths relative to engine/. superfix_status.c rock_tick.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/superfix_status.c b/native/loader/superfix_status.c
-index 15b552c..b0e32fb 100644
+index 8b2d0c0..011be5f 100644
 --- a/native/loader/superfix_status.c
 +++ b/native/loader/superfix_status.c
 @@ -47,6 +47,8 @@
@@ -75,7 +76,7 @@ index 15b552c..b0e32fb 100644
              else if (I32(c[i], 0x10) == 28 && tk == (void *)B(0xb95154) && U8(c[i], 76)) {
                  ((void (*)(void *))B(0xb95214))(c[i]); g_nmech++;
                  if (g_superfix_dbg) LOG("[superfix] mech deploy areas: ch %d tick %d\n", I32(ch, 8), t);
-@@ -866,8 +916,8 @@ void superfix_status_status(void) {
+@@ -870,8 +920,8 @@ void superfix_status_status(void) {
          "type-36 area applies %ld, characters hit %ld; MountUp ticks %ld; lose-control starts %ld; "
          "reload queries %ld, lifesteal hits %ld; smoke marks %ld, zone marks %ld, heal areas %ld, cleanses %ld, super charges %ld "
          "(same-area skips %ld), spin bullets %ld, charge-end cancels %ld; Pierce marked shots %ld, second-wave shots %ld (dropped %ld); "

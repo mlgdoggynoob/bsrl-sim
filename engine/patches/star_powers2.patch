@@ -7,6 +7,7 @@
 # star_card / star_kind / star_stat (every response; nbenv_proto.h, py/nbpc/proto.py). NB_STAR_FX=0 turns the effects off;
 # NB_STAR_VT=1 logs the calls of libg's lazy init 0xb2fe44 (the vtable probe of notes/issue47.md). build.sh: starfx.c.
 # Notes: notes/issue47.md. Paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/build.sh b/native/loader/build.sh
 index 645b6cf..d8ebfab 100755
 --- a/native/loader/build.sh

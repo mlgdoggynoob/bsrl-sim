@@ -5,6 +5,7 @@
 # EnemyChargeSuper 26, AllyChargeSuper 29 (area_extra). env.c: a taunted character walks at its source and a feared one away
 # from it, for the policy's actions and the native AI's mover, and neither attacks. superfix_cc.c logs the taunt counters.
 # Paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index 852f3ad..5e05555 100644
 --- a/native/loader/env.c

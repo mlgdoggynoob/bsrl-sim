@@ -4,6 +4,7 @@
 # list (hyper_proj_site at 0xb4b978, Lumi), the Attack handler's summon from OverchargedSummonedCharacters (hyper_summon_bl,
 # Pam), a hypercharged brawler's Heal-type areas heal its team once (oc_heal_areas, Pam). superfix_moves.c: Blink's Damage
 # enter area gets the scaled damage (Gigi). Paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/hyper.c b/native/loader/hyper.c
 index 7c43bdd..4b93442 100644
 --- a/native/loader/hyper.c

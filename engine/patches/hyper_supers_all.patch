@@ -13,6 +13,7 @@
 # superfix_status.c / superfix_cc.c: SameAreaEffectCanNotDamageMs for ChargeSuper (Max); StunTicks areas stun (Mico).
 # superfix.c: max_drinks removed (libg throws the drinks through card 193). superfix_items.c: an ownerless expiring pet area
 #   takes its dead pet's summoner (Tick).
+# Re-recorded for the linear chain (series): applies with -p0 on the tree the patches before it in series leave.
 diff --git native/loader/env.c native/loader/env.c
 index 0961827..d560b08 100644
 --- native/loader/env.c

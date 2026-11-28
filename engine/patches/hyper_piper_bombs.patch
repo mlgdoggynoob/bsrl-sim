@@ -4,6 +4,7 @@
 # OverchargedSpawnedItem or else "OverchargedBomb" (row 146, 18000146); env.c only exploded PiperdefBomb (18000035).
 # env.c: sf_bomb_state explodes both (LEAP_BOMB); encode.c: the hypercharged box and bomb are item feature 4 like the normal
 # ones; superfix_items.c: skips OverchargedBomb's TriggerAreaEffect as it does BOMB_ITEM's. Paths relative to engine/.
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/encode.c b/native/loader/encode.c
 index 7a726c6..227cbf7 100644
 --- a/native/loader/encode.c

@@ -6,7 +6,8 @@ RL environment + trainer for a top-down battle royale. Python, numpy, PyTorch. F
 ## Before you change anything
 - Read README.md (file map, setup) and the docstring of the file you touch: the docstrings are the spec.
 - `engine/` is nirkt's code (`engine/NOTICE.md`), not under this repo's licence. Keep changes there small and record
-  each one in `engine/patches/*.patch` (a diff on top of the earlier patches, paths relative to `engine/`).
+  each one in `engine/patches/*.patch` (a diff on top of the earlier patches, paths relative to `engine/`; add its name at the
+  end of `engine/patches/series` and run `engine/patches/check_chain.sh`).
 - `./setup.sh` builds everything (SETUP.md); `./update.sh` pulls `main` and rebuilds what changed.
 - No game files, binaries, checkpoints, datasets or run outputs in git (`.gitignore`).
 

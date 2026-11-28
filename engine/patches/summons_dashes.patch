@@ -12,6 +12,7 @@
 # env.c: env_charge_start, a gadget charge's job spawns only its end area at the landing and ends its CancelOnChargeEnd
 # statuses (superfix_status.c's new superfix_status_charge_end, which my_charge_end now calls), and env_on_build empties
 # the charge job table (character ids restart in a new battle).
+# Re-recorded for the linear chain (series): applies with -p1 on the tree the patches before it in series leave.
 diff --git a/native/loader/env.c b/native/loader/env.c
 index c88e547..54adafd 100644
 --- a/native/loader/env.c
