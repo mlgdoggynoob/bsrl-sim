@@ -21,6 +21,9 @@ Profile fields:
            BehaviorType Charge: Mortis, Mico, Kaze, Alli, Samurai), snipe_band (damage that grows with distance: hold
            `band` tiles from the target, Piper)
   band     (lo, hi) tiles for snipe_band, else None
+  lane     dash_escape: prefer a straight lane for the first dash (a wall cuts the dash short: Mortis), default False
+  sreach   tiles the planner takes as the super's reach when the table's super range does not say it (Mico's steered
+           flight: CastingRange 0), else 0 (= the observation's super range)
   src      "class default" or the research note the override came from
 Class defaults (from the research pilot, applied to the brawlers not researched yet):
   roles    super BehaviorType Attack -> finisher; Charge -> escape_dash for the squishy classes (marksman, artillery,
@@ -57,6 +60,12 @@ BRAWLERS = {
                          why="Encore heals himself and allies (2100, 9.33 tiles, through walls), no damage: not a finisher"),
     "Sandstorm": dict(roles=("stealth", "utility"), ambush=False, lurk=True, file="sandy.md",
                       why="Sandstorm cloaks (r 6.67 tiles, 9 s; seen within 4 tiles), no damage: not a finisher"),
+    "Undertaker": dict(roles=("finisher", "heal_self"), ambush=True, trigger=3.0, lurk=False, lane=True, file="mortis.md",
+                       why="the dash (2.67 tiles) is his MAIN attack: escape / engage with it (dash_escape); a wall cuts it short;"
+                           " the bats super finishes and heals him"),
+    "Leaper": dict(roles=("engage_dash", "escape_dash"), ambush=True, trigger=3.5, lurk=False, sreach=10.0, file="mico.md",
+                   why="main attack = a 4-tile jump over walls, untouchable in the air; super = 1 s windup, then up to 6 s"
+                       " of steered invulnerable flight (table range 0: sreach)"),
     "TntDude": dict(roles=("zone", "finisher"), ambush=False, lurk=True, file="dynamike.md",
                     why="barrel lobs over walls (1.3 s fuse): zone / finish; no dash, so he lurks vs divers"),
 }
@@ -68,6 +77,8 @@ STATUS = {   # checklist columns that are not computed: checked (numbers vs game
     "DeadMariachi": dict(checked=True, scene=True),
     "Sandstorm": dict(checked=True, scene=False),
     "TntDude": dict(checked=True, scene=True),
+    "Undertaker": dict(checked=True, scene=True),
+    "Leaper": dict(checked=True, scene=True),
 }
 
 
@@ -98,7 +109,8 @@ def default(f):
     reach = f["range"] <= 2.5                     # a punch / swing (Edgar 2 tiles): its reach + 1 tile
     trigger = (f["range"] + 1.0 if reach else float(np.clip(0.5 * f["range"], 2.5, 3.5))) if ambush else 0.0
     rules = ("dash_escape",) if f.get("adash", 0.0) > 0 else ()
-    return dict(cls=cls, roles=roles, ambush=ambush, trigger=trigger, lurk=not ambush, rules=rules, band=None, src="class default")
+    return dict(cls=cls, roles=roles, ambush=ambush, trigger=trigger, lurk=not ambush, rules=rules, band=None, lane=False,
+                sreach=0.0, src="class default")
 
 
 @functools.lru_cache(None)
@@ -106,7 +118,7 @@ def profile(name):
     """the planner profile of a brawler (module doc): the class default with the research overrides on top"""
     f = facts(name); p = default(f); o = BRAWLERS.get(name)
     if o:
-        p.update({k: v for k, v in o.items() if k in ("roles", "ambush", "trigger", "lurk", "band")})
+        p.update({k: v for k, v in o.items() if k in ("roles", "ambush", "trigger", "lurk", "band", "lane", "sreach")})
         p["rules"] = tuple(dict.fromkeys(p["rules"] + tuple(o.get("rules", ()))))   # table-derived + researched
         if not p["ambush"]: p["trigger"] = 0.0
         p["src"] = NOTE + o["file"]
@@ -158,9 +170,17 @@ def _check():
     # class defaults: Charge on a squishy class = escape, on a diver = engage; Attack = finisher
     assert default(dict(cls="marksman", beh="Charge", range=10, srange=8, melee=False))["roles"] == ("escape_dash",)
     assert default(dict(cls="assassin", beh="Charge", range=2, srange=7, melee=False)) == dict(
-        cls="assassin", roles=("engage_dash",), ambush=True, trigger=3.0, lurk=False, rules=(), band=None, src="class default")
+        cls="assassin", roles=("engage_dash",), ambush=True, trigger=3.0, lurk=False, rules=(), band=None, lane=False, sreach=0.0,
+        src="class default")
     dashers = sorted(n for n in names if facts(n)["adash"] > 0)        # attack dashes in the tables -> dash_escape
     assert dashers == ["Geisha", "Leaper", "Samurai", "Stalker", "Undertaker"] and all("dash_escape" in profile(n)["rules"] for n in dashers), dashers
+    # Mortis / Mico (mortis.md, mico.md): the dash is the main attack; Mico's super has no table range (steered flight)
+    _, sk = _rows(); ch = _rows()[0]; skl = lambda n, s: sk[ch[n][1][s]]
+    assert np.isclose(f["Undertaker"]["adash"], 8 / 3) and f["Undertaker"]["beh"] == "Attack" and np.isclose(f["Undertaker"]["srange"], 10)
+    assert skl("Undertaker", "UltimateSkill")["Damage"] == "900" and ch["Undertaker"][1]["Hitpoints"] == "4000"
+    assert np.isclose(f["Leaper"]["adash"], 4) and f["Leaper"]["beh"] == "FlyJump" and f["Leaper"]["srange"] == 0
+    assert skl("Leaper", "UltimateSkill")["ActiveTime"] == "6000" and skl("Leaper", "UltimateSkill")["CastingTime"] == "1000"
+    assert profile("Leaper")["sreach"] == 10.0 and profile("Undertaker")["lane"] and profile("Undertaker")["trigger"] == 3.0
     assert profile("Sniper")["rules"] == ("snipe_band",) and profile("Sniper")["band"] == (8.5, 10.0) and profile("BullDude")["rules"] == ()
     assert default(dict(cls="damage_dealer", beh="Attack", range=9, srange=9, melee=False))["lurk"]        # a long-range DD lurks
     assert not default(dict(cls="damage_dealer", beh="Attack", range=7.67, srange=7, melee=False))["ambush"]   # 7.67 > SHORT
@@ -169,7 +189,7 @@ def _check():
     assert profile("ShotgunGirl")["ambush"] and profile("ShotgunGirl")["trigger"] == 3.0 and not profile("TntDude")["ambush"]
     md = checklist(names); assert md.count("\n| ") == len(CLASSES) + 1 + len(names) + 1, md.count("\n| ")
     n_def = sum(profile(n)["src"] == "class default" for n in names)
-    print("roles ok: %d playable brawlers, %d researched (one per class), %d on class defaults" % (len(names), len(BRAWLERS), n_def))
+    print("roles ok: %d playable brawlers, %d researched, %d on class defaults" % (len(names), len(BRAWLERS), n_def))
 
 
 if __name__ == "__main__":

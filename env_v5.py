@@ -853,9 +853,8 @@ class Env(MAEnv):
                 dth = float(np.hypot(x[th] - x[p], y[th] - y[p]) / 300.0) if th >= 0 else 0.0
                 if it["td0"] is None: it["td0"] = dth
                 if it["fire_t"] is None and not full: it["fire_t"] = t
-                if it["fire_t"] is not None and t - it["fire_t"] >= I.ESC_S * sps:
-                    if th < 0 or not up[th] or not w["sees"][p, th] or dth >= it["td0"] + I.ESC_GAIN: got = True
-                    elif t - it["fire_t"] > I.HIT_S * sps: lost = True
+                if it["fire_t"] is not None and t - it["fire_t"] >= I.ESC_S * sps:   # not by the 3 s: timeout (Mico's
+                    if th < 0 or not up[th] or not w["sees"][p, th] or dth >= it["td0"] + I.ESC_GAIN: got = True   # 1 s windup)
                 seen = True                                                    # a point: never lost unseen
             else:
                 seen = k != "farm" or bool(I.on_screen(x[p], y[p], px, py, w["W"]))   # unseen rule: anchored targets (players, farm objects)
@@ -1320,15 +1319,15 @@ def _check_intents(players, tiles, NS):
     assert st["act"] is not None and st["act"]["hide_q"] == [1]                                          # waits for the hit
     tr = step(mk(p0_damage_dealt=500, p1_damage_taken=500, **hid)); assert st["act"] is None and np.isclose(tr[0][0], 0.25 * 0.08), tr[0][0]
     # super, mode escape (planner super_escape): p1 the threat 10 tiles right, landing 8 tiles left; fired, then >= 1 s
-    # later 3 tiles farther from it -> achieved; fired and staying put -> invalid after 2 s
+    # later 3 tiles farther from it -> achieved; fired and staying put -> timeout at the 3 s
     es = lambda: I.new(dict(kind="super", q=-1, pt=(1650.0 - 2400, 1650.0), mode="escape", threat=1), 8.0, 10.0, steps_per_s=10, super_t=8.0)
     st["act"] = es(); step(mk(p0_super_charge=1000)); step(mk()); assert st["act"]["fire_t"] == 2 and st["act"]["td0"] == 10.0
     for _ in range(9): step(mk(p0_x=750))
     assert st["act"] is not None; n_ach = st["cnt"]["super"][1]
     tr = step(mk(p0_x=750)); assert st["act"] is None and st["cnt"]["super"][1] == n_ach + 1 and tr[0][0] >= 0.25 * 0.05
-    st["act"] = es(); step(mk(p0_super_charge=1000)); n_inv = st["cnt"]["super"][3]
-    for _ in range(25): step(mk())
-    assert st["act"] is None and st["cnt"]["super"][3] == n_inv + 1
+    st["act"] = es(); step(mk(p0_super_charge=1000)); n_to = st["cnt"]["super"][2]
+    for _ in range(29): step(mk())
+    assert st["act"] is None and st["cnt"]["super"][2] == n_to + 1
     # hide, mode quiet (lurk / ambush wait) on p0's bush tile, threat p1: hidden while it walks in, achieved when it is
     # within 3 tiles; a main attack (fire 1, an ammo bar spent) is invalid
     s.sl["bush"][5, 5] = True; qh = lambda: I.new(dict(kind="hide", q=-1, pt=(1650.0, 1650.0), mode="quiet", threat=1, near=3.0), 0.0, 10.0, steps_per_s=10)

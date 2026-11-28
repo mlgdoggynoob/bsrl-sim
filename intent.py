@@ -24,8 +24,8 @@ Kinds (obs_v5.INTENTS; distances in tiles, true positions in the sim):
 Modes (planner role rules, #91 / #92; candidate "mode", "threat" = the enemy player it is about, "near" tiles; not in
 the block: the observation is unchanged):
   super, mode escape   point target (the landing tile)   my super is fired and >= ESC_S later I am ESC_GAIN tiles farther
-                       from the threat than at the start, or it is down / out of my sight; invalid 2 s after the fire
-                       without that (the readiness and the fire as for super)
+                       from the threat than at the start, or it is down / out of my sight; else timeout at the 3 s
+                       (Mico's super has a 1 s windup; the readiness and the fire as for super)
   engage, mode band    enemy (anchored)                   as engage; the potential is the distance outside band (lo, hi)
                        tiles (snipe_band: Piper 8.5-10), so walking inside lo costs as walking out of hi; radius = hi
   hide, mode quiet     my bush tile                       hidden (as hide; or at the step before, as a threat this close
