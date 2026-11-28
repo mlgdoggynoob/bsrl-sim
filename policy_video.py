@@ -17,7 +17,11 @@ faces the camera.
 --overlay 1 (default 0) draws over every frame (overlay.py): a box with its showdown-vision det class tag above it for
 every entity the client renders, and the rule planner's pick (planner.RulePlanner on the policy's observation, re-asked
 every 10 decisions = 1 s): its rule and reason in a text panel, a white A* path over the walkable tiles from the policy to
-the pick's target. The planner is display only: the policy plays on intent none, as in the evals."""
+the pick's target. The planner is display only: the policy plays on intent none, as in the evals.
+--play-plan 1 (default 0) plays as evalp_plan does: battle tag "intent" "plan", Env.planner = RulePlanner(noisy=True), so the
+policy gets the planner's intent block every planner tick (Env.INTENT_EVERY), and the overlay draws that active intent
+(rule, reason, target, path) instead of a separate display-only pick. The episode lines then carry "intents"
+{kind: [started, achieved, timeout, invalid]}."""
 import argparse, json, os, subprocess, sys, time
 import numpy as np
 import torch
@@ -43,7 +47,8 @@ def features(a):
 def battle_cfg(a, feat, sd, rng):
     """the eval battle of one seed: Solo Showdown on a.loc, everyone a.brawler, player 0 controlled, the run's loadouts"""
     chr_ = [a.brawler] * 10
-    tag = {"loc": a.loc, "chr": chr_, "team_size": 1, "groups": [0] * 10, "kind": "eval", "opp": [], "intent": "none"}
+    tag = {"loc": a.loc, "chr": chr_, "team_size": 1, "groups": [0] * 10, "kind": "eval", "opp": [],
+           "intent": "plan" if getattr(a, "play_plan", 0) else "none"}
     cfg = {"div": D.make_div(location=a.loc, chr=chr_), "tag": tag, "end": "player0", "seed": sd, "ctl": [0]}
     if feat["gadgets"]: cfg = E.with_gadgets(cfg, rng)
     if feat["star_powers"]: cfg = E.with_star_powers(cfg, rng)
@@ -66,6 +71,12 @@ def check(a, feat):
     rng = np.random.default_rng(0)
     plain = battle_cfg(a, dict.fromkeys(FEATURES, 0), 1, rng)
     assert plain["ctl"] == [0] and plain["end"] == "player0" and plain["tag"]["team_size"] == 1 and len(plain["tag"]["chr"]) == 10
+    assert plain["tag"]["intent"] == ("plan" if a.play_plan else "none")
+    assert battle_cfg(argparse.Namespace(**dict(vars(a), play_plan=1)), dict.fromkeys(FEATURES, 0), 1, rng)["tag"]["intent"] == "plan"
+    assert pick_of({"act": None, "why": "no plan fits: free play"}) == {"rule": "none", "reason": "no plan fits: free play", "kind": "none"}
+    it = {"kind": "engage", "q": 3, "pt": None, "rule": "engage", "reason": "enemy 5 tiles E at 40 %: engaging"}
+    assert pick_of({"act": it}) == {"rule": "engage", "reason": it["reason"], "kind": "engage", "q": 3, "pt": None}
+    assert pick_of({"act": dict(it, rule=None, reason="random")})["rule"] == "random"
     for k in FEATURES:
         c = battle_cfg(a, dict(dict.fromkeys(FEATURES, 0), **{k: 1}), 1, np.random.default_rng(0))
         assert c is not None and c["seed"] == 1, k
@@ -73,6 +84,13 @@ def check(a, feat):
     assert os.environ.get("NBHOST_FACING") is not None
     import overlay; overlay._check()                 # --overlay: boxes, path, drawing (synthetic state)
     print("policy_video check ok (features %s)" % feat)
+
+
+def pick_of(st):
+    """--play-plan: the overlay pick {rule, reason, kind, q, pt} of agent state st (Env.it[p]): its active intent, else none"""
+    it = (st or {}).get("act")
+    if it is None: return {"rule": "none", "reason": (st or {}).get("why") or "free play", "kind": "none"}
+    return {"rule": it.get("rule") or "random", "reason": it.get("reason", ""), "kind": it["kind"], "q": it.get("q", -1), "pt": it.get("pt")}
 
 
 def main(argv=None):
@@ -85,6 +103,8 @@ def main(argv=None):
     for f in ("gadgets", "hyper", "star-powers", "gears"):
         ap.add_argument("--" + f, type=int, default=-1, help="1 / 0 = on / off; -1 = as the run's config.json (none: off)")
     ap.add_argument("--overlay", type=int, default=0, help="1 = det-class boxes + the rule planner's pick and path drawn over the frames")
+    ap.add_argument("--play-plan", type=int, default=0, help="1 = the policy plays on the rule planner's intents (as evalp_plan); "
+                    "the overlay then shows the intent it is given")
     ap.add_argument("--check", action="store_true", help="self-check without the host")
     a = ap.parse_args(argv)
     if not a.check and not (a.ckpt and a.out): ap.error("--ckpt and --out are required")
@@ -103,6 +123,9 @@ def main(argv=None):
         return battle_cfg(a, feat, queue.pop(0), rng) if queue else None
 
     E.Env.slider_scale = 0.0
+    if a.play_plan:
+        import planner as PL
+        E.Env.planner = PL.RulePlanner(noisy=True); E.Env.intent_scale = 0.25   # non-zero: Env.intents runs (the reward is unused here)
     env = E.Env(1, bf, ticks=a.tick, fair=True, pixels=True, obs_size=(W, H), max_ticks=a.max_ticks, verbose=True, tag="vid%d" % os.getpid())
     ob = O.ObsV5(noise=O.NOISE, seed=0, ticks=a.every * a.tick)
     T = lambda x, dt=torch.float32: torch.as_tensor(x).to(dt)
@@ -146,7 +169,7 @@ def main(argv=None):
                 if r["player"] != 0: continue
                 if ff: ff.stdin.close(); ff.wait()
                 results.append({"seed": r["seed"], "rank": r["rank"], "ticks": r["ticks"], "file": part, "kills": r["terms"].get("kills"),
-                                "frames": step}); print("[video] episode", json.dumps(results[-1]), flush=True)
+                                "frames": step, **({"intents": r.get("intents")} if a.play_plan else {})}); print("[video] episode", json.dumps(results[-1]), flush=True)
                 ff = None; h = z; hold = None; step = 0; ov.update(pick=None, path=[], n=0)
             n_ep = len(env.episodes)
             if all(s.state == "idle" for s in env.I): break
@@ -164,7 +187,9 @@ def main(argv=None):
                     lg, _, h2 = net(T(s), T(o["ent"]), T(o["grid"], torch.uint8), T(h[None]), T(priv(env, ids)))
                     _, _, A = dist_logp_ent(lg)
                 A = A.numpy(); h = h2.numpy()[0]; hold = A.copy(); hold[:, 1:] = 0   # in-between ticks: same move, no fire
-                if a.overlay and ov["n"] % 10 == 0:   # the planner's 1 Hz tick (design 4.4), display only
+                if a.overlay and a.play_plan:          # the intent the policy was just given
+                    ov["pick"] = pick_of((getattr(env.I[0], "it", None) or {}).get(0))
+                elif a.overlay and ov["n"] % 10 == 0:   # the planner's 1 Hz tick (design 4.4), display only
                     ov["pick"] = planner.plan(env, env.I[0], 0, 0, env._world(env.I[0]), o, env.cond(ids))
                 if a.overlay: ov["n"] += 1
             else:
