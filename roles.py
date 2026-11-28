@@ -16,6 +16,11 @@ Profile fields:
            super range with an engage_dash super ready (super)
   trigger  tiles: the ambush spring distance without the super (shotgun: the full-damage range; melee: reach + 1 tile)
   lurk     True: hidden in a bush, hold fire while a diver / short-range enemy that wins up close is in view (> 3 tiles)
+  rules    brawler-specific planner rules this brawler runs (planner.RULES names; the class default switches some on from
+           the game tables, research adds others): dash_escape (a main attack that dashes, skills.csv weapon
+           BehaviorType Charge: Mortis, Mico, Kaze, Alli, Samurai), snipe_band (damage that grows with distance: hold
+           `band` tiles from the target, Piper)
+  band     (lo, hi) tiles for snipe_band, else None
   src      "class default" or the research note the override came from
 Class defaults (from the research pilot, applied to the brawlers not researched yet):
   roles    super BehaviorType Attack -> finisher; Charge -> escape_dash for the squishy classes (marksman, artillery,
@@ -39,7 +44,8 @@ NOTE = "notes/super_research/"
 # researched brawlers (notes/super_research/<file>): overrides of the class default. Numbers checked against the game
 # tables on 2026-11-28 (range, super range, super damage: skills.csv CastingRange / 3 = tiles)
 BRAWLERS = {
-    "Sniper": dict(roles=("escape_dash", "utility"), ambush=False, lurk=True, file="piper.md",
+    "Sniper": dict(roles=("escape_dash", "utility"), ambush=False, lurk=True, rules=("snipe_band",), band=(8.5, 10.0),
+                   file="piper.md",   # band: full damage in the last 15 % of her 10-tile range (piper.md, wiki)
                    why="Poppin' (8.67 tiles, ~2 s immune in the air) is her escape from divers; up close she does 20 %"),
     "ShotgunGirl": dict(roles=("finisher", "utility"), ambush=True, trigger=3.0, lurk=False, file="shelly.md",
                         why="bush ambush at ~3 tiles (full shotgun damage); Super Shell 7.67 tiles finishes and breaks walls"),
@@ -80,7 +86,8 @@ def facts(name):
     st = O.brawler_stats(name)
     return dict(cls=c.get("ClassArchetype") or "damage_dealer", display=(c.get("ItemName") or name).replace("_", " ").title(),
                 beh=u.get("BehaviorType") or "", range=float(w.get("CastingRange") or 0) / 3.0,
-                srange=float(u.get("CastingRange") or 0) / 3.0, melee=bool(st[7] > 0.5))
+                srange=float(u.get("CastingRange") or 0) / 3.0, melee=bool(st[7] > 0.5),
+                adash=float(w.get("CastingRange") or 0) / 3.0 if w.get("BehaviorType") == "Charge" else 0.0)   # attack dash, tiles
 
 
 def default(f):
@@ -90,7 +97,8 @@ def default(f):
     ambush = cls in ("tank", "assassin") or (cls == "damage_dealer" and f["range"] <= SHORT)
     reach = f["range"] <= 2.5                     # a punch / swing (Edgar 2 tiles): its reach + 1 tile
     trigger = (f["range"] + 1.0 if reach else float(np.clip(0.5 * f["range"], 2.5, 3.5))) if ambush else 0.0
-    return dict(cls=cls, roles=roles, ambush=ambush, trigger=trigger, lurk=not ambush, src="class default")
+    rules = ("dash_escape",) if f.get("adash", 0.0) > 0 else ()
+    return dict(cls=cls, roles=roles, ambush=ambush, trigger=trigger, lurk=not ambush, rules=rules, band=None, src="class default")
 
 
 @functools.lru_cache(None)
@@ -98,10 +106,11 @@ def profile(name):
     """the planner profile of a brawler (module doc): the class default with the research overrides on top"""
     f = facts(name); p = default(f); o = BRAWLERS.get(name)
     if o:
-        p.update({k: v for k, v in o.items() if k in ("roles", "ambush", "trigger", "lurk")})
+        p.update({k: v for k, v in o.items() if k in ("roles", "ambush", "trigger", "lurk", "band")})
+        p["rules"] = tuple(dict.fromkeys(p["rules"] + tuple(o.get("rules", ()))))   # table-derived + researched
         if not p["ambush"]: p["trigger"] = 0.0
         p["src"] = NOTE + o["file"]
-    p["roles"] = tuple(p["roles"])
+    p["roles"] = tuple(p["roles"]); p["adash"] = f["adash"]
     return p
 
 
@@ -118,15 +127,15 @@ def checklist(names):
     for c in CLASSES:
         ns = [n for n in names if facts(n)["cls"] == c]
         out.append("| %s | %d | %s |" % (c, len(ns), ", ".join(facts(n)["display"] for n in ns if n in BRAWLERS) or "-"))
-    out += ["", "| brawler | codename | class | super | roles | ambush / lurk | researched | checked | scene | trained |",
-            "|---|---|---|---|---|---|---|---|---|---|"]
+    out += ["", "| brawler | codename | class | super | roles | ambush / lurk | own rules | researched | checked | scene | trained |",
+            "|---|---|---|---|---|---|---|---|---|---|---|"]
     for c in CLASSES:
         for n in sorted((n for n in names if facts(n)["cls"] == c), key=lambda n: (n not in BRAWLERS, facts(n)["display"])):
             f, p, st = facts(n), profile(n), STATUS.get(n, {})
             bush = ("ambush %.1f" % p["trigger"]) if p["ambush"] else "lurk" if p["lurk"] else "-"
             res = "[%s](%s)" % (BRAWLERS[n]["file"], BRAWLERS[n]["file"]) if n in BRAWLERS else "[ ] class default"
-            out.append("| %s | %s | %s | %s %.1f | %s | %s | %s | [%s] | [%s] | %s |" % (
-                f["display"], n, c, f["beh"] or "-", f["srange"], ", ".join(p["roles"]), bush, res, yes(st.get("checked")),
+            out.append("| %s | %s | %s | %s %.1f | %s | %s | %s | %s | [%s] | [%s] | %s |" % (
+                f["display"], n, c, f["beh"] or "-", f["srange"], ", ".join(p["roles"]), bush, ", ".join(p["rules"]) or "-", res, yes(st.get("checked")),
                 yes(st.get("scene")), st.get("trained", "")))
     return "\n".join(out) + "\n"
 
@@ -149,7 +158,10 @@ def _check():
     # class defaults: Charge on a squishy class = escape, on a diver = engage; Attack = finisher
     assert default(dict(cls="marksman", beh="Charge", range=10, srange=8, melee=False))["roles"] == ("escape_dash",)
     assert default(dict(cls="assassin", beh="Charge", range=2, srange=7, melee=False)) == dict(
-        cls="assassin", roles=("engage_dash",), ambush=True, trigger=3.0, lurk=False, src="class default")
+        cls="assassin", roles=("engage_dash",), ambush=True, trigger=3.0, lurk=False, rules=(), band=None, src="class default")
+    dashers = sorted(n for n in names if facts(n)["adash"] > 0)        # attack dashes in the tables -> dash_escape
+    assert dashers == ["Geisha", "Leaper", "Samurai", "Stalker", "Undertaker"] and all("dash_escape" in profile(n)["rules"] for n in dashers), dashers
+    assert profile("Sniper")["rules"] == ("snipe_band",) and profile("Sniper")["band"] == (8.5, 10.0) and profile("BullDude")["rules"] == ()
     assert default(dict(cls="damage_dealer", beh="Attack", range=9, srange=9, melee=False))["lurk"]        # a long-range DD lurks
     assert not default(dict(cls="damage_dealer", beh="Attack", range=7.67, srange=7, melee=False))["ambush"]   # 7.67 > SHORT
     assert np.isclose(default(dict(cls="tank", beh="Attack", range=5.33, srange=5, melee=False))["trigger"], 2.665)
