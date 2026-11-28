@@ -834,7 +834,16 @@ class Env(MAEnv):
             it = st["act"]; k, q, t, sps = it["kind"], it["q"], it["t"] + 1, it["sps"]   # t: the step being scored
             px, py = (x[q], y[q]) if q >= 0 else it["pt"]; d = float(np.hypot(px - x[p], py - y[p]) / 300.0)
             ev = {"d": d, "out": not up[p], "dk": dk[p], "box": pl[p].box_damage / 1000.0}; lost = got = False
-            if q >= 0:
+            if k == "super" and it["mode"] == "heal":   # planner heal_mate / heal_panic: fired, then the healed one's hp
+                h = q if q >= 0 else p; hh = float(pl[h].hp)  # (a mate q, or me) rises >= HEAL_RISE x its max hp in a step
+                full = pl[p].super_max > 0 and pl[p].super_charge >= pl[p].super_max
+                if it["fire_t"] is None and not full: it["fire_t"] = t
+                if it["fire_t"] is not None:
+                    if hh - it.get("hpl", hh) >= I.HEAL_RISE * max(float(pl[h].max_hp), 1.0): got = True
+                    elif not up[h] or t - it["fire_t"] > I.HIT_S * sps: lost = True
+                elif not up[h]: lost = True
+                it["hpl"] = hh; seen = bool(w["screen"][p, q]) if q >= 0 else True
+            elif q >= 0:
                 seen = w["sees"][p, q] if team[q] != team[p] else w["screen"][p, q]
                 if k == "engage":
                     ev["in_range"] = d <= it["range"]
@@ -853,7 +862,8 @@ class Env(MAEnv):
                 dth = float(np.hypot(x[th] - x[p], y[th] - y[p]) / 300.0) if th >= 0 else 0.0
                 if it["td0"] is None: it["td0"] = dth
                 if it["fire_t"] is None and not full: it["fire_t"] = t
-                if it["fire_t"] is not None and t - it["fire_t"] >= I.ESC_S * sps:   # not by the 3 s: timeout (Mico's
+                if it["mode"] == "place": got = it["fire_t"] is not None   # mode place (Sandy's cloak): fired at the point
+                elif it["fire_t"] is not None and t - it["fire_t"] >= I.ESC_S * sps:   # not by the 3 s: timeout (Mico's
                     if th < 0 or not up[th] or not w["sees"][p, th] or dth >= it["td0"] + I.ESC_GAIN: got = True   # 1 s windup)
                 seen = True                                                    # a point: never lost unseen
             else:
@@ -1328,6 +1338,21 @@ def _check_intents(players, tiles, NS):
     st["act"] = es(); step(mk(p0_super_charge=1000)); n_to = st["cnt"]["super"][2]
     for _ in range(29): step(mk())
     assert st["act"] is None and st["cnt"]["super"][2] == n_to + 1
+    # super, mode heal (planner heal_mate / heal_panic) on mate p1 (team of p0 for the test): fired, then its hp rises
+    # >= 10 % of its max hp in a step -> achieved; fired with no rise: invalid after 2 s; on me (q -1): my own hp
+    tm = dict(p1_reserved=[0, 0, 0, 0]); hl = lambda q=1: I.new(dict(kind="super", q=q, pt=None if q >= 0 else (1650.0, 1650.0), mode="heal"),
+                                                                  10.0, 10.0, steps_per_s=10, super_t=9.0)
+    st["act"] = hl(); step(mk(p0_super_charge=1000, **tm)); step(mk(**tm)); assert st["act"]["fire_t"] == 2
+    step(mk(p1_hp=3200, **tm)); assert st["act"] is not None                        # +200 of 4000: not a heal
+    n_ach = st["cnt"]["super"][1]; tr = step(mk(p1_hp=3900, **tm)); assert st["act"] is None and st["cnt"]["super"][1] == n_ach + 1 and tr[0][0] >= 0.25 * 0.05
+    st["act"] = hl(); step(mk(p0_super_charge=1000, **tm)); n_inv = st["cnt"]["super"][3]
+    for _ in range(25): step(mk(**tm))
+    assert st["act"] is None and st["cnt"]["super"][3] == n_inv + 1
+    st["act"] = hl(-1); step(mk(p0_super_charge=1000)); n_ach = st["cnt"]["super"][1]; step(mk(p0_hp=3800))
+    assert st["act"] is None and st["cnt"]["super"][1] == n_ach + 1
+    # super, mode place (planner cloak_endgame / cloak_engage): achieved once fired
+    st["act"] = I.new(dict(kind="super", q=-1, pt=(1650.0 + 1500, 1650.0), mode="place"), 5.0, 10.0, steps_per_s=10, super_t=7.0)
+    step(mk(p0_super_charge=1000)); n_ach = st["cnt"]["super"][1]; step(mk()); assert st["act"] is None and st["cnt"]["super"][1] == n_ach + 1
     # hide, mode quiet (lurk / ambush wait) on p0's bush tile, threat p1: hidden while it walks in, achieved when it is
     # within 3 tiles; a main attack (fire 1, an ammo bar spent) is invalid
     s.sl["bush"][5, 5] = True; qh = lambda: I.new(dict(kind="hide", q=-1, pt=(1650.0, 1650.0), mode="quiet", threat=1, near=3.0), 0.0, 10.0, steps_per_s=10)
@@ -1392,6 +1417,14 @@ def _check_planner(players, tiles, NS):
     try: env._finish_step(0, env.I[0].inst.resp)
     finally: MAEnv._finish_step = sup
     row = env.episodes[-1]; assert row["plan_rules"] == {"engage": [1, 1, 0]} and row["intents"]["engage"] == [1, 0, 0, 1], row
+    # resolve of the brawler rules' super modes: heal on a mate -> its true player (p1 made p0's mate), heal on me -> my
+    # point, place -> the point as aimed; no mate at the offset: not matched
+    sb = battle(); sb.inst.resp = mk(p1_reserved=[0, 0, 0, 0]); wb = env._world(sb); R = PL.RulePlanner()
+    res = lambda rule, dx, dy, **m: R.resolve(env, sb, 0, 0, wb, PL.pick(rule, "super", dx, dy, reason="r", **m))
+    c = res("heal_mate", 10, 0, slot=0, mode="heal"); assert c["mode"] == "heal" and c["q"] == 1 and c["kind"] == "super", c
+    c = res("heal_panic", 0, 0, mode="heal"); assert c["q"] == -1 and c["pt"] == (1650.0, 1650.0) and c["mode"] == "heal", c
+    c = res("cloak_engage", 5, 0, mode="place"); assert c["mode"] == "place" and c["pt"] == (1650.0 + 1500, 1650.0), c
+    assert res("heal_mate", 0, 5, slot=0, mode="heal")["kind"] == "none"
 
 
 TEAM_SLIDERS = ("protect", "leash")   # fire only with a mate: normalised over team battles

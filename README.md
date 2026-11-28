@@ -114,9 +114,14 @@ Strength = HP now x (1 + 0.1 per power cube); an engage also needs 2 of 3 ammo b
 Role rules (`--plan-roles 1`, off by default; #91 / #92): per-brawler profiles from `roles.py` (class defaults from the
 game's ClassArchetype, overridden by the research in `notes/super_research/`) add super_escape (jump away from a diver),
 lurk (hold fire in a bush), ambush (wait in a bush, then spring) and super_engage (dash onto a weak enemy), and gate the
-super rule to finisher supers. Brawler rules run only for the brawlers whose profile lists them: dash_escape (Mortis, Mico,
-Kaze, Alli, Samurai: their main attack dashes) and snipe_band (Piper engages from 8.5-10 tiles, her full-damage band). They reuse the super / hide / engage intents (modes escape / quiet): no observation
-change. Checklist of researched brawlers: `notes/super_research/CHECKLIST.md`, workflow `notes/super_research/WORKFLOW.md`.
+super rule to finisher supers. Brawler rules run only for the brawlers whose profile lists them (each of the 9
+researched brawlers has its own): dash_escape (Mortis, Mico, Kaze, Alli, Samurai: their main attack dashes), snipe_band
+(Piper engages from 8.5-10 tiles and steps back from an even enemy within 6), point_blank (Shelly's super within its
+3-tile full-damage range), charge_cover (Bull holds the charge in cover vs longer range), avoid_brawl (Edgar, Mortis vs
+close fighters), dive_ranged (Edgar), heal_mate / heal_panic (Poco), cloak_escape / cloak_engage / cloak_endgame
+(Sandy), barrel_zone (Dynamike on pinned enemies), super_finish (Mortis's bats by absolute hp), finish_jump and the
+no_dive_grouped guard (Mico); the list is the planner module doc "Brawler rules". They reuse the super / hide / engage
+intents (modes escape / quiet / band / heal / place, scored in env_v5): no observation change. Checklist of researched brawlers: `notes/super_research/CHECKLIST.md`, workflow `notes/super_research/WORKFLOW.md`.
 Example reasons: `Undertaker (melee, range 3) 4 tiles E: keeping my distance W`,
 `hp 30 %, Gunslinger 9 tiles N (reach 11 tiles): disengaging S`. A higher rule can replace a held intent early.
 

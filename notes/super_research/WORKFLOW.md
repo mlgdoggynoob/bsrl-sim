@@ -47,8 +47,7 @@ the finisher gate (she has no attack super: no change) and keep_away measuring a
 need close-range brawlers in the pool.
 
 ## Rules still to write
-- heal_team / heal_self (Poco): a teammate below X % in the heal cone; needs a "mate HP rose" achieved test.
-- stealth (Sandy): cloak to cross open ground or hold a choke; the cloak shows within 4 tiles.
-- zone (Dynamike): barrel at a choke / a cornered or gas-pinned enemy (today: rule 4 as a finisher).
+- Every researched brawler has its own rules now (README "Round 3"; the left-out plays are listed there). Next: research
+  the remaining 97 brawlers (CHECKLIST), then their rules.
 - The #92 duel check from skills.csv DPS (today the ambush gate is the strength ratio R with a first-strike margin).
 - The bush-reveal duration after a shot, measured in the sim (`w["sees"]`, `hid_vs`).
