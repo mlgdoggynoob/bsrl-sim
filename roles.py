@@ -213,6 +213,8 @@ def _check():
     assert profile("Sniper")["rules"] == ("snipe_band",) and profile("Sniper")["band"] == (8.5, 10.0)
     # brawler rules: every name is a planner rule or guard, every researched brawler has its own; table numbers they use
     import planner as PL
+    import obs_v5 as O
+    assert CLASSES == O.CLASSES and all(np.array_equal(O.brawler_class(n), np.eye(len(CLASSES))[CLASSES.index(facts(n)["cls"])]) for n in names)
     for n in names: assert set(profile(n)["rules"]) <= set(PL.RULES) | set(PL.GUARDS), (n, profile(n)["rules"])
     assert all(len(profile(n)["rules"]) for n in BRAWLERS), [n for n in BRAWLERS if not profile(n)["rules"]]
     assert profile("Undertaker")["rules"] == ("dash_escape", "super_finish", "avoid_brawl") and profile("Leaper")["rules"][0] == "dash_escape"

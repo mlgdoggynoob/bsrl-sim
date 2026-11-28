@@ -38,6 +38,9 @@ Obs v5.10: + 2 power-cube columns at the end of the entity row (obs_v5.CUB; zero
 as v5.6's) and + 2 intent kinds, whose one-hot columns sit inside the intent block before dx, dy: pad_param inserts
 them as zero columns into a v5.9 checkpoint's vec.0 at obs_v5.S_INT + 7, so its dx / dy / radius / time-left weights
 stay on their inputs. Same outputs for the 7 old kinds; a new kind reaches it only through dx, dy, radius, time left.
+Obs v5.11: + 7 class columns at the end of the entity row (obs_v5.CLS; zero input columns before the lead columns, as
+v5.6's) and at the end of cond (obs_v5.COND_CLS, before the intent block): pad_param inserts their zero columns into a
+v5.5-v5.10 checkpoint's vec.0 at the old S_INT (38). Same outputs.
 Heads the actor never runs (NONACT; fast_act / act_stacked skip them, old checkpoints load with strict=False and get
 fresh ones; built on their own RNG stream, so Policy() under a given seed has the acting weights it had without them):
 * live value `vl` (trainer --vlive): MLP on the detached cat[x, h], no priv, so it works live (priv does not exist
@@ -74,7 +77,9 @@ F_IN = O.F_ENT + N_LEAD                               # entity row width the net
 ENT_IN = ("ent.0.weight", "cand.0.weight", "aux.fut.0.weight")   # input = [x part] | obs row | lead (pad_param)
 _OLD_ROW = {O.F_ENT_V52: (O.F_ENT_V52, 0), O.F_ENT_V52 + N_LEAD: (O.F_ENT_V52, N_LEAD),   # old input width after the x part
             O.F_ENT_V55 + N_LEAD: (O.F_ENT_V55, N_LEAD),                               # -> (obs row, lead) (v5.2 / v5.3-v5.5
-            O.F_ENT_V59 + N_LEAD: (O.F_ENT_V59, N_LEAD)}                               #    / v5.6-v5.9)
+            O.F_ENT_V59 + N_LEAD: (O.F_ENT_V59, N_LEAD),                               #    / v5.6-v5.9 / v5.10)
+            O.F_ENT_V510 + N_LEAD: (O.F_ENT_V510, N_LEAD)}
+_S_INT_V510 = O.N_SELF + O.N_COND_V510                # vec.0 intent offset before v5.11 (cond without the class)
 _INT_AT = O.S_INT + O.N_INT_V59 - 4                   # vec.0 column after a v5.9 intent one-hot (pad_param inserts the new kinds)
 _PSPEED = 4000 / 300 / 20                             # cond stats[3] (projectile Speed / 4000, units/s) -> tiles / tick
 LAT = 3.0                                             # ticks between the frame and the shot: obs_v5 NOISE latency 1-2 decisions x 2
@@ -111,8 +116,11 @@ def pad_param(name, v, o):
     any other grown tensor zero-pads at the end of each dim (new inputs at the tail: s / cond / intent). v unchanged when
     it already fits or cannot be padded."""
     if v.shape == o.shape or v.dim() != o.dim() or not all(a <= b for a, b in zip(v.shape, o.shape)): return v
-    if name == "vec.0.weight" and v.dim() == 2 and v.shape[1] == O.S_INT + O.N_INT_V59 and o.shape[1] == O.N_S:
-        v = torch.cat([v[:, :_INT_AT], v.new_zeros(v.shape[0], O.N_INT - O.N_INT_V59), v[:, _INT_AT:]], 1)
+    if name == "vec.0.weight" and v.dim() == 2 and o.shape[1] == O.N_S:
+        if v.shape[1] in (_S_INT_V510 + O.N_INT_V59, _S_INT_V510 + O.N_INT):   # v5.5-v5.10: + the cond class columns
+            v = torch.cat([v[:, :_S_INT_V510], v.new_zeros(v.shape[0], O.N_COND - O.N_COND_V510), v[:, _S_INT_V510:]], 1)
+        if v.shape[1] == O.S_INT + O.N_INT_V59:                                 # v5.5-v5.9: + the new intent kinds
+            v = torch.cat([v[:, :_INT_AT], v.new_zeros(v.shape[0], O.N_INT - O.N_INT_V59), v[:, _INT_AT:]], 1)
         if v.shape == o.shape: return v
     if name in ENT_IN and v.dim() == 2 and v.shape[0] == o.shape[0]:
         pre = o.shape[1] - F_IN; row, n_lead = _OLD_ROW.get(v.shape[1] - pre, (None, None))
@@ -139,9 +147,9 @@ class Policy(nn.Module):
                                   nn.Flatten(), nn.Linear(64 * 7 * 7, 256), nn.ReLU())
         F55 = O.F_ENT_V55 + N_LEAD                       # v5.5 width: the same draws as before, v5.6 columns put in after
         self.ent = nn.Sequential(nn.Linear(F55, 128), nn.ReLU(), nn.Linear(128, 128), nn.ReLU())
-        self.vec = nn.Sequential(nn.Linear(O.N_SELF + O.N_COND, 128), nn.ReLU())
-        with torch.no_grad():                            # + the intent columns (v5.5), zero: same draws as before, same start
-            v0 = self.vec[0]; v0.weight = nn.Parameter(torch.cat([v0.weight, v0.weight.new_zeros(128, O.N_INT)], 1)); v0.in_features = O.N_S
+        self.vec = nn.Sequential(nn.Linear(O.N_SELF + O.N_COND_V510, 128), nn.ReLU())
+        with torch.no_grad():                            # + the class (v5.11) and intent (v5.5) columns, zero: same draws, same start
+            v0 = self.vec[0]; v0.weight = nn.Parameter(torch.cat([v0.weight, v0.weight.new_zeros(128, O.N_S - _S_INT_V510)], 1)); v0.in_features = O.N_S
         self.trunk = nn.Sequential(nn.Linear(512, d), nn.ReLU())
         self.hemb = nn.Embedding(HMAX + 1, d); nn.init.zeros_(self.hemb.weight)
         self.register_buffer("hero_stats", torch.full((HMAX, N_STAT), 1e4))   # empty rows match nothing
@@ -452,8 +460,8 @@ def _check_stage2():
     old = {k: v for k, v in a.state_dict().items() if k not in ("hemb.weight", "hero_stats")}
     v52 = lambda w, p: torch.cat([w[:, :p + O.F_ENT_V52], w[:, p + O.F_ENT:]], 1)        # the v5.2 layout: row 16 | lead 2
     old["ent.0.weight"] = v52(old["ent.0.weight"], 0); old["cand.0.weight"] = v52(old["cand.0.weight"], pre)
-    old["vec.0.weight"] = old["vec.0.weight"][:, :O.N_SELF + O.N_COND_V53]; assert O.N_COND - O.N_COND_V53 == 2
-    assert old["ent.0.weight"].shape[1] == O.F_ENT_V52 + N_LEAD and O.F_ENT_V55 - O.F_ENT_V52 == 4 and na == 22
+    old["vec.0.weight"] = old["vec.0.weight"][:, :O.N_SELF + O.N_COND_V53]; assert O.N_COND_V510 - O.N_COND_V53 == 2
+    assert old["ent.0.weight"].shape[1] == O.F_ENT_V52 + N_LEAD and O.F_ENT_V55 - O.F_ENT_V52 == 4 and na == 29
     c = Policy(); c.load_state_dict({**old, "ent.0.weight": old["ent.0.weight"][:, :O.F_ENT_V52]}, strict=False)   # pre-lead format
     assert torch.equal(c.ent[0].weight[:, :O.F_ENT_V52], a.ent[0].weight[:, :O.F_ENT_V52]) and not c.ent[0].weight[:, O.F_ENT_V52:].any()
     b = Policy(); b.load_state_dict(old, strict=False)
@@ -527,29 +535,35 @@ def _check_v56(ent, grid, h0):
 
 
 def _check_v510(ent, grid, h0):
-    """obs v5.10: a v5.9 checkpoint (entity rows 36 wide + lead, a 7-kind intent block in vec.0) loads with its weights on
-    the same inputs: zero columns for the cubes and the two new kinds, so it acts the same whatever they hold; an Adam
-    moment of vec.0 pads the same way"""
-    torch.manual_seed(7); N, L = ent.shape[:2]; k0, k1 = _INT_AT, _INT_AT + O.N_INT - O.N_INT_V59
-    a = Policy(); nn.init.normal_(a.pi.weight, std=0.1)
-    with torch.no_grad():
-        nn.init.normal_(a.vec[0].weight[:, O.S_INT:], std=0.3); a.vec[0].weight[:, k0:k1] = 0   # a v5.9 net reads its block
-        for k in ENT_IN:
-            w = dict(a.named_parameters())[k]; pre = w.shape[1] - F_IN
-            nn.init.normal_(w[:, pre + O.ID0:], std=0.3); w[:, pre + O.CUB:pre + O.F_ENT] = 0
-    cut = lambda w: torch.cat([w[:, :w.shape[1] - F_IN + O.F_ENT_V59], w[:, w.shape[1] - N_LEAD:]], 1)   # the v5.9 layout
-    vcut = lambda w: torch.cat([w[:, :k0], w[:, k1:]], 1)
-    old = {k: (cut(v) if k in ENT_IN else vcut(v) if k == "vec.0.weight" else v) for k, v in a.state_dict().items()}
-    assert old["vec.0.weight"].shape[1] == 49 and old["ent.0.weight"].shape[1] == O.F_ENT_V59 + N_LEAD
-    b = Policy(); b.load_state_dict(old, strict=False)
-    assert all(torch.equal(a.state_dict()[k], b.state_dict()[k]) for k in ENT_IN + ("vec.0.weight",))
-    s = torch.randn(N, L, O.N_S); s[..., O.N_SELF + 3] = 1.0; e1 = ent.clone(); e1[..., :5, O.CUB:] = torch.rand(N, L, 5, 2) * 2
-    s0 = s.clone(); s0[..., k0:k1] = 0; e0 = ent.clone(); e0[..., O.CUB:] = 0
+    """obs v5.10 / v5.11: a v5.9 checkpoint (entity rows 36 wide + lead, a 7-kind intent block in vec.0, cond 30) and a
+    v5.10 one (rows 38 wide, cond 30) load with their weights on the same inputs: zero columns for the cubes, the classes
+    and the two new kinds, so they act the same whatever those hold; an Adam moment of vec.0 pads the same way"""
+    torch.manual_seed(7); N, L = ent.shape[:2]; k0, k1 = _INT_AT, _INT_AT + O.N_INT - O.N_INT_V59; c0, c1 = _S_INT_V510, O.S_INT
     dd = lambda x, y: max((u - v).abs().max().item() for u, v in zip(x, y))
-    assert dd(b.seq(s, e1, grid, h0)[0], a.seq(s0, e0, grid, h0)[0]) < 1e-6, "v5.9 checkpoint acts differently"
+    for row, kinds in ((O.F_ENT_V59, False), (O.F_ENT_V510, True)):
+        a = Policy(); nn.init.normal_(a.pi.weight, std=0.1)
+        with torch.no_grad():
+            nn.init.normal_(a.vec[0].weight[:, O.S_INT:], std=0.3); a.vec[0].weight[:, c0:c1] = 0   # an old net: no class input
+            if not kinds: a.vec[0].weight[:, k0:k1] = 0                                           # v5.9: 7 kinds
+            for k in ENT_IN:
+                w = dict(a.named_parameters())[k]; pre = w.shape[1] - F_IN
+                nn.init.normal_(w[:, pre + O.ID0:], std=0.3); w[:, pre + row:pre + O.F_ENT] = 0
+        cut = lambda w: torch.cat([w[:, :w.shape[1] - F_IN + row], w[:, w.shape[1] - N_LEAD:]], 1)   # the old row layout
+        vcut = lambda w: torch.cat([w[:, :c0], w[:, c1:]] if kinds else [w[:, :c0], w[:, c1:k0], w[:, k1:]], 1)
+        old = {k: (cut(v) if k in ENT_IN else vcut(v) if k == "vec.0.weight" else v) for k, v in a.state_dict().items()}
+        assert old["vec.0.weight"].shape[1] == (51 if kinds else 49) and old["ent.0.weight"].shape[1] == row + N_LEAD
+        b = Policy(); b.load_state_dict(old, strict=False)
+        assert all(torch.equal(a.state_dict()[k], b.state_dict()[k]) for k in ENT_IN + ("vec.0.weight",))
+        s = torch.randn(N, L, O.N_S); s[..., O.N_SELF + 3] = 1.0; e1 = ent.clone(); e1[..., :5, row:] = torch.rand(N, L, 5, O.F_ENT - row) * 2
+        s0 = s.clone(); s0[..., c0:c1] = 0; e0 = ent.clone(); e0[..., row:] = 0
+        if not kinds: s0[..., k0:k1] = 0
+        assert dd(b.seq(s, e1, grid, h0)[0], a.seq(s0, e0, grid, h0)[0]) < 1e-6, "old checkpoint acts differently"
     m = torch.randn(128, 49); pm = pad_param("vec.0.weight", m, b.vec[0].weight)
-    assert torch.equal(pm[:, :k0], m[:, :k0]) and torch.equal(pm[:, k1:], m[:, k0:]) and not pm[:, k0:k1].any()
-    assert (O.I_XY + O.S_INT, k0, k1) == (k1, 45, 47)    # dx sits right after the widened one-hot
+    assert torch.equal(pm[:, :c0], m[:, :c0]) and not pm[:, c0:c1].any() and torch.equal(pm[:, c1:k0], m[:, c0:c0 + k0 - c1])
+    assert not pm[:, k0:k1].any() and torch.equal(pm[:, k1:], m[:, c0 + k0 - c1:])
+    m = torch.randn(128, 51); pm = pad_param("vec.0.weight", m, b.vec[0].weight)
+    assert torch.equal(pm[:, :c0], m[:, :c0]) and not pm[:, c0:c1].any() and torch.equal(pm[:, c1:], m[:, c0:])
+    assert (O.I_XY + O.S_INT, c0, c1, k0, k1) == (k1, 38, 45, 52, 54)    # dx sits right after the widened one-hot
 
 
 def _check_fire():
