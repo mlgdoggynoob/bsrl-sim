@@ -28,8 +28,8 @@ Piper also at high effort to compare). Web only: this container has no game file
 ## Round 2: attack dashers (Sonnet 5.5, high effort)
 | Brawler (codename) | profile | checked in the tables | open |
 |---|---|---|---|
-| Mortis (Undertaker) | finisher + heal_self super; dash_escape (main attack), lane (a wall cuts the dash), ambush 3 tiles | attack dash 2.67 tiles (CastingRange 8, AlwaysCastAtMaxRange), super Attack 10 tiles, 900 damage, 4000 HP | the "4.67-tile long dash bar" the wiki describes is not in skills.csv; whether a dash into a bush stays hidden; the super finish test by absolute HP (900 vs enemy HP) instead of < 50 % |
-| Mico (Leaper) | engage_dash + escape_dash super (sreach 10), dash_escape, ambush 3.5 tiles | attack jump 4 tiles (Charge), super FlyJump: CastingTime 1000 ms, ActiveTime 6000 ms, MovementSpeed 1025, CastingRange 0 | a finish_jump rule (jump a target with HP < 1140) and no_dive_grouped: in mico.md section 6, not built |
+| Mortis (Undertaker) | finisher + heal_self super; dash_escape (main attack), lane (a wall cuts the dash), ambush 3 tiles | attack dash 2.67 tiles (CastingRange 8, AlwaysCastAtMaxRange), super Attack 10 tiles, 900 damage, 4000 HP | the "4.67-tile long dash bar" the wiki describes is not in skills.csv; whether a dash into a bush stays hidden. Built since: super_finish (900 vs enemy HP), avoid_brawl |
+| Mico (Leaper) | engage_dash + escape_dash super (sreach 10), dash_escape, ambush 3.5 tiles | attack jump 4 tiles (Charge), super FlyJump: CastingTime 1000 ms, ActiveTime 6000 ms, MovementSpeed 1025, CastingRange 0 | the super's real landing reach (sreach 10 is a stand-in). Built since: finish_jump (1140 damage from skills.csv), no_dive_grouped |
 
 ## Checked against the game tables (2026-11-28, `roles._check`)
 - Ranges and super ranges in the table match skills.csv (CastingRange / 3 = tiles): Piper 10 / 8.67, Shelly 7.67 /
@@ -39,6 +39,22 @@ Piper also at high effort to compare). Web only: this container has no game file
   today. With `--plan-roles 1` rule 4 needs the finisher role.
 - Edgar's punch is a projectile in the tables (obs melee flag 0); Mortis is `Undertaker`.
 - Classes come from characters.csv `ClassArchetype`, so every brawler has a class default (roles.py).
+
+## Round 3: own planner rules for every researched brawler
+From each note's section 6 (rule sketch), the plays the shared role rules did not cover; names and conditions in the
+planner module doc "Brawler rules" (B1-B14), self-check scenes in `planner._check`:
+
+| Brawler | rules | from | left out (needs what) |
+|---|---|---|---|
+| Piper | snipe_band (+ kite an even enemy within 6 tiles) | piper.md: max_range_kite | auto_aimer_peel (gadget state in the planner), wall_open (team modes) |
+| Shelly | point_blank (super within 3 tiles; knockback at low hp; rule 4 beyond 3 tiles only on a finish) | shelly.md: super_point_blank, low_hp_knockback | dive_sniper (a flanking path), wall break with the super |
+| Bull | charge_cover (hold the charge in a bush / behind a wall vs a longer-range enemy at hp < 80 %) | bull.md: bull_no_open_dash | Stomper follow-up and gas cancel (gadget state) |
+| Edgar | avoid_brawl, dive_ranged | edgar.md: avoid_tank, super_engage variant | lurk until the super is ready (overlaps hide / farm) |
+| Poco | heal_mate, heal_panic (super mode heal: achieved when the healed hp rises) | poco.md: heal_mate, heal_self_panic | the Screeching Solo finish (star power not in cond) |
+| Sandy | cloak_escape, cloak_engage, cloak_endgame (mode escape / place) | sandy.md: cloak_* | zone_bush_check (Rude Sands only), lurk_in_zone; does the cloak hide him after he fires (sim check) |
+| Dynamike | barrel_zone (2 enemies together, next to the gas, walled pocket) | dynamike.md: barrel_zone | hold_barrel (rule 4 already needs < 50 %), wall_buffer, super_deny_wall |
+| Mortis | super_finish (absolute hp, or a heal below 50 %), avoid_brawl | mortis.md: super finish / heal, avoid_heavy | the long-dash bar (not in the tables), dive_squishy (= engage today) |
+| Mico | finish_jump, guard no_dive_grouped | mico.md section 6 | his super's real reach |
 
 The profiles, rules and checklist built on this: `roles.py`, planner role rules, [WORKFLOW.md](WORKFLOW.md),
 [CHECKLIST.md](CHECKLIST.md).

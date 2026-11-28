@@ -11,19 +11,41 @@ Profile fields:
   cls      characters.csv ClassArchetype: damage_dealer, tank, assassin, support, controller, marksman, artillery
   roles    of ROLES; the rules use finisher (super at a low enemy: planner rule super), engage_dash (super_engage, and the
            ambush spring with the super ready), escape_dash (super_escape; holds the super for it). The others are
-           recorded for later rules (heal_team / heal_self, shield, zone, summon, stealth, utility).
+           recorded for the brawler rules below (heal_self: super_finish heals; heal_team, shield, zone, summon, stealth,
+           utility: description only, the plays sit in `rules`).
   ambush   True: from a bush, wait quietly for an enemy it out-duels and spring at `trigger` tiles (engage), or at its
            super range with an engage_dash super ready (super)
   trigger  tiles: the ambush spring distance without the super (shotgun: the full-damage range; melee: reach + 1 tile)
   lurk     True: hidden in a bush, hold fire while a diver / short-range enemy that wins up close is in view (> 3 tiles)
-  rules    brawler-specific planner rules this brawler runs (planner.RULES names; the class default switches some on from
-           the game tables, research adds others): dash_escape (a main attack that dashes, skills.csv weapon
-           BehaviorType Charge: Mortis, Mico, Kaze, Alli, Samurai), snipe_band (damage that grows with distance: hold
-           `band` tiles from the target, Piper)
+  rules    brawler-specific planner rules this brawler runs (planner.RULES names, plus the guards planner.GUARDS that
+           change a shared rule; the class default switches some on from the game tables, research adds the others;
+           planner module doc "Brawler rules"):
+             dash_escape     a main attack that dashes (skills.csv weapon BehaviorType Charge: Mortis, Mico, Kaze, Alli,
+                             Samurai): dash away at low hp / from a much stronger enemy
+             snipe_band      damage that grows with distance: hold `band` tiles from the target (Piper), also stepping
+                             back from an even enemy that walks within 6 tiles
+             point_blank     a shotgun super: fire it within `trigger` tiles (the full-damage range), as a knockback at
+                             low hp; rule 4 (super) beyond that only on a finish (Shelly)
+             charge_cover    hold a charge super in the open vs an enemy that out-ranges me: bush / wall cover (Bull)
+             avoid_brawl     stay away from a close fighter (shotgun / tank) at about even strength (Edgar, Mortis)
+             dive_ranged     jump super onto a ranged enemy I nearly match (R < 0.9) at hp >= 60 % (Edgar)
+             heal_mate       heal super on a hurt mate in its range, through walls (Poco)
+             heal_panic      heal super on myself at low hp with an enemy close and no bush to hide in (Poco)
+             cloak_escape    cloak super behind me at low hp with no enemy within its 4-tile reveal distance (Sandy)
+             cloak_engage    cloak super ahead of the team toward an enemy we engage (Sandy, team modes)
+             cloak_endgame   cloak super on the endgame hold tile (Sandy)
+             barrel_zone     area super at a pinned enemy: a second enemy next to it, the gas behind it, or a walled
+                             pocket, at any hp (Dynamike)
+             super_finish    attack super where `sdmg` kills (absolute hp, known stats), or as a heal at < 50 % hp;
+                             replaces rule 4 for the brawler (Mortis)
+             finish_jump     a dash attack (`admg`) that kills an enemy within one dash (Mico)
+             no_dive_grouped (guard) no ambush / super dive onto a full-hp enemy with another enemy within 4 tiles (Mico)
   band     (lo, hi) tiles for snipe_band, else None
   lane     dash_escape: prefer a straight lane for the first dash (a wall cuts the dash short: Mortis), default False
   sreach   tiles the planner takes as the super's reach when the table's super range does not say it (Mico's steered
            flight: CastingRange 0), else 0 (= the observation's super range)
+  sdmg     the super's skills.csv Damage (a heal amount for Poco), admg the main attack's Damage when it dashes (else 0);
+           the planner scales both by its POWER as it does hit points
   src      "class default" or the research note the override came from
 Class defaults (from the research pilot, applied to the brawlers not researched yet):
   roles    super BehaviorType Attack -> finisher; Charge -> escape_dash for the squishy classes (marksman, artillery,
@@ -50,23 +72,28 @@ BRAWLERS = {
     "Sniper": dict(roles=("escape_dash", "utility"), ambush=False, lurk=True, rules=("snipe_band",), band=(8.5, 10.0),
                    file="piper.md",   # band: full damage in the last 15 % of her 10-tile range (piper.md, wiki)
                    why="Poppin' (8.67 tiles, ~2 s immune in the air) is her escape from divers; up close she does 20 %"),
-    "ShotgunGirl": dict(roles=("finisher", "utility"), ambush=True, trigger=3.0, lurk=False, file="shelly.md",
+    "ShotgunGirl": dict(roles=("finisher", "utility"), ambush=True, trigger=3.0, lurk=False, rules=("point_blank",), file="shelly.md",
                         why="bush ambush at ~3 tiles (full shotgun damage); Super Shell 7.67 tiles finishes and breaks walls"),
-    "BullDude": dict(roles=("engage_dash", "escape_dash", "utility"), ambush=True, trigger=3.0, lurk=False, file="bull.md",
+    "BullDude": dict(roles=("engage_dash", "escape_dash", "utility"), ambush=True, trigger=3.0, lurk=False, rules=("charge_cover",),
+                     file="bull.md",
                      why="charge 11 tiles through walls engages (escape second); shells full damage ~3 tiles"),
-    "Enrager": dict(roles=("engage_dash", "escape_dash"), ambush=True, trigger=3.0, lurk=False, file="edgar.md",
+    "Enrager": dict(roles=("engage_dash", "escape_dash"), ambush=True, trigger=3.0, lurk=False, rules=("avoid_brawl", "dive_ranged"),
+                    file="edgar.md",
                     why="Vault 6.67 tiles over walls onto a low or squishy target; punch reach 2 tiles"),
-    "DeadMariachi": dict(roles=("heal_team", "heal_self"), ambush=False, lurk=True, file="poco.md",
+    "DeadMariachi": dict(roles=("heal_team", "heal_self"), ambush=False, lurk=True, rules=("heal_mate", "heal_panic"), file="poco.md",
                          why="Encore heals himself and allies (2100, 9.33 tiles, through walls), no damage: not a finisher"),
-    "Sandstorm": dict(roles=("stealth", "utility"), ambush=False, lurk=True, file="sandy.md",
+    "Sandstorm": dict(roles=("stealth", "utility"), ambush=False, lurk=True, rules=("cloak_escape", "cloak_engage", "cloak_endgame"),
+                      file="sandy.md",
                       why="Sandstorm cloaks (r 6.67 tiles, 9 s; seen within 4 tiles), no damage: not a finisher"),
-    "Undertaker": dict(roles=("finisher", "heal_self"), ambush=True, trigger=3.0, lurk=False, lane=True, file="mortis.md",
+    "Undertaker": dict(roles=("finisher", "heal_self"), ambush=True, trigger=3.0, lurk=False, lane=True,
+                       rules=("super_finish", "avoid_brawl"), file="mortis.md",
                        why="the dash (2.67 tiles) is his MAIN attack: escape / engage with it (dash_escape); a wall cuts it short;"
                            " the bats super finishes and heals him"),
-    "Leaper": dict(roles=("engage_dash", "escape_dash"), ambush=True, trigger=3.5, lurk=False, sreach=10.0, file="mico.md",
+    "Leaper": dict(roles=("engage_dash", "escape_dash"), ambush=True, trigger=3.5, lurk=False, sreach=10.0,
+                   rules=("finish_jump", "no_dive_grouped"), file="mico.md",
                    why="main attack = a 4-tile jump over walls, untouchable in the air; super = 1 s windup, then up to 6 s"
                        " of steered invulnerable flight (table range 0: sreach)"),
-    "TntDude": dict(roles=("zone", "finisher"), ambush=False, lurk=True, file="dynamike.md",
+    "TntDude": dict(roles=("zone", "finisher"), ambush=False, lurk=True, rules=("barrel_zone",), file="dynamike.md",
                     why="barrel lobs over walls (1.3 s fuse): zone / finish; no dash, so he lurks vs divers"),
 }
 STATUS = {   # checklist columns that are not computed: checked (numbers vs game tables), scene (planner self-check), trained
@@ -98,7 +125,9 @@ def facts(name):
     return dict(cls=c.get("ClassArchetype") or "damage_dealer", display=(c.get("ItemName") or name).replace("_", " ").title(),
                 beh=u.get("BehaviorType") or "", range=float(w.get("CastingRange") or 0) / 3.0,
                 srange=float(u.get("CastingRange") or 0) / 3.0, melee=bool(st[7] > 0.5),
-                adash=float(w.get("CastingRange") or 0) / 3.0 if w.get("BehaviorType") == "Charge" else 0.0)   # attack dash, tiles
+                adash=float(w.get("CastingRange") or 0) / 3.0 if w.get("BehaviorType") == "Charge" else 0.0,   # attack dash, tiles
+                sdmg=float(u.get("Damage") or 0),
+                admg=float(w.get("Damage") or 0) if w.get("BehaviorType") == "Charge" else 0.0)
 
 
 def default(f):
@@ -122,7 +151,7 @@ def profile(name):
         p["rules"] = tuple(dict.fromkeys(p["rules"] + tuple(o.get("rules", ()))))   # table-derived + researched
         if not p["ambush"]: p["trigger"] = 0.0
         p["src"] = NOTE + o["file"]
-    p["roles"] = tuple(p["roles"]); p["adash"] = f["adash"]
+    p["roles"] = tuple(p["roles"]); p["adash"], p["sdmg"], p["admg"] = f["adash"], f["sdmg"], f["admg"]
     return p
 
 
@@ -181,7 +210,14 @@ def _check():
     assert np.isclose(f["Leaper"]["adash"], 4) and f["Leaper"]["beh"] == "FlyJump" and f["Leaper"]["srange"] == 0
     assert skl("Leaper", "UltimateSkill")["ActiveTime"] == "6000" and skl("Leaper", "UltimateSkill")["CastingTime"] == "1000"
     assert profile("Leaper")["sreach"] == 10.0 and profile("Undertaker")["lane"] and profile("Undertaker")["trigger"] == 3.0
-    assert profile("Sniper")["rules"] == ("snipe_band",) and profile("Sniper")["band"] == (8.5, 10.0) and profile("BullDude")["rules"] == ()
+    assert profile("Sniper")["rules"] == ("snipe_band",) and profile("Sniper")["band"] == (8.5, 10.0)
+    # brawler rules: every name is a planner rule or guard, every researched brawler has its own; table numbers they use
+    import planner as PL
+    for n in names: assert set(profile(n)["rules"]) <= set(PL.RULES) | set(PL.GUARDS), (n, profile(n)["rules"])
+    assert all(len(profile(n)["rules"]) for n in BRAWLERS), [n for n in BRAWLERS if not profile(n)["rules"]]
+    assert profile("Undertaker")["rules"] == ("dash_escape", "super_finish", "avoid_brawl") and profile("Leaper")["rules"][0] == "dash_escape"
+    assert profile("Undertaker")["sdmg"] == 900 and profile("Undertaker")["admg"] == 1000 and profile("Leaper")["admg"] == 1140
+    assert profile("DeadMariachi")["sdmg"] == 2100 and profile("TntDude")["sdmg"] == 2200 and profile("Sniper")["admg"] == 0
     assert default(dict(cls="damage_dealer", beh="Attack", range=9, srange=9, melee=False))["lurk"]        # a long-range DD lurks
     assert not default(dict(cls="damage_dealer", beh="Attack", range=7.67, srange=7, melee=False))["ambush"]   # 7.67 > SHORT
     assert np.isclose(default(dict(cls="tank", beh="Attack", range=5.33, srange=5, melee=False))["trigger"], 2.665)

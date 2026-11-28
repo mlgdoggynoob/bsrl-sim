@@ -18,7 +18,7 @@ Researched 9 / 106 playable brawlers; per class:
 
 | brawler | codename | class | super | roles | ambush / lurk | own rules | researched | checked | scene | trained |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Shelly | ShotgunGirl | damage_dealer | Attack 7.7 | finisher, utility | ambush 3.0 | - | [shelly.md](shelly.md) | [x] | [x] |  |
+| Shelly | ShotgunGirl | damage_dealer | Attack 7.7 | finisher, utility | ambush 3.0 | point_blank | [shelly.md](shelly.md) | [x] | [x] |  |
 | 8Bit | Arcade | damage_dealer | Attack 5.0 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Artie | Splitter | damage_dealer | Split 0.0 | utility | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Carl | Whirlwind | damage_dealer | Ww 2.3 | utility | lurk | - | [ ] class default | [ ] | [ ] |  |
@@ -38,7 +38,7 @@ Researched 9 / 106 playable brawlers; per class:
 | Spike | Cactus | damage_dealer | Attack 7.7 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Surge | PowerLeveler | damage_dealer | Charge 3.3 | engage_dash | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Tara | BlackHole | damage_dealer | Attack 6.7 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
-| Bull | BullDude | tank | Charge 11.0 | engage_dash, escape_dash, utility | ambush 3.0 | - | [bull.md](bull.md) | [x] | [x] |  |
+| Bull | BullDude | tank | Charge 11.0 | engage_dash, escape_dash, utility | ambush 3.0 | charge_cover | [bull.md](bull.md) | [x] | [x] |  |
 | Ash | Knight | tank | Attack 5.0 | finisher | ambush 2.5 | - | [ ] class default | [ ] | [ ] |  |
 | Bibi | Baseball | tank | Attack 40.0 | finisher | ambush 2.5 | - | [ ] class default | [ ] | [ ] |  |
 | Bolt | Rock | tank | StatusEffect 0.0 | utility | ambush 1.0 | - | [ ] class default | [ ] | [ ] |  |
@@ -54,9 +54,9 @@ Researched 9 / 106 playable brawlers; per class:
 | Ollie | Skater | tank | Charge 5.7 | engage_dash | ambush 3.2 | - | [ ] class default | [ ] | [ ] |  |
 | Rosa | Rosa | tank | Shield 0.0 | utility | ambush 2.5 | - | [ ] class default | [ ] | [ ] |  |
 | Trunk | Domain | tank | Charge 7.0 | engage_dash | ambush 2.5 | - | [ ] class default | [ ] | [ ] |  |
-| Edgar | Enrager | assassin | Charge 6.7 | engage_dash, escape_dash | ambush 3.0 | - | [edgar.md](edgar.md) | [x] | [x] |  |
-| Mico | Leaper | assassin | FlyJump 0.0 | engage_dash, escape_dash | ambush 3.5 | dash_escape | [mico.md](mico.md) | [x] | [x] |  |
-| Mortis | Undertaker | assassin | Attack 10.0 | finisher, heal_self | ambush 3.0 | dash_escape | [mortis.md](mortis.md) | [x] | [x] |  |
+| Edgar | Enrager | assassin | Charge 6.7 | engage_dash, escape_dash | ambush 3.0 | avoid_brawl, dive_ranged | [edgar.md](edgar.md) | [x] | [x] |  |
+| Mico | Leaper | assassin | FlyJump 0.0 | engage_dash, escape_dash | ambush 3.5 | dash_escape, finish_jump, no_dive_grouped | [mico.md](mico.md) | [x] | [x] |  |
+| Mortis | Undertaker | assassin | Attack 10.0 | finisher, heal_self | ambush 3.0 | dash_escape, super_finish, avoid_brawl | [mortis.md](mortis.md) | [x] | [x] |  |
 | Alli | Stalker | assassin | StatusEffect 0.0 | utility | ambush 2.5 | dash_escape | [ ] class default | [ ] | [ ] |  |
 | Buzz | RopeDude | assassin | Attack 10.0 | finisher | ambush 2.5 | - | [ ] class default | [ ] | [ ] |  |
 | Cordelius | Duelist | assassin | Attack 9.0 | finisher | ambush 2.7 | - | [ ] class default | [ ] | [ ] |  |
@@ -73,7 +73,7 @@ Researched 9 / 106 playable brawlers; per class:
 | Shade | Ghost | assassin | Charge 3.3 | engage_dash | ambush 2.5 | - | [ ] class default | [ ] | [ ] |  |
 | Stella | MagicalGirl | assassin | Charge 4.3 | engage_dash | ambush 2.8 | - | [ ] class default | [ ] | [ ] |  |
 | Stu | Roller | assassin | Charge 2.3 | engage_dash | ambush 3.5 | - | [ ] class default | [ ] | [ ] |  |
-| Poco | DeadMariachi | support | Attack 9.3 | heal_team, heal_self | lurk | - | [poco.md](poco.md) | [x] | [x] |  |
+| Poco | DeadMariachi | support | Attack 9.3 | heal_team, heal_self | lurk | heal_mate, heal_panic | [poco.md](poco.md) | [x] | [x] |  |
 | Berry | Painter | support | Charge 8.3 | escape_dash | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Byron | SnakeOil | support | Attack 7.3 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Doug | Reviver | support | Attack 9.3 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
@@ -86,7 +86,7 @@ Researched 9 / 106 playable brawlers; per class:
 | Pam | MinigunDude | support | Attack 5.0 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Ruffs | Ruffs | support | Attack 7.7 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Wendy | FutureGirl | support | Attack 5.0 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
-| Sandy | Sandstorm | controller | Attack 7.3 | stealth, utility | lurk | - | [sandy.md](sandy.md) | [x] | [ ] |  |
+| Sandy | Sandstorm | controller | Attack 7.3 | stealth, utility | lurk | cloak_escape, cloak_engage, cloak_endgame | [sandy.md](sandy.md) | [x] | [ ] |  |
 | Amber | FireDude | controller | Attack 7.3 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Bo | BowDude | controller | Attack 8.7 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Charlie | Cocooner | controller | Attack 9.0 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
@@ -117,7 +117,7 @@ Researched 9 / 106 playable brawlers; per class:
 | Mandy | Beamer | marksman | Attack 40.0 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Nani | Controller | marksman | Attack 3.3 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Pierce | Bulletstorm | marksman | Attack 8.3 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
-| Dynamike | TntDude | artillery | Attack 7.3 | zone, finisher | lurk | - | [dynamike.md](dynamike.md) | [x] | [x] |  |
+| Dynamike | TntDude | artillery | Attack 7.3 | zone, finisher | lurk | barrel_zone | [dynamike.md](dynamike.md) | [x] | [x] |  |
 | Barley | Barkeep | artillery | Attack 9.3 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Grom | CrossBomber | artillery | Attack 8.3 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |
 | Juju | Voodoo | artillery | Attack 5.0 | finisher | lurk | - | [ ] class default | [ ] | [ ] |  |

@@ -26,6 +26,10 @@ the block: the observation is unchanged):
   super, mode escape   point target (the landing tile)   my super is fired and >= ESC_S later I am ESC_GAIN tiles farther
                        from the threat than at the start, or it is down / out of my sight; else timeout at the 3 s
                        (Mico's super has a 1 s windup; the readiness and the fire as for super)
+  super, mode heal     a mate on my screen (anchored),   my super is fired and within HIT_S its hp rises >= HEAL_RISE x its max hp
+                       or me (point: my tile)            in one step; invalid: 2 s after the fire without that, or it is down
+                       (heal_mate / heal_panic: Poco)
+  super, mode place    point target                      my super is fired (cloak_endgame / cloak_engage: Sandy's cloak)
   engage, mode band    enemy (anchored)                   as engage; the potential is the distance outside band (lo, hi)
                        tiles (snipe_band: Piper 8.5-10), so walking inside lo costs as walking out of hi; radius = hi
   hide, mode quiet     my bush tile                       hidden (as hide; or at the step before, as a threat this close
@@ -59,6 +63,8 @@ C = 0.01                  # reward per tile of progress
 CAP = 0.15                # per-intent total (design 4.3: <= c x start distance + bonus <= ~0.15)
 SEEN_S, HIT_S = 1.0, 2.0  # s: an unseen target is lost after 1 s; "my damage in the last 2 s" (engage / farm a box)
 ESC_S, ESC_GAIN = 1.0, 3.0   # super escape: >= 1 s after the fire, 3 tiles farther from the threat (Piper ~2 s airborne)
+HEAL_RISE = 0.1           # super heal: a rise of 10 % of max hp in one step (Poco's 2100 of 4000 is 52 %; the HP regen out of
+                          # combat is slower, so it does not count)
 PICK = 1.5                # tiles: a cube picked up this close to the target is the target
 TILE, VIEW = 300.0, (4500.0, 3500.0, 2900.0)   # camera rule of nbpc.fair / env_v5.slider_terms: |dx| < 4500 from the
                                                # clamped camera x, -3500 < dy < 2900
