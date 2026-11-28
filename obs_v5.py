@@ -86,7 +86,8 @@ SLIDERS = ("bush_camp", "collect", "protect", "retreat", "kite", "peek", "focus"
 # grows by 2 before dx, dy: model.pad_param inserts their zero columns into a v5.9 checkpoint's vec.0)
 # v5.11: + the brawler class one-hot (CLASSES, 7) at the end of each entity row (CLS, zero input columns before the lead
 # columns, as v5.6's) and at the end of cond (COND_CLS, before the intent block: model.pad_param inserts their zero
-# columns into a v5.5-v5.10 checkpoint's vec.0 at the old S_INT)
+# columns into a v5.5-v5.10 checkpoint's vec.0 at the old S_INT); and an enemy brawler attacking from a bush is visible
+# while its main attack runs (weapon ActiveTime, the client's reveal: host env.c g_attack / encode.c, issue #92)
 OBS_VERSION = "v5.11"
 FIRE = ("none", "attack", "super", "gadget", "hypercharge")   # fire head classes = NbeAction.fire codes 0-4 (host env.c apply_actions)
 FIRE_READY = (None, None, 2, 3, 4)               # self column that must be >= 0.5 for the class to be allowed (model.mask_fire)

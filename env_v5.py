@@ -327,7 +327,8 @@ def gas_margin(x, y, ring, W, H):
 def fair_vis(x, y, inb, W):
     """the fair visibility of nbpc.fair on true positions (10,): screen[q, p] = p is on q's screen (camera x clamped to
     [3000, W x 300 - 3000], |dx| < 4500, -3500 < dy < 2900), sees[q, p] = and not hidden in a bush (on a bush tile,
-    > 900 away); d = distances (units)"""
+    > 900 away); d = distances (units). shortcut: no reveal while attacking from a bush (the host's observation has it,
+    issue #92: env.c g_attack); the intents' hide / quiet tests use this rule"""
     d = np.hypot(x[None, :] - x[:, None], y[None, :] - y[:, None])
     camx = np.clip(x, 3000.0, W * 300 - 3000.0); ry = y[None, :] - y[:, None]
     screen = (np.abs(x[None, :] - camx[:, None]) < 4500) & (ry > -3500) & (ry < 2900)

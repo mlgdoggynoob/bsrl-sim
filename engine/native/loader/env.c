@@ -2235,7 +2235,7 @@ typedef struct { int W, H; uint8_t *wall, *water, *bush, *tile; } EncMap;
 typedef struct { int id, x, y; } PrevPos;
 typedef struct { const int32_t *pl, *ch, *pj, *it; int npl, nch, npj, nit, tick; const int32_t (*cubes)[2]; int ncubes;
                  const int32_t (*jumps)[5]; int njumps; const PrevPos *prev; int nprev, prev_tick; int hyper[16], hmax[16];
-                 int invis[16]; } EncState;
+                 int invis[16]; int attack[16]; } EncState;   /* issue #92: = encode.c */
 void enc_map_build(EncMap *m, const int32_t *tiles, int W, int H);
 int enc_encode(const EncMap *m, const EncState *s, int pidx, float *vec, float *grid);
 static EncMap g_emap; static uint32_t g_emap_hash; static PrevPos g_prev[4096]; static int g_nprev, g_prev_tick = -1, g_prev_valid;
@@ -2267,6 +2267,10 @@ int env_ground(void *sim, int x, int y) {   /* gadget round (issue #46, Juju): 1
 int g_vis_model = 1;
 int g_item_guard = 1;
 int g_weak_skip = 1;   /* client mode: the 0xdc1f64 weak-lock skip patch (--no-weak-skip: off) */
+/* issue #92: per player index, its brawler's main attack is running (the weapon skill instance, +8 > 0: its ActiveTime,
+ * the attack animation: 150 ms for a one-volley shot, 650 Colt, 950 Pam). The real client draws a brawler that attacks
+ * from a bush for that long; set every step by invis_update */
+static int g_attack[16];
 static void emulate_client_flags(void *sim, int32_t *a) {
     int npl = a[3], nch = a[4], npj = a[5], nit = a[6]; int32_t *ch = a + 8 + npl * 8, *pj = ch + nch * 23, *it = pj + npj * 18;
     int li = local_index(); const int32_t *me = NULL;
@@ -2284,6 +2288,7 @@ static void emulate_client_flags(void *sim, int32_t *a) {
         if (v && r[2] >= 0 && r[2] != li && r[18] == 0 && r[1] != 16000120) {   /* enemy brawler (or its summon): bush hiding */
             int tx = r[3] / 300, ty = r[4] / 300; if (tx >= W) tx = W - 1; if (ty >= Hh) ty = Hh - 1;
             if (tx >= 0 && ty >= 0 && g_emap.bush && g_emap.bush[ty * W + tx] && hypot(r[3] - mx, r[4] - my) > 900 &&
+                !(r[2] < 16 && g_attack[r[2]]) &&                           /* issue #92: attacking from the bush reveals */
                 !(gadget_vision && gadget_vision(li, r[3], r[4]))) v = 0;   /* gadget round: Tara's / Buzz's vision */
         }
         if (me == r) v = 1;
@@ -2317,10 +2322,12 @@ static int invis_reach(uint8_t *ch, int pi) {
 static int g_invis[16];
 /* every step, observation or not, so that an attack between two observed steps still ends Leon's invisibility */
 static void invis_update(void *sim) {
-    memset(g_invis, 0, sizeof g_invis);
+    memset(g_invis, 0, sizeof g_invis); memset(g_attack, 0, sizeof g_attack);
     int np; void **ps = players(sim, &np);
     for (int i = 0; i < np && i < 16 && i < NBE_MAXP; i++) if (ps[i]) { uint8_t *ch = obj_by_id(sim, player_char_id(ps[i]));
-        if (ch && VTOF(ch) == VT_CHAR && I32(ch, 0x3c4) > 0) g_invis[i] = invis_reach(ch, i); else g_inv_broken[i] = 0; }
+        if (ch && VTOF(ch) == VT_CHAR && I32(ch, 0x3c4) > 0) { g_invis[i] = invis_reach(ch, i);
+            uint8_t **sk = PTR(ch, 0x458); g_attack[i] = sk && I32(ch, 0x464) > 0 && sk[0] && I32(sk[0], 8) > 0; }   /* issue #92 */
+        else g_inv_broken[i] = 0; }
 }
 static void write_obs(void *sim, uint32_t mask) {
     enc_map_update(sim);
@@ -2331,6 +2338,7 @@ static void write_obs(void *sim, uint32_t mask) {
     if (g_prev_valid) { s.prev = g_prev; s.nprev = g_nprev; s.prev_tick = g_prev_tick; }
     { int np; void **ps = players(sim, &np); for (int i = 0; i < np && i < 16; i++) if (ps[i]) { s.hyper[i] = I32(ps[i], 0x98); s.hmax[i] = I32(ps[i], 0x9c); } }   /* rl round */
     memcpy(s.invis, g_invis, sizeof s.invis);   /* issue #19 (invis_update) */
+    memcpy(s.attack, g_attack, sizeof s.attack);   /* issue #92 */
     int written = 0;
     for (int p = 0; p < NBE_MAXP; p++) if ((mask >> p) & 1) {
         float *v = OBSB + p * (NBE_OBS_VEC + NBE_OBS_GRID);

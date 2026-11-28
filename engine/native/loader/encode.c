@@ -60,6 +60,7 @@ typedef struct {
     int hyper[16], hmax[16];                    /* rl round: hypercharge charge / max per player index */
     int invis[16];                              /* issue #19: per player index, the distance within which its invisible
                                                  * brawler is seen (0 = not invisible) */
+    int attack[16];                             /* issue #92: per player index, its main attack is running (env.c g_attack) */
 } EncState;
 
 static int floordiv(int a, int b) { int q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q; }
@@ -152,7 +153,8 @@ int enc_encode(const EncMap *m, const EncState *s, int pidx, float *vec, float *
         double dx = (r[3] - mx) / R_SCALE, dy = (r[4] - my) / R_SCALE, ex, ey; vel_of(s, r[0], &ex, &ey);
         int etx = floordiv(r[3], TILE), ety = floordiv(r[4], TILE), ea = r[13] > 0 ? r[13] : 0, ec = cubes_of(s, r[0]); if (ec > 10) ec = 10;
         double v[16] = {1.0, dx, dy, ex / 40.0, ey / 40.0, (double)r[6] / (r[7] > 1 ? r[7] : 1), r[6] / 10000.0, ea / 3000.0,
-                        super_frac(s, r[2]), ec / 10.0, (double)map_at(m, m->bush, etx, ety), r[19] == 1, r[11] > 0,
+                        super_frac(s, r[2]), ec / 10.0,
+                        (double)(map_at(m, m->bush, etx, ety) && !(br && r[2] < 16 && s->attack[r[2]])), r[19] == 1, r[11] > 0,
                         jumping(s, r[0]), !br, team_of(s, r[2]) == myteam};
         rows[n].key = dx * dx + dy * dy; rows[n].seq = n; for (int j = 0; j < 16; j++) rows[n].v[j] = (float)v[j]; n++;
     }
