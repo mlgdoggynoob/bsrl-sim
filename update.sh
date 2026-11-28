@@ -50,7 +50,7 @@ main() {
     say "self-checks (no battle)"
     set +eu +o pipefail; source env.sh; set -eu -o pipefail   # env.sh is written for an interactive shell
     fail=0
-    for m in "-m obs_v5" "-m intent" "-m planner" "-m model" "-m fast_obs" "-m env_v5 --check" "scorecard.py --check" \
+    for m in "-m obs_v5" "-m intent" "-m planner" "-m roles" "-m model" "-m fast_obs" "-m env_v5 --check" "scorecard.py --check" \
              "apply_noise.py --test" "-m super_audit --check" "-m star_check --check" "-m gadget_check --check" "-m hyper_check --check" \
              "-m charge_check --check" "-m export_policy --check" "-m train_ppo --check" "-m scenarios --check" "-m showdown_check --check" "-m status_check --check" \
              "-m star_audit --check" "-m gear_check --check" "-m imitation" "-m desc_audit --check" "-m desc_values --check" "-m overlay"; do

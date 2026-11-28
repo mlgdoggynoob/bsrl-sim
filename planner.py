@@ -72,6 +72,31 @@ Rules, first match wins (PRI = order; thresholds from the slider weights in cond
                    tiles away from it                                  "map edge 5 tiles W: exploring E"
   17 none          free play                                           "no plan fits: free play"
 Rules 5 / 6 need the enemy's brawler (ID_KNOWN = 1) and skip unknown enemies; the rest fall back to the unknown readings.
+Role rules (#91 / #92; RulePlanner(roles=True), trainer --plan-roles 1; off: they never fire and the rules above are as
+listed). They read my profile (roles.profile of my brawler, found from my cond stats: roles, ambush, trigger, lurk) and
+sit in RULES as: gas, rotate, super_escape, lurk, low_hp, ambush, super_engage, super, ... A diver = a KNOWN enemy that
+is melee, short range (<= 5.5 tiles) or has a dash / jump super (ent ID0 + 10); its dive reach = max(range, super range
+for a dash super), cap 12.
+  R1 super_escape  role escape_dash, my super ready, a threat (a diver within its dive reach + 1, or R >= 1 within its
+                   reach) and (hp < ESC_HP, or it within ESC_CLOSE, or 2+ enemies within 4 tiles) -> super at a landing
+                   tile 0.6-1 x my super range on the far side of the threat (walkable, >= 3 tiles from the poison), the
+                   one farthest from every enemy (a bush + 1 tile); intent super, mode escape (achieved: fired, >= 1 s
+                   later 3 tiles farther from the threat or out of its sight)
+                                                                       "hp 40 %, Enrager 3 tiles E: jumping 8 tiles W (super)"
+  R2 lurk          profile lurk, I am in a bush, a diver my range out-ranges (>= 1.5 x) 3-10 tiles off, no finish in
+                   range -> hide on my tile, mode quiet (a main attack = invalid; achieved: still hidden when it comes
+                   within 3 tiles, leaves my sight or the time runs out)
+                                                                       "Enrager 6 tiles E, in a bush: holding fire"
+  R3 ambush        profile ambush, in a bush, hp >= 0.5, ammo >= 2/3, the nearest enemy I out-duel (R < 1.2 known, 0.9
+                   unknown) within the spring distance + 5 (spring = trigger, or my super range with an engage_dash super
+                   ready) -> beyond the spring distance: hide quiet until it comes within it; within: engage it (super it
+                   with the dash)                                      "Sniper 6 tiles E, in a bush: waiting for 3 tiles"
+                                                                       "Sniper 3 tiles E: springing the ambush"
+  R4 super_engage  role engage_dash, my super ready, an enemy beyond my range within my super range that is below 25 %
+                   or passes the engage test (weak) -> super it        "Sniper 7 tiles E at 40 %: jumping in (super)"
+  With roles, rule 4 (super) needs the finisher role (Poco's heal, Sandy's cloak are Attack supers), and an escape_dash
+  brawler keeps its super while a diver is within 10 tiles unless the target is below 25 %; rule 6 (keep_away) measures a
+  diver's distance against its dive reach + 2 (Edgar's 6.67-tile jump), not its range + 2.
 Wall-aware targets: View.steps = BFS steps from my tile over the passable tiles of the grid (walkable, poison and
 UNKNOWN pass; a wall / water / map-edge tile blocks only next to another one (4-neighbour, as _solid: seg noise); 8
 neighbours without corner cutting, overlay.path's rule). Every move_to / hold / hide tile is picked among the tiles
@@ -100,11 +125,11 @@ CK = the checkpoint, e.g. the best r51 one; OMP_NUM_THREADS=2 as there; --bc-upd
       --intent-scale 0.25 --p-plan 0.5 --p-rand-intent 0.3 --vlive 1 --eval-plan 1
     python scorecard.py ft_plan     # evalp_plan vs eval (same seeds): rank, follow rate per kind, rule census
 """
-import heapq, sys
+import functools, heapq, sys
 import numpy as np
 import obs_v5 as O, intent as I
 
-RULES = ("gas", "rotate", "low_hp", "super", "thrower_wall", "keep_away", "outclassed", "fight", "endgame", "regroup", "engage",
+RULES = ("gas", "rotate", "super_escape", "lurk", "low_hp", "ambush", "super_engage", "super", "thrower_wall", "keep_away", "outclassed", "fight", "endgame", "regroup", "engage",
          "pin", "check_bush", "farm", "hide", "explore", "none")
 PRI = {r: k for k, r in enumerate(RULES)}
 TILE = 300.0
@@ -122,6 +147,11 @@ FINISH = 0.25             # an enemy below 25 % in my range is engaged whatever 
 AMMO_MIN = 2.0 / 3 - 1e-3  # engage with >= 2 of 3 ammo bars (self 1); float32 slack
 HEAL_HP = 0.8             # below this, with no enemy in my range, no new engage (reset and heal first)
 SUPER_HP = 0.5            # super on an enemy in my super range below this (no super damage in the obs: a likely finish)
+ESC_HP, ESC_CLOSE = 0.6, 3.0   # super_escape: jump below 60 % hp, or with the threat within 3 tiles (research: Piper jumps
+                          # before the dive lands, notes/super_research/piper.md)
+LURK_EXIT, LURK_MAX = 3.0, 10.0   # lurk: a diver 3-10 tiles off (closer: about the bush reveal distance, the usual rules)
+AMB_R, AMB_R_UNK, AMB_HP, AMB_WAIT = 1.2, 0.9, 0.5, 5.0   # ambush: R below 1.2 (first strike from hiding ~ one attack; an
+                          # unknown enemy: stricter), hp >= 50 %, wait while it is within the spring distance + 5 tiles
 CB_EVERY = 8.0            # s: at most one bush check this often (a check_bush intent lasts <= 2 s; the rest of the time
                           # farm / hide / explore run)
 _C = 12                   # my grid cell (row and column)
@@ -203,6 +233,13 @@ def _name(row):
     return names[int(d.argmin())]
 
 
+@functools.lru_cache(4096)
+def _me_name(st):
+    """my brawler from my cond stats (cond[:13] = brawler_stats; bytes key)"""
+    names, lut = O.id_lut(); d = ((lut[:-1] - np.frombuffer(st, np.float32)) ** 2).sum(1)
+    return names[int(d.argmin())]
+
+
 class View:
     """one agent's observation rows, read for the rules. ecubes (N_ENT,) = cubes held per row (None = the prior)"""
 
@@ -229,6 +266,8 @@ class View:
         self.ehp, self.known = e[:, O.HP], e[:, O.ID_KNOWN] > 0.5
         self.erng, self.esup = e[:, O.ID0] * 10.0, e[:, O.ID0 + 12] * 10.0
         self.thrown, self.melee, self.emax = e[:, O.ID0 + 6] > 0.5, e[:, O.ID0 + 7] > 0.5, e[:, O.ID0 + 8] * 10000.0
+        self.edash = e[:, O.ID0 + 10] > 0.5              # a dash / jump super (BehaviorType Charge)
+        self.prof = None                                 # my roles.profile (RulePlanner(roles=True))
         self.wall = e[:, O.LOS] > 0.5
         self.reach = np.where(self.known, np.minimum(np.maximum(self.erng, self.esup), 12.0), self.rng)   # known: range / super
         # strength (module doc); enemy cubes: the row's count when read (OBS v5.10), else the prior = my own count
@@ -277,6 +316,14 @@ class View:
         if r.any(): return self.tile_pick(r, st + 0.01 * self.td if key is None else key)   # 0.01 x td < 1 step
         return self.tile_pick(ok, self.td if key is None else key)
 
+    def diver(self, k):
+        """a KNOWN enemy that wins up close: melee, short range or a dash / jump super (module doc: role rules)"""
+        return bool(self.known[k] and (self.melee[k] or self.erng[k] <= 5.5 or self.edash[k]))
+
+    def dive(self, k):
+        """its dive reach in tiles: max(range, super range for a dash super), cap 12"""
+        return float(min(max(self.erng[k], self.esup[k] if self.edash[k] else 0.0), 12.0))
+
     def finish(self, k):
         return self.ehp[k] < FINISH and self.d[k] <= self.rng
 
@@ -291,20 +338,25 @@ class View:
         return None
 
 
-def pick(rule, kind, dx=0.0, dy=0.0, slot=-1, obj=None, reason=""):
-    return {"rule": rule, "kind": kind, "dx": float(dx), "dy": float(dy), "slot": int(slot), "obj": obj, "reason": reason}
+def pick(rule, kind, dx=0.0, dy=0.0, slot=-1, obj=None, reason="", **mode):
+    """mode (role rules): mode "escape" (super at a point) / "quiet" (hide), threat = (dx, dy) of the enemy it is about,
+    near = tiles (quiet: achieved when the threat comes this close)"""
+    return {"rule": rule, "kind": kind, "dx": float(dx), "dy": float(dy), "slot": int(slot), "obj": obj, "reason": reason, **mode}
 
 
 class RulePlanner:
     """decide(): the rules on one agent's observation rows; plan(): the env_v5.Env hook (world target, anchors).
     noisy = the observation has detector noise (trainer --noise 1, live): rows count once confirmed (module doc)"""
 
-    def __init__(self, noisy=True):
-        self.noisy = bool(noisy)
+    def __init__(self, noisy=True, roles=False):
+        self.noisy, self.roles = bool(noisy), bool(roles)
 
     def decide(self, self8, ent, grid, cond, sub=(0.5, 0.5), ecubes=None, since_cb=None):
         """since_cb = seconds since this agent's last check_bush intent started (None = never; Env: s.it[p]["cb_n"])"""
         v = View(self8, ent, grid, cond, sub, self.noisy, ecubes, since_cb)
+        if self.roles:
+            import roles as RO
+            v.prof = RO.profile(_me_name(np.asarray(cond, np.float32)[:13].tobytes()))
         for r in RULES[:-1]:
             out = getattr(self, "_" + r)(v)
             if out is not None: return out
@@ -383,9 +435,66 @@ class RulePlanner:
             return pick("low_hp", "hide", *t, reason="%s: hiding in a bush %s %s" % (why, tiles(np.hypot(*t)), dir8(*t)))
         return self._away(v, "low_hp", ex, ey, why + ": disengaging")
 
+    def _role(self, v, r):
+        return self.roles and v.prof is not None and r in v.prof["roles"]
+
+    def _mytile(self, v):
+        return float(v.ox[_C, _C]), float(v.oy[_C, _C])
+
+    def _super_escape(self, v):
+        if not (self._role(v, "escape_dash") and v.sup and v.srng > 0 and len(v.foes)): return None
+        th = [k for k in v.foes if (v.diver(k) and v.d[k] <= v.dive(k) + 1.0) or (v.R[k] >= 1.0 and v.d[k] <= v.reach[k])]
+        if not th: return None
+        k = min(th, key=lambda j: v.d[j]); ex, ey = v.xy[k]
+        swarm = sum(v.d[j] <= 4.0 for j in v.foes) >= 2
+        if not (v.hp < ESC_HP or v.d[k] <= ESC_CLOSE or swarm): return None
+        de = np.min([np.hypot(v.ox - v.xy[j, 0], v.oy - v.xy[j, 1]) for j in v.foes], 0)   # tile -> nearest enemy
+        ok = v.walk & (v.td >= 0.6 * v.srng) & (v.td <= v.srng) & (v.ox * ex + v.oy * ey < 0)   # the far side of the threat
+        if v.poison.any(): ok &= v.dist_to(v.poison) >= 3.0
+        t = v.tile_pick(ok, -(de + 1.0 * v.bush))          # the jump passes walls: no steps, the landing tile must be walkable
+        if t is None: return None
+        why = "hp %d %%, %s" % (round(100 * v.hp), self._who(v, k)) + (", 2+ enemies close" if swarm else "")
+        return pick("super_escape", "super", *t, slot=k, mode="escape", threat=(float(ex), float(ey)),
+                    reason="%s: jumping %s %s (super)" % (why, tiles(np.hypot(*t)), dir8(*t)))
+
+    def _lurk(self, v):
+        if not (self.roles and v.prof is not None and v.prof["lurk"] and v.inbush and len(v.foes)): return None
+        if any(v.finish(j) for j in v.foes): return None
+        th = [k for k in v.foes if v.diver(k) and LURK_EXIT < v.d[k] <= LURK_MAX and v.rng >= 1.5 * v.erng[k]]
+        if not th: return None
+        k = min(th, key=lambda j: v.d[j]); ex, ey = v.xy[k]
+        return pick("lurk", "hide", *self._mytile(v), mode="quiet", near=LURK_EXIT, threat=(float(ex), float(ey)),
+                    reason="%s, in a bush: holding fire" % self._who(v, k))
+
+    def _ambush(self, v):
+        if not (self.roles and v.prof is not None and v.prof["ambush"] and v.inbush and len(v.foes)): return None
+        if v.hp < AMB_HP or v.ammo < AMMO_MIN: return None
+        dash = self._role(v, "engage_dash") and v.sup and v.srng > 0
+        spring = max(v.prof["trigger"], v.srng if dash else 0.0)
+        ok = [k for k in v.foes if v.R[k] < (AMB_R if v.known[k] else AMB_R_UNK) and v.d[k] <= spring + AMB_WAIT]
+        if not ok: return None
+        k = min(ok, key=lambda j: v.d[j]); ex, ey = v.xy[k]
+        if v.d[k] > spring:
+            return pick("ambush", "hide", *self._mytile(v), mode="quiet", near=spring, threat=(float(ex), float(ey)),
+                        reason="%s, in a bush: waiting for %s (ambush)" % (self._who(v, k), tiles(spring)))
+        if dash: return pick("ambush", "super", ex, ey, slot=k, reason="%s: springing the ambush (super)" % self._who(v, k))
+        return pick("ambush", "engage", ex, ey, slot=k, reason="%s: springing the ambush" % self._who(v, k))
+
+    def _super_engage(self, v):
+        if not (self._role(v, "engage_dash") and v.sup and v.srng > v.rng): return None
+        agg = v.w["aggressive"] >= 1.2
+        ks = [k for k in v.foes if v.rng < v.d[k] <= v.srng and (v.ehp[k] < FINISH or v.engage_ok(k, agg) == "weak")]
+        if not ks: return None
+        k = min(ks, key=lambda j: (v.ehp[j], v.d[j]))
+        return pick("super_engage", "super", *v.xy[k], slot=k, reason="%s at %d %%: jumping in (super)" % (
+            self._who(v, k), round(100 * v.ehp[k])))
+
     def _super(self, v):
         if not (v.sup and v.satk and v.srng > 0): return None
+        if self.roles and v.prof is not None and not self._role(v, "finisher"): return None   # a heal / cloak Attack super
         ks = [k for k in v.foes if v.d[k] <= v.srng and v.ehp[k] < SUPER_HP]
+        if self._role(v, "escape_dash") and any(v.diver(j) and v.d[j] <= 10.0 for j in v.foes):
+            ks = [k for k in ks if v.ehp[k] < FINISH]    # keep the escape for the diver (piper.md: hold_super)
         if not ks: return None
         k = min(ks, key=lambda j: (v.ehp[j], v.d[j]))
         return pick("super", "super", *v.xy[k], slot=k, reason="%s %s %s at %d %%: super" % (
@@ -410,7 +519,8 @@ class RulePlanner:
     def _keep_away(self, v):
         if v.w["kite"] < 0.5: return None
         close = lambda k: v.erng[k] <= 5.5 or (v.melee[k] and v.erng[k] <= 8.0)   # Bull 5.3, Mortis 2.7 tiles
-        th = [k for k in v.foes if v.known[k] and close(k) and v.d[k] <= v.erng[k] + 2.0 and v.rng >= 1.5 * v.erng[k]]
+        lim = (lambda k: v.dive(k)) if self.roles else (lambda k: v.erng[k])   # roles: a dash's reach (Edgar 6.67 tiles)
+        th = [k for k in v.foes if v.known[k] and close(k) and v.d[k] <= lim(k) + 2.0 and v.rng >= 1.5 * v.erng[k]]
         if not th: return None
         k = min(th, key=lambda j: v.d[j]); ex, ey = v.xy[k]
         why = "%s (%srange %s) %s %s" % (v.name(k), "melee, " if v.melee[k] else "", int(round(v.erng[k])), tiles(v.d[k]), dir8(ex, ey))
@@ -555,6 +665,12 @@ class RulePlanner:
         if pk["kind"] == "none": return c
         mx, my = float(w["x"][p]), float(w["y"][p]); x, y = mx + pk["dx"] * TILE, my + pk["dy"] * TILE
         miss = lambda: dict(c, kind="none", reason=pk["reason"] + " (target not matched)")
+        if pk.get("mode"):                               # role rules: the threat -> its true player (as an engage target)
+            oth = w["up"].copy(); oth[p] = False; tx_, ty_ = mx + pk["threat"][0] * TILE, my + pk["threat"][1] * TILE
+            d = np.where(oth & (w["team"] != w["team"][p]) & w["sees"][p], np.hypot(w["x"] - tx_, w["y"] - ty_) / TILE, np.inf)
+            if d.min() > MATCH: return miss()
+            c.update(mode=pk["mode"], threat=int(np.argmin(d)), near=pk.get("near"))
+            if pk["mode"] == "escape": c["pt"] = (x, y); return c   # the landing point (over walls: as aimed)
         if pk["kind"] in ("engage", "regroup", "super"):
             oth = w["up"].copy(); oth[p] = False; mate = w["team"] == w["team"][p]
             ok = oth & (mate & w["screen"][p] if pk["kind"] == "regroup" else ~mate & w["sees"][p])
@@ -789,6 +905,57 @@ def _check():
     assert run(grid=gx, boxes=[(3, 3)])["rule"] == "farm" and run(grid=gx, foes=[((6, 0), 1.0, None, False)])["rule"] == "none"
     # 15 fallback
     want(run(), "none", "none", "no plan fits: free play")
+    # role rules (roles=True; #91 / #92 scenes): off, none of them fires (every check above ran with roles off)
+    import roles as RO
+    PR = RulePlanner(roles=True)
+    def rrun(**kw):
+        cb = kw.pop("since_cb", 0.0)
+        return PR.decide(*synth(**kw), since_cb=cb)
+    ED = lambda xy, hp=1.0: (xy, hp, "Enrager", False)
+    # super_escape: Piper, jump ready, Edgar 3 tiles E at hp 40 % -> jump W, 0.6-1 x 8.67 tiles; not at full hp with it 6
+    # tiles off (keep_away walks), not without the super, not with roles off
+    pk = want(rrun(sup=True, hp=0.4, foes=[ED((3, 0))]), "super_escape", "super", "hp 40 %, Enrager 3 tiles E: jumping", sx=-1)
+    assert pk["mode"] == "escape" and np.allclose(pk["threat"], (3, 0)) and 5.2 <= np.hypot(pk["dx"], pk["dy"]) <= 26 / 3 + 0.01, pk
+    assert rrun(sup=True, foes=[ED((6, 0))])["rule"] == "keep_away" and rrun(hp=0.4, foes=[ED((3, 0))])["rule"] != "super_escape"
+    assert run(sup=True, hp=0.4, foes=[ED((3, 0))])["rule"] == "keep_away"
+    pk = rrun(sup=True, hp=0.9, foes=[ED((2, 0)), ((0, 3), 1.0, None, False)]); assert pk["rule"] == "super_escape", pk   # close
+    gpo = grid(poison=[(0, 25, 0, 5)]); pk = rrun(sup=True, hp=0.4, foes=[ED((3, 0))], grid=gpo)   # landing >= 3 tiles from the gas
+    assert pk["rule"] == "gas" or (pk["rule"] == "super_escape" and pk["dx"] >= -5), pk
+    # lurk: Piper / Dynamike hidden in a bush, Edgar 6 tiles E -> hold fire on my tile; not once it is within 3 tiles, not
+    # vs a long-range enemy, not out of a bush, not when a finish is in range
+    pk = want(rrun(inbush=True, foes=[ED((6, 0))]), "lurk", "hide", "Enrager 6 tiles E, in a bush: holding fire")
+    assert pk["mode"] == "quiet" and pk["near"] == LURK_EXIT and abs(pk["dx"]) < 0.6 and abs(pk["dy"]) < 0.6
+    assert rrun(me="TntDude", inbush=True, foes=[ED((6, 0))])["rule"] == "lurk"                    # Dynamike never ambushes him
+    assert rrun(inbush=True, foes=[ED((2, 0))])["rule"] != "lurk" and rrun(foes=[ED((6, 0))])["rule"] != "lurk"
+    assert rrun(inbush=True, foes=[((6, 0), 1.0, "Sniper", False)])["rule"] != "lurk"
+    assert rrun(inbush=True, foes=[ED((6, 0)), ((8, 0), 0.2, None, False)])["rule"] != "lurk"
+    assert rrun(inbush=True, hp=0.3, foes=[ED((5, 0))])["rule"] == "lurk"                         # before low_hp: stay hidden
+    # ambush: Shelly in a bush vs Piper 6 tiles E -> wait quietly for 3 tiles; at 2.5 tiles spring (engage); not vs Bull
+    # (R 1.3), not at low hp; Edgar with the jump ready springs at 6.67 tiles with the super
+    SN = lambda xy, hp=1.0: (xy, hp, "Sniper", False)
+    pk = want(rrun(me="ShotgunGirl", inbush=True, foes=[SN((6, 0))]), "ambush", "hide", "Sniper 6 tiles E, in a bush: waiting for 3 tiles")
+    assert pk["mode"] == "quiet" and pk["near"] == 3.0 and np.allclose(pk["threat"], (6, 0))
+    want(rrun(me="ShotgunGirl", inbush=True, foes=[SN((2.5, 0))]), "ambush", "engage", "springing the ambush", sx=1)
+    assert rrun(me="ShotgunGirl", inbush=True, foes=[((6, 0), 1.0, "BullDude", False)])["rule"] != "ambush"
+    assert rrun(me="ShotgunGirl", inbush=True, hp=0.4, foes=[SN((6, 0))])["rule"] != "ambush"
+    pk = rrun(me="Enrager", inbush=True, sup=True, foes=[SN((6, 0))]); assert (pk["rule"], pk["kind"]) == ("ambush", "super"), pk
+    assert rrun(me="Enrager", inbush=True, foes=[SN((6, 0))])["kind"] == "hide"                    # no jump: wait for 3 tiles
+    # super_engage: Bull, charge ready, Piper 8 tiles E at 40 % (beyond his 5.3 range, within the 11-tile charge)
+    want(rrun(me="BullDude", sup=True, foes=[SN((8, 0), 0.4)]), "super_engage", "super", "Sniper 8 tiles E at 40 %: jumping in (super)", sx=1)
+    assert rrun(me="BullDude", sup=True, foes=[SN((4, 0), 0.4)])["rule"] != "super_engage"         # in range: engage
+    assert rrun(me="BullDude", foes=[SN((8, 0), 0.4)])["rule"] != "super_engage"
+    # rule 4 with roles: Poco's heal / Sandy's cloak are no finishers; Shelly's is
+    Lo = [((4, 0), 0.3, None, False)]
+    assert run(me="DeadMariachi", sup=True, foes=Lo)["rule"] == "super" and rrun(me="DeadMariachi", sup=True, foes=Lo)["rule"] != "super"
+    assert rrun(me="Sandstorm", sup=True, foes=Lo)["rule"] != "super" and rrun(me="ShotgunGirl", sup=True, foes=Lo)["rule"] == "super"
+    # an escape_dash brawler with an attack super keeps it while a diver is near (Shelly made one for the test)
+    keep = RO.BRAWLERS["ShotgunGirl"]["roles"]; RO.BRAWLERS["ShotgunGirl"]["roles"] = ("finisher", "escape_dash"); RO.profile.cache_clear()
+    try:
+        assert rrun(me="ShotgunGirl", sup=True, foes=Lo + [ED((9, 0))])["rule"] != "super"
+        assert rrun(me="ShotgunGirl", sup=True, foes=[((4, 0), 0.2, None, False), ED((9, 0))])["rule"] == "super"   # a finish: fire
+    finally: RO.BRAWLERS["ShotgunGirl"]["roles"] = keep; RO.profile.cache_clear()
+    # keep_away measures a dash's reach: Edgar 7 tiles off (jump 6.67) is a threat with roles, not without
+    assert rrun(foes=[ED((7, 0))])["rule"] == "keep_away" and run(foes=[ED((7, 0))])["rule"] != "keep_away"
     assert set(seen) == set(RULES), set(RULES) - set(seen)
     # priority order: each state built for rule k also matching a later rule picks k
     rich = dict(team=3, mates=[((7, 0), 1.0, None, False)], cubes=[(0, 3)], sliders={"bush_camp": 1.5})

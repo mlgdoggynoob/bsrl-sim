@@ -25,6 +25,18 @@ Piper also at high effort to compare). Web only: this container has no game file
 - Numbers: wiki infoboxes mix power levels and lag balance patches (Dynamike super 2200 vs 6000 in the same page, Poco
   rework Aug 2026). The game tables have to win every conflict.
 
+## Checked against the game tables (2026-11-28, `roles._check`)
+- Ranges and super ranges in the table match skills.csv (CastingRange / 3 = tiles): Piper 10 / 8.67, Shelly 7.67 /
+  7.67, Bull 5.33 / **11** (the agent's unconfirmed 11-tile charge is right), Edgar 2 / 6.67, Poco 7 / 9.33, Dynamike
+  super damage **2200** (the wiki's 6000 is stale).
+- Poco's heal and Sandy's cloak are BehaviorType **Attack**: planner rule 4 (attack super at a low enemy) fires them
+  today. With `--plan-roles 1` rule 4 needs the finisher role.
+- Edgar's punch is a projectile in the tables (obs melee flag 0); Mortis is `Undertaker`.
+- Classes come from characters.csv `ClassArchetype`, so every brawler has a class default (roles.py).
+
+The profiles, rules and checklist built on this: `roles.py`, planner role rules, [WORKFLOW.md](WORKFLOW.md),
+[CHECKLIST.md](CHECKLIST.md).
+
 ## Corrections made at merge
 - sandy.md: codename is `Sandstorm` (desc_audit keys `Sandstorm_*`), not `Sandy` as the agent guessed.
 - piper.md: cond 9 is BehaviorType == Attack; #91 lists Piper's jump as Charge, so rule 4 does not fire her jump today.
