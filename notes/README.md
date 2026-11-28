@@ -35,3 +35,4 @@ docstrings and comments are the spec.
 | `issue64.md` | #64 the last seven masked gadgets (Bo, Max, Frank, Griff, Leon, Damian, Starr Nova): causes, fixes, live numbers | #77 |
 | `pro_strategies.md` | community Showdown habits from web research (2026-11-16) and what each means for the observation / reward | the first commit |
 | `intents_v2.md` | plan: cube-aware planner (strength = HP x damage with +400 HP / +10 % per cube), farm / rotate / pin / focus rules, then OBS v5.10 (enemy cubes column, `super` and `check_bush` intents), from web research + game data; as-built notes for PR A (the planner part) | this note's PR |
+| `super_research/` | #91 / #92 research pilot: one brawler per class (Piper, Shelly, Bull, Edgar, Poco, Sandy, Dynamike), super_role / ambush / lurk with sources, web only (not yet checked in the game tables); medium vs high effort | not merged |
